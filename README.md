@@ -1,6 +1,6 @@
 # KrakenWaf 1.1
 
-KrakenWaf is a Rust/Tokio TLS-terminating reverse-proxy WAF inspired by OctopusWAF. Version 1.1 keeps the multi-certificate TLS/SNI support and adds metadata-rich JSON rules, custom block pages, and normalized SQLite storage.
+KrakenWaf is a Rust/Tokio TLS-terminating reverse-proxy WAF. Version 1.1 keeps the multi-certificate TLS/SNI support and adds metadata-rich JSON rules, custom block pages, and normalized SQLite storage.
 
 ## Highlights
 
