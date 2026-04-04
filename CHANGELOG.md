@@ -66,7 +66,7 @@
 
 # CHANGELOG
 
-## 1.1 fork by Orangewarrior
+## 1.1 Coded by Orangewarrior, forked for my old version... but initial code is based in CoolerVoid's OctopusWAF, little WAF written in C language...
 
 ### Security hardening
 - Replaced string-based IP blocklist checks with canonical `IpAddr` parsing.
