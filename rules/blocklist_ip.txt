@@ -1,0 +1,3 @@
+# One exact IP address per line. Enable with: --blocklist-ip 1
+203.0.113.10
+198.51.100.77

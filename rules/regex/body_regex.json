@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "title": "RCE command regex",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects direct command execution patterns in request bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(cmd(\\.exe)?\\s+/c|powershell\\s+-enc|/bin/sh\\s+-c)"
+    },
+    {
+      "title": "Stored XSS regex",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects obvious script tags in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "(?i)<script[^>]*>"
+    }
+  ]
+}

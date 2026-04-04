@@ -1,0 +1,12 @@
+{
+  "rules": [
+    {
+      "title": "Scanner header regex",
+      "severity": "medium",
+      "cwe": "CWE-113",
+      "description": "Detects common offensive scanner fingerprints in request headers.",
+      "url": "https://owasp.org",
+      "rule_match": "(?i)(sqlmap|acunetix|nikto)"
+    }
+  ]
+}

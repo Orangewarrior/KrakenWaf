@@ -1,0 +1,77 @@
+{
+  "blocked_ip_prefixes": [
+    "10.10.10.",
+    "192.0.2."
+  ],
+  "uri_keywords": [
+    {
+      "title": "SQL Injection probe",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects common UNION SELECT probes in the request target.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "union select"
+    },
+    {
+      "title": "phpMyAdmin exposure",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "description": "Detects requests that target phpMyAdmin paths.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "/phpmyadmin"
+    }
+  ],
+  "header_keywords": [
+    {
+      "title": "Known scanner user agent",
+      "severity": "medium",
+      "cwe": "CWE-113",
+      "description": "Detects common offensive scanning tooling in request headers.",
+      "url": "https://owasp.org",
+      "rule_match": "sqlmap"
+    },
+    {
+      "title": "Nikto scanner header",
+      "severity": "medium",
+      "cwe": "CWE-113",
+      "description": "Detects the Nikto scanner string in request headers.",
+      "url": "https://owasp.org",
+      "rule_match": "nikto"
+    }
+  ],
+  "body_keywords": [
+    {
+      "title": "Directory traversal payload",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects directory traversal sequences in body data.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "../"
+    },
+    {
+      "title": "Shell execution probe",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects command execution probes using /bin/sh.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "/bin/sh"
+    },
+    {
+      "title": "PowerShell encoded command",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects PowerShell invocation attempts in request bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "powershell"
+    }
+  ],
+  "allow_paths": [
+    "/health",
+    "/__krakenwaf/health"
+  ],
+  "body_limits": {
+    "/upload": 10485760,
+    "/api/v1/import": 5242880,
+    "/": 1048576
+  }
+}

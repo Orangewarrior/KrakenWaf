@@ -1,0 +1,3 @@
+# hostname,cert_path,key_path
+localhost,./certs/localhost.crt,./certs/localhost.key
+example.test,./certs/example.test.crt,./certs/example.test.key

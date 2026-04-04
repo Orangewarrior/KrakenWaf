@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "title": "Admin path exposure",
+      "severity": "high",
+      "cwe": "CWE-306",
+      "description": "Detects requests targeting administrative paths.",
+      "url": "https://cwe.mitre.org/data/definitions/306.html",
+      "rule_match": "(?i)/(admin|wp-admin|manager/html)"
+    },
+    {
+      "title": "Sensitive dotfile access",
+      "severity": "high",
+      "cwe": "CWE-200",
+      "description": "Detects attempts to reach sensitive dotfiles through URI paths.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)\\.(env|git|svn|bak)$"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "rules": [
+    {
+      "title": "Windows command invocation",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects cmd.exe invocations with fast literal matching.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "cmd.exe"
+    },
+    {
+      "title": "Unix downloader invocation",
+      "severity": "high",
+      "cwe": "CWE-494",
+      "description": "Detects wget download attempts via fast literal matching.",
+      "url": "https://cwe.mitre.org/data/definitions/494.html",
+      "rule_match": "wget http"
+    }
+  ]
+}
