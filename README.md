@@ -1,4 +1,4 @@
-# KrakenWaf v1.2.7
+# KrakenWaf v2.7.14
 
 ## 🚀 Overview
 KrakenWaf is a modern, high-performance Web Application Firewall (WAF) written in Rust.
@@ -165,32 +165,58 @@ Example `blocked.html`:
 
 ---
 
-## 🧪 Example: DVWA (Testing attacks)
-
-Backend:
-```
-http://192.168.0.10/dvwa
-```
-
-Run:
+## 🧪 Example: Protect DVWA for Testing attacks
+With Vectorscan:
 ```bash
-./krakenwaf \
-  --listen 0.0.0.0:443 \
-  --upstream http://192.168.0.10 \
-  --rules-dir ./rules \
-  --sni-map ./rules/tls/sni_map.csv \
-  --allow-private-upstream \
-  --blocklist-ip true \
-  --enable-libinjection \
-  --enable-vectorscan \
-  --blockmsg ./blockpages/blocked.html \
-  --verbose
+cargo build --release --features "vectorscan-engine"
+```
+Prepare certs:
+```bash
+mkdir certs
+openssl req -x509 -nodes -days 365 -newkey rsa:4096   -keyout certs/key.pem   -out certs/cert.pem   -config rules/tls/localhost.cnf
+```
+Set `rules/tls/sni_map.csv` like this:
+
+```bash
+cat rules/tls/sni_map.csv
+localhost,./certs/cert.pem,./certs/key.pem,true
+```
+Example DVWA container:
+
+```bash
+docker run -d --name dvwa -p 8080:80 vulnerables/web-dvwa
+```
+## Run KrakenWaf in front of DVWA
+
+Use this exact command for the local DVWA lab:
+
+```bash
+target/release/krakenwaf \
+--listen 127.0.0.1:8443 \
+--upstream http://127.0.0.1:8080 \
+--rules-dir ./rules \
+--sni-map ./rules/tls/sni_map.csv \
+--blockmsg ./alert/blockalert.html \
+--verbose \
+--allow-private-upstream \
+--enable-vectorscan
 ```
 
-Access:
+Access the protected app at:
+
+```text
+https://localhost:8443
 ```
-https://dvwa.local/dvwa
-```
+Login admin, password is password.
+
+
+## Rule model
+
+KrakenWaf loads three rule families:
+- `rules/rules.json`: keyword rules for URI, headers, and body
+- `rules/regex/*.json`: Rust regex rules
+- `rules/Vectorscan/strings2block.json`: **literal** Vectorscan rules
+- 
 
 This is useful for validating:
 - XSS detection
@@ -223,6 +249,12 @@ curl -k https://localhost/__krakenwaf/health
 - `logs/krakenwaf.log`
 - `logs/json/krakenwaf.jsonl`
 - `logs/raw/critical.log`
+
+Example show a slice of raw log:
+```bash
+KrakenWaf-2.7.14$ cat logs/krakenwaf.log.2026-04-05 | tail -1
+2026-04-05T15:23:05.001671Z  INFO ThreadId(13) krakenwaf: request blocked title=SQLi regex URI severity=critical ip=127.0.0.1 rule=(?i)((?:'|%27)\s*(?:or|and)\s*(?:'1'='1|1=1)|union(?:/\*.*?\*/|\s)+select|information_schema|sleep\s*\()
+```
 
 SQLite:
 ```
