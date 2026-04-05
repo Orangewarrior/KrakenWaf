@@ -1,19 +1,83 @@
 {
   "rules": [
     {
-      "title": "Windows command invocation",
+      "title": "SQLi UNION SELECT extraction",
       "severity": "critical",
-      "cwe": "CWE-78",
-      "description": "Detects cmd.exe invocations with fast literal matching.",
-      "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "cmd.exe"
+      "cwe": "CWE-89",
+      "description": "Detects OWASP-style UNION SELECT extraction attempts in attacker-controlled input.",
+      "url": "https://owasp.org/www-community/attacks/SQL_Injection",
+      "rule_match": "union select"
     },
     {
-      "title": "Unix downloader invocation",
+      "title": "SQLi boolean authentication bypass",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects classic boolean SQL injection probes used to bypass authentication.",
+      "url": "https://owasp.org/www-community/attacks/SQL_Injection",
+      "rule_match": "' or '1'='1"
+    },
+    {
+      "title": "SQLi time-based sleep probe",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "description": "Detects obvious time-based SQL injection probes.",
+      "url": "https://owasp.org/www-community/attacks/SQL_Injection",
+      "rule_match": "sleep\\("
+    },
+    {
+      "title": "SQLi information schema enumeration",
+      "severity": "high",
+      "cwe": "CWE-89",
+      "description": "Detects information_schema enumeration keywords.",
+      "url": "https://owasp.org/www-community/attacks/SQL_Injection",
+      "rule_match": "information_schema"
+    },
+    {
+      "title": "XSS script tag literal",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects obvious inline script tag payloads.",
+      "url": "https://owasp.org/www-community/attacks/xss/",
+      "rule_match": "<script"
+    },
+    {
+      "title": "XSS onerror handler literal",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects common onerror event-handler XSS payloads.",
+      "url": "https://owasp.org/www-community/attacks/xss/",
+      "rule_match": "onerror="
+    },
+    {
+      "title": "Traversal passwd probe",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects direct traversal attempts for /etc/passwd.",
+      "url": "https://owasp.org/www-community/attacks/Path_Traversal",
+      "rule_match": "/etc/passwd"
+    },
+    {
+      "title": "Command injection shell execution",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects direct shell execution strings frequently used in command injection.",
+      "url": "https://owasp.org/www-community/attacks/Command_Injection",
+      "rule_match": "/bin/sh -c"
+    },
+    {
+      "title": "Windows command execution",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects cmd.exe invocation frequently used in command injection.",
+      "url": "https://owasp.org/www-community/attacks/Command_Injection",
+      "rule_match": "cmd.exe /c"
+    },
+    {
+      "title": "Remote payload downloader",
       "severity": "high",
       "cwe": "CWE-494",
-      "description": "Detects wget download attempts via fast literal matching.",
-      "url": "https://cwe.mitre.org/data/definitions/494.html",
+      "description": "Detects simple downloader strings used in post-exploitation payload fetches.",
+      "url": "https://owasp.org/www-community/attacks/Command_Injection",
       "rule_match": "wget http"
     }
   ]

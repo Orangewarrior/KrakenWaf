@@ -12,7 +12,7 @@ use ipnet::IpNet;
 use libinjection::{sqli, xss};
 use std::{borrow::Cow, net::IpAddr, path::Path, sync::{Arc, RwLock}, time::Duration};
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{expression::{Flags, Literal}, Database, Mode, Scratch};
+use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
 
 /// Streaming and full-payload inspection context generated per request.
 #[derive(Debug, Clone)]
@@ -63,9 +63,9 @@ struct EngineMatchers {
 }
 
 #[cfg(feature = "vectorscan-engine")]
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct VectorscanMatcher {
-    db: Database,
+    db: BlockDatabase,
     keywords: Vec<DetectionRule>,
 }
 
@@ -169,19 +169,21 @@ impl WafEngine {
             }
         }
 
-        if let Some(finding) = keyword_match(matchers.uri.as_ref(), &ctx.uri) {
+        let normalized_uri = normalize_for_inspection(&ctx.uri);
+        if let Some(finding) = keyword_match(matchers.uri.as_ref(), &normalized_uri, &ctx.uri) {
             return Decision::Block(finding);
         }
 
-        if let Some(finding) = regex_match(&rules.path_regex, &ctx.uri) {
+        if let Some(finding) = regex_match(&rules.path_regex, &normalized_uri, &ctx.uri) {
             return Decision::Block(finding);
         }
 
-        if let Some(finding) = keyword_match(matchers.headers.as_ref(), &ctx.headers) {
+        let normalized_headers = normalize_for_inspection(&ctx.headers);
+        if let Some(finding) = keyword_match(matchers.headers.as_ref(), &normalized_headers, &ctx.headers) {
             return Decision::Block(finding);
         }
 
-        if let Some(finding) = regex_match(&rules.header_regex, &ctx.headers) {
+        if let Some(finding) = regex_match(&rules.header_regex, &normalized_headers, &ctx.headers) {
             return Decision::Block(finding);
         }
 
@@ -201,30 +203,33 @@ impl WafEngine {
     fn inspect_text_payload(&self, text: &Cow<'_, str>) -> Decision {
         let rules = self.rules.read().expect("rules lock poisoned").clone();
         let matchers = self.matchers.read().expect("matchers lock poisoned").clone();
+        let normalized = normalize_for_inspection(text.as_ref());
 
-        if let Some(finding) = keyword_match(matchers.body.as_ref(), text) {
-            return Decision::Block(finding);
-        }
+        for view in inspection_views(&normalized) {
+            if let Some(finding) = keyword_match(matchers.body.as_ref(), view, text.as_ref()) {
+                return Decision::Block(finding);
+            }
 
-        if let Some(finding) = regex_match(&rules.body_regex, text) {
-            return Decision::Block(finding);
-        }
+            if let Some(finding) = regex_match(&rules.body_regex, view, text.as_ref()) {
+                return Decision::Block(finding);
+            }
 
-        if self.libinjection_enabled {
-            #[cfg(feature = "libinjection-engine")]
-            {
-                if let Some(finding) = libinjection_match(text) {
-                    return Decision::Block(finding);
+            if self.libinjection_enabled {
+                #[cfg(feature = "libinjection-engine")]
+                {
+                    if let Some(finding) = libinjection_match(view, text.as_ref()) {
+                        return Decision::Block(finding);
+                    }
                 }
             }
-        }
 
-        if self.vectorscan_enabled {
-            #[cfg(feature = "vectorscan-engine")]
-            {
-                if let Some(matcher) = &matchers.vectorscan {
-                    if let Some(finding) = vectorscan_match(matcher, text) {
-                        return Decision::Block(finding);
+            if self.vectorscan_enabled {
+                #[cfg(feature = "vectorscan-engine")]
+                {
+                    if let Some(matcher) = &matchers.vectorscan {
+                        if let Some(finding) = vectorscan_match(matcher, view, text.as_ref()) {
+                            return Decision::Block(finding);
+                        }
                     }
                 }
             }
@@ -288,14 +293,14 @@ fn build_keyword_matcher(rules: &[DetectionRule]) -> Result<Option<KeywordMatche
     Ok(Some(KeywordMatcher { ac, rules: rules.to_vec() }))
 }
 
-fn keyword_match(matcher: Option<&KeywordMatcher>, haystack: &str) -> Option<Finding> {
+fn keyword_match(matcher: Option<&KeywordMatcher>, haystack: &str, original_payload: &str) -> Option<Finding> {
     let matcher = matcher?;
     let mat = matcher.ac.find(haystack)?;
-    matcher.rules.get(mat.pattern().as_usize()).map(|rule| rule_to_finding(rule, haystack))
+    matcher.rules.get(mat.pattern().as_usize()).map(|rule| rule_to_finding(rule, original_payload))
 }
 
-fn regex_match(rules: &[CompiledDetectionRule], haystack: &str) -> Option<Finding> {
-    rules.iter().find_map(|rule| rule.compiled.is_match(haystack).then(|| rule_to_finding(&rule.meta, haystack)))
+fn regex_match(rules: &[CompiledDetectionRule], haystack: &str, original_payload: &str) -> Option<Finding> {
+    rules.iter().find_map(|rule| rule.compiled.is_match(haystack).then(|| rule_to_finding(&rule.meta, original_payload)))
 }
 
 fn rule_to_finding(rule: &DetectionRule, haystack: &str) -> Finding {
@@ -310,6 +315,30 @@ fn rule_to_finding(rule: &DetectionRule, haystack: &str) -> Finding {
         request_payload: truncate_payload(haystack).into_owned(),
         timestamp: Utc::now().to_rfc3339(),
     }
+}
+
+
+fn normalize_for_inspection(input: &str) -> String {
+    let plus_normalized = input.replace('+', " ");
+    percent_encoding::percent_decode_str(&plus_normalized)
+        .decode_utf8_lossy()
+        .to_lowercase()
+}
+
+fn inspection_views<'a>(normalized: &'a str) -> Vec<&'a str> {
+    let mut views = Vec::with_capacity(8);
+    if !normalized.is_empty() {
+        views.push(normalized);
+    }
+
+    for part in normalized.split(|c| matches!(c, '&' | '\n' | '\r' | '\0')) {
+        let trimmed = part.trim();
+        if !trimmed.is_empty() && trimmed != normalized {
+            views.push(trimmed);
+        }
+    }
+
+    views
 }
 
 fn truncate_payload(value: &str) -> Cow<'_, str> {
@@ -365,8 +394,8 @@ fn parse_ip_net(value: &str) -> Option<IpNet> {
 }
 
 #[cfg(feature = "libinjection-engine")]
-fn libinjection_match(payload: &Cow<'_, str>) -> Option<Finding> {
-    let data = payload.as_ref();
+fn libinjection_match(normalized_payload: &str, original_payload: &str) -> Option<Finding> {
+    let data = normalized_payload;
 
     if sqli(data) {
         return Some(Finding {
@@ -377,7 +406,7 @@ fn libinjection_match(payload: &Cow<'_, str>) -> Option<Finding> {
             reference_url: "https://github.com/libinjection/libinjection-rs".into(),
             rule_match: "libinjection::sqli".into(),
             rule_line_match: "runtime".into(),
-            request_payload: truncate_payload(data).into_owned(),
+            request_payload: truncate_payload(original_payload).into_owned(),
             timestamp: Utc::now().to_rfc3339(),
         });
     }
@@ -391,7 +420,7 @@ fn libinjection_match(payload: &Cow<'_, str>) -> Option<Finding> {
             reference_url: "https://github.com/libinjection/libinjection-rs".into(),
             rule_match: "libinjection::xss".into(),
             rule_line_match: "runtime".into(),
-            request_payload: truncate_payload(data).into_owned(),
+            request_payload: truncate_payload(original_payload).into_owned(),
             timestamp: Utc::now().to_rfc3339(),
         });
     }
@@ -401,26 +430,65 @@ fn libinjection_match(payload: &Cow<'_, str>) -> Option<Finding> {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan_matcher(rules: &[DetectionRule]) -> Result<VectorscanMatcher> {
-    let exprs = rules
-        .iter()
-        .map(|rule| Literal::new(&rule.rule_match).flags(Flags::CASELESS))
-        .collect::<Vec<_>>();
+    if rules.is_empty() {
+        anyhow::bail!("vectorscan enabled but no literal rules were loaded");
+    }
 
-    let db = Database::compile_multi(&exprs, Mode::BLOCK)?;
-    Ok(VectorscanMatcher { db, keywords: rules.to_vec() })
+    let patterns = rules
+        .iter()
+        .enumerate()
+        .map(|(idx, rule)| {
+            let literal = rule.rule_match.trim();
+            if literal.is_empty() {
+                anyhow::bail!(
+                    "invalid Vectorscan literal rule at {}:{} (title: {}). Rule content is empty. Vectorscan rules in KrakenWaf are treated as literal strings, not regex. Write the exact text you want to block.",
+                    rule.source,
+                    rule.line,
+                    rule.title,
+                );
+            }
+            if literal.as_bytes().contains(&0) {
+                anyhow::bail!(
+                    "invalid Vectorscan literal rule at {}:{} (title: {}). Rule content contains a NUL byte, which is not supported here. Rule content: {:?}",
+                    rule.source,
+                    rule.line,
+                    rule.title,
+                    rule.rule_match,
+                );
+            }
+
+            Ok(Pattern::new(
+                literal.as_bytes().to_vec(),
+                Flag::CASELESS | Flag::SINGLEMATCH,
+                Some(idx as u32),
+            ))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let db = BlockDatabase::new(patterns).map_err(|err| {
+        anyhow::anyhow!(
+            "failed to compile Vectorscan literal database from {} rules. Check rules/Vectorscan/strings2block.json for empty or malformed entries. Underlying error: {}",
+            rules.len(),
+            err
+        )
+    })?;
+    Ok(VectorscanMatcher {
+        db,
+        keywords: rules.to_vec(),
+    })
 }
 
 #[cfg(feature = "vectorscan-engine")]
-fn vectorscan_match(matcher: &VectorscanMatcher, haystack: &Cow<'_, str>) -> Option<Finding> {
-    let mut scratch = Scratch::new(&matcher.db).ok()?;
+fn vectorscan_match(matcher: &VectorscanMatcher, normalized_haystack: &str, original_payload: &str) -> Option<Finding> {
+    let mut scanner = matcher.db.create_scanner().ok()?;
     let mut matched_index: Option<usize> = None;
 
-    let _ = matcher.db.scan(haystack.as_ref(), &mut scratch, |id, _from, _to, _flags| {
+    let _ = scanner.scan(normalized_haystack.as_bytes(), |id, _from, _to, _flags| {
         matched_index = Some(id as usize);
-        vectorscan::matchers::MatchResult::CeaseMatching
+        Scan::Terminate
     });
 
     matched_index
         .and_then(|idx| matcher.keywords.get(idx))
-        .map(|rule| rule_to_finding(rule, haystack.as_ref()))
+        .map(|rule| rule_to_finding(rule, original_payload))
 }

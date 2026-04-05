@@ -15,7 +15,7 @@ use reqwest::{redirect::Policy, Client};
 use tracing::{error, info, warn};
 use url::{Host, Url};
 
-const STREAM_OVERLAP_BYTES: usize = 128;
+const STREAM_OVERLAP_BYTES: usize = 4096;
 
 pub struct ProxyClient {
     client: Client,
@@ -60,6 +60,17 @@ impl ProxyClient {
             Decision::Allow => {}
             Decision::Block(finding) => {
                 return self.block_response(state, &context, finding).await;
+            }
+        }
+
+        if let Some(query) = uri.query() {
+            if !query.is_empty() {
+                match state.waf.inspect_complete_payload(query.as_bytes()) {
+                    Decision::Allow => {}
+                    Decision::Block(finding) => {
+                        return self.block_response(state, &context, finding).await;
+                    }
+                }
             }
         }
 
@@ -161,9 +172,7 @@ async fn consume_and_inspect_body(
             match state.waf.inspect_body_chunk(&inspection_buf) {
                 Decision::Allow => {
                     acc.extend_from_slice(chunk);
-                    overlap.clear();
-                    let keep_from = chunk.len().saturating_sub(STREAM_OVERLAP_BYTES);
-                    overlap.extend_from_slice(&chunk[keep_from..]);
+                    overlap = inspection_buf[inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..].to_vec();
                 }
                 Decision::Block(finding) => {
                     let event = SecurityEvent::from((&finding, ctx));

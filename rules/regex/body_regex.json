@@ -6,15 +6,23 @@
       "cwe": "CWE-78",
       "description": "Detects direct command execution patterns in request bodies.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(cmd(\\.exe)?\\s+/c|powershell\\s+-enc|/bin/sh\\s+-c)"
+      "rule_match": "(?i)(cmd(\\.exe)?\\s+/c|powershell(?:\\.exe)?\\s+-enc|/bin/sh\\s+-c|bash\\s+-c|wget\\s+https?://|curl\\s+https?://|nc\\s+-e)"
     },
     {
-      "title": "Stored XSS regex",
+      "title": "Stored or reflected XSS regex",
       "severity": "high",
       "cwe": "CWE-79",
-      "description": "Detects obvious script tags in body content.",
+      "description": "Detects obvious script tags and javascript event handlers in body content.",
       "url": "https://cwe.mitre.org/data/definitions/79.html",
-      "rule_match": "(?i)<script[^>]*>"
+      "rule_match": "(?i)(<script[^>]*>|on(?:error|load|mouseover)\\s*=|javascript:)"
+    },
+    {
+      "title": "SQLi regex body",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects common SQL injection probes in request bodies, including boolean bypass, UNION SELECT and sleep-based payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "(?i)((?:'|%27)\\s*(?:or|and)\\s*(?:'1'='1|1=1)|union(?:/\\*.*?\\*/|\\s)+select|information_schema|sleep\\s*\\()"
     }
   ]
 }

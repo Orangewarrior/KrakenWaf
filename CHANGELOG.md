@@ -1,4 +1,72 @@
+## 2.7.14
+- fixed Vectorscan matcher compilation against `vectorscan-rs 0.0.6` by removing an invalid `.map_err()` call on `Pattern::new`, which returns a `Pattern` directly
+- kept Vectorscan rules as literals instead of regex-escaped patterns
+- improved Vectorscan rule validation with clear errors for empty literals and embedded NUL bytes
+
+## 2.7.13
+
+- Fixed invalid packaged regex rule files by converting the bundled JSON regex patterns to valid JSON-escaped strings in `rules/regex/body_regex.json` and `rules/regex/path_regex.json`.
+- Restored the packaged SQLi regex rules for URI/query and POST body inspection.
+- Fixed Vectorscan rule compilation by treating packaged Vectorscan rules as **literal strings** before compiling them for `vectorscan-rs`, so strings like `sleep(` no longer crash startup.
+- Improved Vectorscan startup errors to show the source file, rule index, title, and literal content when a user-authored rule cannot be compiled.
+- Updated `README.md` with the corrected local DVWA lab instructions, including the exact OpenSSL command, the correct `rules/tls/sni_map.csv` contents, and the final command line used to run KrakenWaf in front of DVWA with Vectorscan enabled.
+- Bumped crate version to `2.7.13`.
+
+## 2.7.12
+
+- Fixed invalid regex patterns in `rules/regex/body_regex.json` and `rules/regex/path_regex.json` that were missing a closing parenthesis and caused startup failure with `Pattern compilation failed`.
+- Bumped crate version to `2.7.12`.
+
+## [2.7.11] - 2026-04-05
+
+### Fixed
+- Corrigido erro de compilação em `src/waf/engine.rs` causado por caracteres literais de nova linha/carriage return/NUL em `inspection_views`, substituindo-os por escapes válidos (`\n`, `\r`, `\0`).
+
 # Changelog
+
+## [2.7.10] - 2026-04-05
+
+### Fixed
+- Corrected body inspection for long and multi-field requests by retaining overlap from the full inspection window instead of only the last bytes of the newest chunk.
+- Normalized `application/x-www-form-urlencoded` payloads more accurately by converting `+` to spaces before percent-decoding, allowing literal SQLi and XSS signatures to match real DVWA form submissions.
+- Expanded payload inspection so normalized request content is evaluated both as a whole buffer and as per-field/per-line segments split on `&`, newlines, and NUL bytes, improving Vectorscan and regex coverage on attacker-controlled POST bodies.
+
+### Detection
+- Refreshed the bundled Vectorscan fast-literal bundle with 10 OWASP-aligned rules covering SQLi, XSS, traversal, command injection, and downloader activity.
+- Added regression tests for form-urlencoded `+` payloads and long POST payloads that previously could evade the smaller streaming overlap behavior.
+
+### Changed
+- Bumped the crate version to `2.7.10`.
+
+## [2.7.9] - 2026-04-05
+
+### Fixed
+- Corrected request inspection so attacker-controlled GET query strings are actively inspected before proxying upstream, instead of only being forwarded in `path_and_query`.
+- Normalized attacker-controlled GET and POST payloads before matching by percent-decoding and converting to lowercase, reducing bypasses based on mixed-case payloads and encoded delimiters.
+- Preserved original payload samples in findings/logging while matching against normalized content internally.
+
+### Detection
+- Applied the normalization pass consistently to URI, headers, and full request payload inspection so keyword, regex, optional libinjection, and optional Vectorscan checks all evaluate canonical lowercase content.
+- Added regression tests for encoded DVWA-style GET SQLi payloads and uppercase encoded POST XSS payloads.
+
+### Changed
+- Bumped the crate version to `2.7.9`.
+
+## [2.7.8] - 2026-04-05
+
+### Fixed
+- Replaced the incompatible `vectorscan = 0.1.0` integration with the current stable `vectorscan-rs = 0.0.6` API.
+- Reworked `src/waf/engine.rs` to build a `BlockDatabase` from literal `Pattern` values and scan request bodies with `BlockScanner`, fixing the unresolved import and callback API breakage seen with newer stable Vectorscan crates.
+- Added `Clone` support to the internal `VectorscanMatcher` so matcher snapshots remain reload-safe.
+
+### Detection
+- Expanded bundled URI, body, regex, and Vectorscan rule sets with DVWA-oriented SQLi, XSS, traversal, and command-execution probes for easier lab validation.
+- Preserved fast literal matching for attacker-controlled request content in both GET query strings and POST bodies.
+- Added integration tests that assert the WAF blocks representative DVWA GET and POST payloads, plus a feature-gated Vectorscan fast-literal test.
+
+### Changed
+- Bumped the crate version to `2.7.8`.
+- Kept the TLS/SNI and hot-reload behaviour from the previous branch while refreshing the packaged rules for easier out-of-the-box testing.
 
 ## [1.2.7] - 2026-04-04
 

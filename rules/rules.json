@@ -13,6 +13,22 @@
       "rule_match": "union select"
     },
     {
+      "title": "Boolean SQL injection probe",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects classic boolean-based SQL injection probes in the URI query string.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "' or '1'='1"
+    },
+    {
+      "title": "Directory traversal URI probe",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects encoded or raw traversal attempts in request targets.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "../"
+    },
+    {
       "title": "phpMyAdmin exposure",
       "severity": "high",
       "cwe": "CWE-200",
@@ -63,6 +79,22 @@
       "description": "Detects PowerShell invocation attempts in request bodies.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "powershell"
+    },
+    {
+      "title": "Inline XSS payload",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects classic inline script payloads in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "<script"
+    },
+    {
+      "title": "SQLi login bypass payload",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects classic SQLi login bypass probes in POST data.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "' or '1'='1"
     }
   ],
   "allow_paths": [

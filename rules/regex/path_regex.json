@@ -15,6 +15,22 @@
       "description": "Detects attempts to reach sensitive dotfiles through URI paths.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)\\.(env|git|svn|bak)$"
+    },
+    {
+      "title": "Traversal regex URI",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects path traversal attempts in the URL, including encoded variants.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:\\.\\./|%2e%2e%2f|%252e%252e%252f|/etc/passwd)"
+    },
+    {
+      "title": "SQLi regex URI",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects common SQL injection probes in attacker-controlled URI paths and query strings.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "(?i)((?:'|%27)\\s*(?:or|and)\\s*(?:'1'='1|1=1)|union(?:/\\*.*?\\*/|\\s)+select|information_schema|sleep\\s*\\()"
     }
   ]
 }
