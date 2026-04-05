@@ -286,20 +286,20 @@ Deploy it in minutes and protect your apps with modern Rust-based security.
 
 ## SQLite schema
 
-KrakenWaf creates the `vulnerabilties` table automatically in `logs/db/vulns_alert.db`:
+KrakenWaf creates the `vulnerabilities` table automatically in `logs/db/vulns_alert.db`:
 
 ```sql
-CREATE TABLE IF NOT EXISTS vulnerabilties (
+CREATE TABLE IF NOT EXISTS vulnerabilities  (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   title TEXT NOT NULL,
   severity TEXT NOT NULL,
   CWE TEXT NOT NULL,
   description TEXT NOT NULL,
   reference_url TEXT NOT NULL,
-  "date of ocurrence" TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
   rule_match TEXT NOT NULL,
   rule_line_match TEXT NOT NULL,
-  "request_payload" TEXT NOT NULL
+  request_payload TEXT NOT NULL
 );
 ```
 
