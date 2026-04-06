@@ -250,10 +250,11 @@ curl -k https://localhost/__krakenwaf/health
 - `logs/json/krakenwaf.jsonl`
 - `logs/raw/critical.log`
 
-Example show a slice of raw log:
+Example show a slice of jsonl log:
 ```bash
-KrakenWaf-2.7.14$ cat logs/krakenwaf.log.2026-04-05 | tail -1
-2026-04-05T15:23:05.001671Z  INFO ThreadId(13) krakenwaf: request blocked title=SQLi regex URI severity=critical ip=127.0.0.1 rule=(?i)((?:'|%27)\s*(?:or|and)\s*(?:'1'='1|1=1)|union(?:/\*.*?\*/|\s)+select|information_schema|sleep\s*\()
+cat logs/json/krakenwaf.jsonl.2026-04-06 | tail -10
+{"timestamp":"2026-04-06T01:18:56.145800Z","level":"INFO","fields":{"message":"request blocked","title":"Remote payload downloader","severity":"high","cwe":"CWE-494","engine":"vectorscan","ip":"127.0.0.1","method":"POST","uri":"/vulnerabilities/xss_s/","fullpath_evidence":"/vulnerabilities/xss_s/","rule":"wget http","rule_source":"Vectorscan/strings2block.json:10","reference_url":"https://owasp.org/www-community/attacks/Command_Injection"},"target":"krakenwaf"}
+{"timestamp":"2026-04-06T01:19:26.146276Z","level":"ERROR","fields":{"message":"connection timed out: deadline has elapsed"},"target":"krakenwaf"}
 ```
 
 SQLite:
@@ -266,6 +267,7 @@ Inspect the database:
 $ sqlite3 logs/db/vulns_alert.db "SELECT id,title,severity,engine,http_method,request_uri,fullpath_evidence,rule_match,reference_url,occurred_at FROM vulnerabilities ORDER BY id DESC LIMIT 10;"
 1|Remote payload downloader|high|vectorscan|POST|/vulnerabilities/xss_s/|/vulnerabilities/xss_s/|wget http|https://owasp.org/www-community/attacks/Command_Injection|2026-04-06T01:18:56.145777535+00:00
 ```
+Note: If you need to inspect the full request, refer to the "request_payload" field. Use it in the SQL query SELECT.
 
 ---
 
