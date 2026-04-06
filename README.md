@@ -1,4 +1,4 @@
-# KrakenWaf 2.7.16
+# KrakenWaf 2.7.19
 
 ## 🚀 Overview
 KrakenWaf is a modern, high-performance Web Application Firewall (WAF) written in Rust.
@@ -169,7 +169,8 @@ Example `blocked.html`:
 ## 🧪 Example: Protect DVWA for Testing attacks
 With Vectorscan:
 ```bash
-cargo build --release --features "vectorscan-engine"
+cargo clean
+cargo build --release --features "libinjection-engine vectorscan-engine"
 ```
 Prepare certs:
 ```bash
@@ -193,14 +194,16 @@ Use this exact command for the local DVWA lab:
 
 ```bash
 target/release/krakenwaf \
---listen 127.0.0.1:8443 \
---upstream http://127.0.0.1:8080 \
---rules-dir ./rules \
---sni-map ./rules/tls/sni_map.csv \
---blockmsg ./alert/blockalert.html \
---verbose \
---allow-private-upstream \
---enable-vectorscan
+  --listen 127.0.0.1:8443 \
+  --upstream http://127.0.0.1:8080 \
+  --rules-dir ./rules \
+  --sni-map ./rules/tls/sni_map.csv \
+  --blockmsg ./alert/blockalert.html \
+  --verbose \
+  --allow-private-upstream \
+  --enable-vectorscan \
+  --enable-libinjection-sqli \
+  --enable-libinjection-xss 
 ```
 
 Access the protected app at:
@@ -282,7 +285,8 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--sni-map` | Path to the TLS SNI CSV file used to map hostnames to certificate and key files |
 | `--blocklist-ip` | Enables IP and CIDR blocklist enforcement |
 | `--allow-private-upstream` | Allows private or local upstream targets such as RFC1918 addresses |
-| `--enable-libinjection` | Enables libinjection-based SQLi/XSS-oriented inspection |
+| `--enable-libinjection-sqli` | Enables libinjection-based SQLi-oriented inspection |
+| `--enable-libinjection-xss` | Enables libinjection-based XSS-oriented inspection |
 | `--enable-vectorscan` | Enables Vectorscan-based fast multi-pattern matching |
 | `--rate-limit-per-minute` | Maximum number of requests allowed per client IP per minute |
 | `--upstream-timeout-secs` | Timeout in seconds for upstream requests |
@@ -293,6 +297,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--verbose` | Enables more detailed runtime logging |
 | `--help` | Shows CLI help and exits |
 | `--version` | Prints the current KrakenWaf version and exits |
+| `--header-protection-injection` | Load rules to inject custom HTTP headers for all responses, you can see headers in /rules/headers_http/ |
 
 ---
 
