@@ -1,4 +1,4 @@
-# KrakenWaf v2.7.14
+# KrakenWaf 2.7.16
 
 ## 🚀 Overview
 KrakenWaf is a modern, high-performance Web Application Firewall (WAF) written in Rust.
