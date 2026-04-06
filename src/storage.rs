@@ -1,6 +1,5 @@
-
-use crate::logging::{sanitize_payload, SecurityEvent};
-use anyhow::Result;
+use crate::logging::SecurityEvent;
+use anyhow::{Context, Result};
 use sea_orm::{
     entity::prelude::*,
     ActiveValue::Set, ConnectOptions, Database, DatabaseBackend,
@@ -28,6 +27,11 @@ pub struct Model {
     pub occurred_at: String,
     pub rule_match: String,
     pub rule_line_match: String,
+    pub client_ip: String,
+    pub http_method: String,
+    pub request_uri: String,
+    pub fullpath_evidence: String,
+    pub engine: String,
     pub request_payload: String,
 }
 
@@ -96,25 +100,143 @@ impl SqliteStore {
 
 async fn init_schema(db: &DatabaseConnection) -> Result<()> {
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA journal_mode=WAL;".to_owned())).await?;
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA user_version=1;".to_owned())).await?;
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA foreign_keys=ON;".to_owned())).await?;
+
+    let current_version = query_user_version(db).await?;
+    if !table_exists(db, "vulnerabilities").await? {
+        create_latest_schema(db).await?;
+        set_user_version(db, 2).await?;
+        return Ok(());
+    }
+
+    if current_version < 2 || !schema_is_latest(db).await? {
+        migrate_to_v2(db).await?;
+        set_user_version(db, 2).await?;
+    }
+
+    Ok(())
+}
+
+async fn query_user_version(db: &DatabaseConnection) -> Result<i64> {
+    let stmt = Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA user_version;".to_owned());
+    let row = db.query_one(stmt).await?;
+    Ok(row
+        .and_then(|r| r.try_get_by_index::<i64>(0).ok())
+        .unwrap_or(0))
+}
+
+async fn set_user_version(db: &DatabaseConnection, version: i64) -> Result<()> {
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, format!("PRAGMA user_version={version};"))).await?;
+    Ok(())
+}
+
+async fn table_exists(db: &DatabaseConnection, name: &str) -> Result<bool> {
+    let escaped = name.replace("'", "''");
+    let sql = format!("SELECT name FROM sqlite_master WHERE type='table' AND name='{}' LIMIT 1;", escaped);
+    let row = db.query_one(Statement::from_string(DatabaseBackend::Sqlite, sql)).await?;
+    Ok(row.is_some())
+}
+
+async fn schema_is_latest(db: &DatabaseConnection) -> Result<bool> {
+    let required = [
+        "id", "title", "severity", "cwe", "description", "reference_url", "occurred_at",
+        "rule_match", "rule_line_match", "client_ip", "http_method", "request_uri",
+        "fullpath_evidence", "engine", "request_payload",
+    ];
+    let rows = db
+        .query_all(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA table_info(vulnerabilities);".to_owned()))
+        .await?;
+    let mut seen = std::collections::BTreeSet::new();
+    for row in rows {
+        if let Ok(name) = row.try_get::<String>("", "name") {
+            seen.insert(name);
+        }
+    }
+    Ok(required.iter().all(|name| seen.contains(*name)))
+}
+
+async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
     db.execute(Statement::from_string(
         DatabaseBackend::Sqlite,
         r#"
         CREATE TABLE IF NOT EXISTS vulnerabilities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title TEXT NOT NULL,
-            severity TEXT NOT NULL,
-            cwe TEXT NOT NULL,
+            title VARCHAR(256) NOT NULL,
+            severity VARCHAR(32) NOT NULL,
+            cwe VARCHAR(128) NOT NULL,
             description TEXT NOT NULL,
             reference_url TEXT NOT NULL,
-            occurred_at TEXT NOT NULL,
+            occurred_at TIMESTAMP NOT NULL,
             rule_match TEXT NOT NULL,
-            rule_line_match TEXT NOT NULL,
+            rule_line_match VARCHAR(256) NOT NULL,
+            client_ip VARCHAR(64) NOT NULL,
+            http_method VARCHAR(16) NOT NULL,
+            request_uri TEXT NOT NULL,
+            fullpath_evidence TEXT NOT NULL,
+            engine VARCHAR(32) NOT NULL,
             request_payload TEXT NOT NULL
         );
         "#.to_owned(),
     )).await?;
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_occurred_at ON vulnerabilities(occurred_at DESC);".to_owned())).await?;
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity);".to_owned())).await?;
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_engine ON vulnerabilities(engine);".to_owned())).await?;
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_title ON vulnerabilities(title);".to_owned())).await?;
     Ok(())
+}
+
+
+async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "BEGIN IMMEDIATE;".to_owned())).await?;
+    let result: Result<()> = async {
+        db.execute(Statement::from_string(DatabaseBackend::Sqlite, "ALTER TABLE vulnerabilities RENAME TO vulnerabilities_legacy;".to_owned())).await?;
+        create_latest_schema(db).await?;
+        db.execute(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            r#"
+            INSERT INTO vulnerabilities (
+                id, title, severity, cwe, description, reference_url, occurred_at,
+                rule_match, rule_line_match, client_ip, http_method, request_uri,
+                fullpath_evidence, engine, request_payload
+            )
+            SELECT
+                id,
+                title,
+                severity,
+                cwe,
+                description,
+                reference_url,
+                occurred_at,
+                rule_match,
+                rule_line_match,
+                '' AS client_ip,
+                '' AS http_method,
+                '' AS request_uri,
+                '' AS fullpath_evidence,
+                CASE
+                    WHEN rule_line_match LIKE 'Vectorscan/%' THEN 'vectorscan'
+                    WHEN rule_line_match LIKE 'regex/%' THEN 'regex'
+                    WHEN rule_match LIKE 'libinjection::%' THEN 'libinjection'
+                    ELSE 'keyword'
+                END AS engine,
+                request_payload
+            FROM vulnerabilities_legacy;
+            "#.to_owned(),
+        )).await?;
+        db.execute(Statement::from_string(DatabaseBackend::Sqlite, "DROP TABLE vulnerabilities_legacy;".to_owned())).await?;
+        Ok(())
+    }.await;
+
+    match result {
+        Ok(()) => {
+            db.execute(Statement::from_string(DatabaseBackend::Sqlite, "COMMIT;".to_owned())).await?;
+            Ok(())
+        }
+        Err(err) => {
+            let _ = db.execute(Statement::from_string(DatabaseBackend::Sqlite, "ROLLBACK;".to_owned())).await;
+            Err(err).context("failed to migrate vulnerabilities table to schema v2")
+        }
+    }
 }
 
 async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Result<()> {
@@ -132,7 +254,12 @@ async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Resu
         occurred_at: Set(event.timestamp.clone()),
         rule_match: Set(event.rule_match.clone()),
         rule_line_match: Set(event.rule_line_match.clone()),
-        request_payload: Set(sanitize_payload(&event.request_payload)),
+        client_ip: Set(event.client_ip.clone()),
+        http_method: Set(event.method.clone()),
+        request_uri: Set(event.uri.clone()),
+        fullpath_evidence: Set(event.fullpath_evidence.clone()),
+        engine: Set(event.engine.clone()),
+        request_payload: Set(event.request_payload.clone()),
     }).collect::<Vec<_>>();
 
     Entity::insert_many(models).exec(db).await?;

@@ -437,45 +437,80 @@ fn build_vectorscan_matcher(rules: &[DetectionRule]) -> Result<VectorscanMatcher
     let patterns = rules
         .iter()
         .enumerate()
-        .map(|(idx, rule)| {
-            let literal = rule.rule_match.trim();
-            if literal.is_empty() {
-                anyhow::bail!(
-                    "invalid Vectorscan literal rule at {}:{} (title: {}). Rule content is empty. Vectorscan rules in KrakenWaf are treated as literal strings, not regex. Write the exact text you want to block.",
-                    rule.source,
-                    rule.line,
-                    rule.title,
-                );
-            }
-            if literal.as_bytes().contains(&0) {
-                anyhow::bail!(
-                    "invalid Vectorscan literal rule at {}:{} (title: {}). Rule content contains a NUL byte, which is not supported here. Rule content: {:?}",
-                    rule.source,
-                    rule.line,
-                    rule.title,
-                    rule.rule_match,
-                );
-            }
-
-            Ok(Pattern::new(
-                literal.as_bytes().to_vec(),
-                Flag::CASELESS | Flag::SINGLEMATCH,
-                Some(idx as u32),
-            ))
-        })
+        .map(|(idx, rule)| build_vectorscan_pattern(rule, idx))
         .collect::<Result<Vec<_>>>()?;
 
-    let db = BlockDatabase::new(patterns).map_err(|err| {
-        anyhow::anyhow!(
-            "failed to compile Vectorscan literal database from {} rules. Check rules/Vectorscan/strings2block.json for empty or malformed entries. Underlying error: {}",
-            rules.len(),
-            err
-        )
-    })?;
+    let db = match BlockDatabase::new(patterns) {
+        Ok(db) => db,
+        Err(err) => {
+            if let Some(detailed) = find_vectorscan_rule_error(rules) {
+                return Err(detailed);
+            }
+            return Err(anyhow::anyhow!(
+                "failed to compile Vectorscan database from {} rules. None of the rules failed in isolation, so the error likely depends on the full set or the active flags. Underlying error: {}",
+                rules.len(),
+                err
+            ));
+        }
+    };
+
     Ok(VectorscanMatcher {
         db,
         keywords: rules.to_vec(),
     })
+}
+
+#[cfg(feature = "vectorscan-engine")]
+fn build_vectorscan_pattern(rule: &DetectionRule, idx: usize) -> Result<Pattern> {
+    let literal = rule.rule_match.trim();
+    if literal.is_empty() {
+        anyhow::bail!(
+            "invalid Vectorscan rule #{} at {}:{} (title: {}). Rule content is empty. Vectorscan rules in KrakenWaf are pattern strings; if you want a literal match, write the exact text you want to block and escape special characters like ( ) [ ] {{ }} ? + * . | ^ $ when needed.",
+            idx + 1,
+            rule.source,
+            rule.line,
+            rule.title,
+        );
+    }
+    if literal.as_bytes().contains(&0) {
+        anyhow::bail!(
+            "invalid Vectorscan rule #{} at {}:{} (title: {}). Rule content contains a NUL byte, which is not supported here. Rule content: {:?}",
+            idx + 1,
+            rule.source,
+            rule.line,
+            rule.title,
+            rule.rule_match,
+        );
+    }
+
+    Ok(Pattern::new(
+        literal.as_bytes().to_vec(),
+        Flag::CASELESS | Flag::SINGLEMATCH,
+        Some(idx as u32),
+    ))
+}
+
+#[cfg(feature = "vectorscan-engine")]
+fn find_vectorscan_rule_error(rules: &[DetectionRule]) -> Option<anyhow::Error> {
+    for (idx, rule) in rules.iter().enumerate() {
+        let pattern = match build_vectorscan_pattern(rule, idx) {
+            Ok(pattern) => pattern,
+            Err(err) => return Some(err),
+        };
+
+        if let Err(err) = BlockDatabase::new(vec![pattern]) {
+            return Some(anyhow::anyhow!(
+                "failed to compile Vectorscan rule #{} at {}:{} (title: {}). Rule content: {:?}. Vectorscan rules in KrakenWaf are compiled with pattern syntax, not JSON regex syntax. If you meant a literal parenthesis or other metacharacter, escape it, for example 'sleep\\('. Underlying error: {}",
+                idx + 1,
+                rule.source,
+                rule.line,
+                rule.title,
+                rule.rule_match,
+                err
+            ));
+        }
+    }
+    None
 }
 
 #[cfg(feature = "vectorscan-engine")]

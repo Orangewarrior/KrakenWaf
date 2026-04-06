@@ -4,8 +4,8 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum KrakenError {
     /// Returned when a request body exceeds the configured route limit.
-    #[error("request body exceeded route limit of {limit} bytes")]
-    BodyTooLarge { limit: usize },
+//    #[error("request body exceeded route limit of {limit} bytes")]
+//    BodyTooLarge { limit: usize },
 
     /// Returned when the configured SNI map does not contain any usable default certificate.
     #[error("no default TLS certificate could be loaded")]

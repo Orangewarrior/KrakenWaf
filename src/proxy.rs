@@ -1,9 +1,7 @@
-
 use crate::{
     app::AppState,
     error::KrakenError,
     logging::{write_critical, SecurityEvent},
-    rules::Severity,
     waf::{Decision, Finding, InspectionContext},
 };
 use anyhow::{Context, Result};
@@ -22,6 +20,25 @@ pub struct ProxyClient {
     upstream: Url,
     internal_header_name: Option<HeaderName>,
 }
+
+#[derive(Debug)]
+enum BodyInspectionError {
+    TooLarge { limit: usize },
+    Blocked { finding: Finding, partial_body: Bytes },
+    Other(anyhow::Error),
+}
+
+impl std::fmt::Display for BodyInspectionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooLarge { limit } => write!(f, "request body exceeded route limit of {} bytes", limit),
+            Self::Blocked { .. } => write!(f, "request blocked during streaming inspection"),
+            Self::Other(err) => write!(f, "{err}"),
+        }
+    }
+}
+
+impl std::error::Error for BodyInspectionError {}
 
 impl ProxyClient {
     pub fn new(upstream: &str, timeout_secs: u64, allow_private_upstream: bool, internal_header_name: Option<String>) -> Result<Self> {
@@ -52,14 +69,15 @@ impl ProxyClient {
             method: method.to_string(),
             uri: uri.to_string(),
             path: path.clone(),
-            headers: headers_flat,
+            headers: headers_flat.clone(),
             body_limit,
         };
 
         match state.waf.inspect_early(&context).await {
             Decision::Allow => {}
             Decision::Block(finding) => {
-                return self.block_response(state, &context, finding).await;
+                let event = build_event(&context, &finding, None);
+                return self.block_response(state, event).await;
             }
         }
 
@@ -68,7 +86,8 @@ impl ProxyClient {
                 match state.waf.inspect_complete_payload(query.as_bytes()) {
                     Decision::Allow => {}
                     Decision::Block(finding) => {
-                        return self.block_response(state, &context, finding).await;
+                        let event = build_event(&context, &finding, None);
+                        return self.block_response(state, event).await;
                     }
                 }
             }
@@ -76,16 +95,24 @@ impl ProxyClient {
 
         let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut()).await {
             Ok(bytes) => bytes,
-            Err(err) => {
-                warn!(target: "krakenwaf", "body inspection failed: {err}");
+            Err(BodyInspectionError::TooLarge { limit: _ }) => {
                 return block_content_response(state, StatusCode::PAYLOAD_TOO_LARGE, "KrakenWaf blocked the request body");
+            }
+            Err(BodyInspectionError::Blocked { finding, partial_body }) => {
+                let event = build_event(&context, &finding, Some(&partial_body));
+                return self.block_response(state, event).await;
+            }
+            Err(BodyInspectionError::Other(err)) => {
+                warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
+                return block_content_response(state, StatusCode::BAD_REQUEST, "KrakenWaf could not inspect the request body");
             }
         };
 
         match state.waf.inspect_complete_payload(&body_bytes) {
             Decision::Allow => {}
             Decision::Block(finding) => {
-                return self.block_response(state, &context, finding).await;
+                let event = build_event(&context, &finding, Some(&body_bytes));
+                return self.block_response(state, event).await;
             }
         }
 
@@ -98,15 +125,26 @@ impl ProxyClient {
         }
     }
 
-    async fn block_response(&self, state: &AppState, ctx: &InspectionContext, finding: Finding) -> Response<Full<Bytes>> {
+    async fn block_response(&self, state: &AppState, event: SecurityEvent) -> Response<Full<Bytes>> {
         state.metrics.inc_blocked();
-        let event = SecurityEvent::from((&finding, ctx));
 
-        info!(target: "krakenwaf", title=%event.title, severity=%event.severity, ip=%event.client_ip, rule=%event.rule_match, "request blocked");
+        info!(
+            target: "krakenwaf",
+            title=%event.title,
+            severity=%event.severity,
+            cwe=%event.cwe,
+            engine=%event.engine,
+            ip=%event.client_ip,
+            method=%event.method,
+            uri=%event.uri,
+            fullpath_evidence=%event.fullpath_evidence,
+            rule=%event.rule_match,
+            rule_source=%event.rule_line_match,
+            reference_url=%event.reference_url,
+            "request blocked"
+        );
         write_critical(&state.logging, &event);
-        if matches!(event.severity, Severity::Critical) || event.title.contains("SQLi") || event.title.contains("RCE") {
-            state.store.enqueue(event.clone());
-        }
+        state.store.enqueue(event.clone());
 
         block_content_response(state, StatusCode::FORBIDDEN, "Blocked by KrakenWaf")
     }
@@ -154,15 +192,15 @@ async fn consume_and_inspect_body(
     state: &AppState,
     ctx: &InspectionContext,
     body: &mut Incoming,
-) -> Result<Bytes> {
+) -> std::result::Result<Bytes, BodyInspectionError> {
     let mut acc = BytesMut::new();
     let mut overlap = Vec::new();
 
     while let Some(frame) = body.frame().await {
-        let frame = frame?;
+        let frame = frame.map_err(|err| BodyInspectionError::Other(err.into()))?;
         if let Some(chunk) = frame.data_ref() {
             if acc.len() + chunk.len() > ctx.body_limit {
-                return Err(KrakenError::BodyTooLarge { limit: ctx.body_limit }.into());
+                return Err(BodyInspectionError::TooLarge { limit: ctx.body_limit });
             }
 
             let mut inspection_buf = BytesMut::with_capacity(overlap.len() + chunk.len());
@@ -175,16 +213,42 @@ async fn consume_and_inspect_body(
                     overlap = inspection_buf[inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..].to_vec();
                 }
                 Decision::Block(finding) => {
-                    let event = SecurityEvent::from((&finding, ctx));
-                    write_critical(&state.logging, &event);
-                    state.store.enqueue(event);
-                    return Err(anyhow::anyhow!("request blocked during streaming inspection"));
+                    let mut partial = BytesMut::with_capacity(acc.len() + chunk.len());
+                    partial.extend_from_slice(&acc);
+                    partial.extend_from_slice(chunk);
+                    return Err(BodyInspectionError::Blocked { finding, partial_body: partial.freeze() });
                 }
             }
         }
     }
 
     Ok(acc.freeze())
+}
+
+fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>) -> SecurityEvent {
+    let request_payload = format_full_request(ctx, body, &finding.request_payload);
+    SecurityEvent::from_finding(finding, ctx, request_payload)
+}
+
+fn format_full_request(ctx: &InspectionContext, body: Option<&Bytes>, matched_payload: &str) -> String {
+    let mut out = String::new();
+    out.push_str(&ctx.method);
+    out.push(' ');
+    out.push_str(&ctx.uri);
+    out.push_str(" HTTP/1.1\n");
+    if !ctx.headers.is_empty() {
+        out.push_str(&ctx.headers);
+        if !ctx.headers.ends_with('\n') {
+            out.push('\n');
+        }
+    }
+    out.push('\n');
+    match body {
+        Some(bytes) if !bytes.is_empty() => out.push_str(&String::from_utf8_lossy(bytes)),
+        _ if !matched_payload.is_empty() => out.push_str(matched_payload),
+        _ => {}
+    }
+    out
 }
 
 fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()> {
@@ -220,7 +284,8 @@ fn flatten_headers(headers: &HeaderMap) -> String {
         .iter()
         .map(|(name, value)| format!("{}: {}", name.as_str(), value.to_str().unwrap_or("<binary>")))
         .collect::<Vec<_>>()
-        .join("\n")
+        .join("
+")
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {

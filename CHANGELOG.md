@@ -1,3 +1,28 @@
+## 2.7.16
+
+- Refactored security-event persistence and logging so blocked GET and POST requests now emit a complete structured event with `engine`, `reference_url`, `fullpath_evidence`, `method`, `uri`, `rule_match`, and `rule_line_match` in the text and JSON logs.
+- Fixed the body-streaming block path to propagate the original finding instead of collapsing it into a generic warning, so Vectorscan and regex POST detections now persist the same rich context as early/query detections.
+- Reworked the SQLite `vulnerabilities` schema for forensics and CSIRT workflows:
+  - `title VARCHAR(256)`
+  - `severity VARCHAR(32)`
+  - `cwe VARCHAR(128)`
+  - `occurred_at TIMESTAMP`
+  - `rule_line_match VARCHAR(256)`
+  - `client_ip VARCHAR(64)`
+  - `http_method VARCHAR(16)`
+  - `engine VARCHAR(32)`
+  - `request_uri TEXT`
+  - `fullpath_evidence TEXT`
+  - `request_payload TEXT`
+- Added an automatic schema migration from the older all-`TEXT` table to the richer v2 table, preserving prior rows and inferring the engine where possible.
+- Kept the full raw request (request line + headers + captured payload) only in SQLite for forensics, while intentionally excluding it from JSONL and raw line logs to avoid oversized log lines.
+
+## 2.7.15
+
+- Improved Vectorscan rule compilation errors to report the exact failing rule number, source file, source line, title, and `rule_match` content.
+- Added an isolated per-rule fallback check when the full Vectorscan database fails to compile, so malformed patterns are easier to identify.
+- Clarified Vectorscan error guidance to explain that metacharacters such as `(` may need escaping, with an example like `sleep\(`.
+
 ## 2.7.14
 - fixed Vectorscan matcher compilation against `vectorscan-rs 0.0.6` by removing an invalid `.map_err()` call on `Pattern::new`, which returns a `Pattern` directly
 - kept Vectorscan rules as literals instead of regex-escaped patterns
