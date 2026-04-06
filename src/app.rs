@@ -4,6 +4,7 @@ use crate::{
     logging::LoggingHandles,
     metrics::WafMetrics,
     proxy::ProxyClient,
+    response_headers::ResponseHeaderPolicy,
     storage::SqliteStore,
     waf::WafEngine,
 };
@@ -22,4 +23,5 @@ pub struct AppState {
     pub rules_dir: PathBuf,
     pub block_response_body: Option<Bytes>,
     pub block_response_content_type: String,
+    pub response_header_policy: Arc<ResponseHeaderPolicy>,
 }

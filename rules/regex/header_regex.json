@@ -1,12 +1,140 @@
 {
   "rules": [
     {
-      "title": "Scanner header regex",
+      "title": "Scanner user agent",
       "severity": "medium",
-      "cwe": "CWE-113",
-      "description": "Detects common offensive scanner fingerprints in request headers.",
-      "url": "https://owasp.org",
-      "rule_match": "(?i)(sqlmap|acunetix|nikto)"
+      "cwe": "CWE-16",
+      "description": "Detects common offensive scanners in headers.",
+      "url": "https://owasp.org/www-community/attacks/Web_Application_Firewall",
+      "rule_match": "(?i)(?:sqlmap|acunetix|nikto|nessus|nuclei|masscan|zgrab|wpscan|dirbuster)"
+    },
+    {
+      "title": "SSRF forwarding header localhost",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects localhost/internal targets in forwarding headers.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:x-forwarded-(?:for|host|server|proto):\\s*(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|172\\.(?:1[6-9]|2\\d|3[0-1])\\.|192\\.168\\.))"
+    },
+    {
+      "title": "Host header anomaly",
+      "severity": "medium",
+      "cwe": "CWE-444",
+      "description": "Detects malformed or duplicate host headers flattened into evidence.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?im)(^host:\\s*$|host:\\s*[^\\s]+\\s+host:|host:\\s*(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0)\\s*$)"
+    },
+    {
+      "title": "CRLF smuggling header",
+      "severity": "high",
+      "cwe": "CWE-444",
+      "description": "Detects CRLF/header injection in flattened headers.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:%0d%0a|\\r\\n)(?:host:|content-length:|transfer-encoding:|x-forwarded-)"
+    },
+    {
+      "title": "Suspicious content type multipart boundary",
+      "severity": "low",
+      "cwe": "CWE-16",
+      "description": "Detects malformed multipart boundaries and content types often used in fuzzing.",
+      "url": "https://owasp.org/www-community/attacks/Web_Application_Firewall",
+      "rule_match": "(?i)(?:content-type:\\s*multipart/form-data;\\s*boundary=\\s*$|content-type:\\s*application/x-www-form-urlencoded\\s*;\\s*charset=\\s*utf-7)"
+    },
+    {
+      "title": "Suspicious request smuggling header combo",
+      "severity": "high",
+      "cwe": "CWE-444",
+      "description": "Detects header combinations associated with request smuggling.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:transfer-encoding:\\s*chunked.*content-length:|content-length:.*transfer-encoding:\\s*chunked)"
+    },
+    {
+      "title": "Proxy abuse header",
+      "severity": "medium",
+      "cwe": "CWE-441",
+      "description": "Detects suspicious proxy override headers.",
+      "url": "https://cwe.mitre.org/data/definitions/441.html",
+      "rule_match": "(?i)(?:x-original-url:|x-rewrite-url:|x-http-method-override:|x-method-override:|x-forwarded-uri:)"
+    },
+    {
+      "title": "Metadata host header alias",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects cloud metadata hostnames in host-like headers.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:host:.*(?:metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.169\\.254)|x-forwarded-host:.*(?:metadata\\.google\\.internal|169\\.254\\.169\\.254))"
+    },
+    {
+      "title": "Desync CL zero header",
+      "severity": "medium",
+      "cwe": "CWE-444",
+      "description": "Detects suspicious zero-length CL with upgrade semantics.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:content-length:\\s*0.*(?:connection:\\s*keep-alive|upgrade:))"
+    },
+    {
+      "title": "Suspicious websocket override header",
+      "severity": "medium",
+      "cwe": "CWE-444",
+      "description": "Detects forged websocket upgrade hints in odd contexts.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:upgrade:\\s*websocket.*x-http-method-override:|sec-websocket-key:.*content-length:)"
+    },
+    {
+      "title": "Suspicious auth header tooling",
+      "severity": "medium",
+      "cwe": "CWE-287",
+      "description": "Detects common offensive auth or bearer token fuzz markers.",
+      "url": "https://cwe.mitre.org/data/definitions/287.html",
+      "rule_match": "(?i)(?:authorization:\\s*(?:basic\\s+YWRtaW46|bearer\\s+(?:null|undefined|test|fuzz)))"
+    },
+    {
+      "title": "Request smuggling transfer coding",
+      "severity": "medium",
+      "cwe": "CWE-444",
+      "description": "Detects obsolete or stacked transfer codings.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:transfer-encoding:\\s*(?:chunked\\s*,|gzip\\s*,\\s*chunked|chunked\\s*,\\s*gzip))"
+    },
+    {
+      "title": "Malformed accept header fuzzing",
+      "severity": "low",
+      "cwe": "CWE-20",
+      "description": "Detects malformed Accept headers used in fuzzing.",
+      "url": "https://cwe.mitre.org/data/definitions/20.html",
+      "rule_match": "(?i)(?:accept:\\s*\\*/\\*;q=0(?:\\.0+)?\\s*,\\s*\\*/\\*)"
+    },
+    {
+      "title": "Suspicious origin header local",
+      "severity": "medium",
+      "cwe": "CWE-346",
+      "description": "Detects localhost/private origins in Origin headers.",
+      "url": "https://cwe.mitre.org/data/definitions/346.html",
+      "rule_match": "(?i)(?:origin:\\s*https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|192\\.168\\.))"
+    },
+    {
+      "title": "Suspicious referer local",
+      "severity": "medium",
+      "cwe": "CWE-346",
+      "description": "Detects localhost/private referers in Referer headers.",
+      "url": "https://cwe.mitre.org/data/definitions/346.html",
+      "rule_match": "(?i)(?:referer:\\s*https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|192\\.168\\.))"
+    },
+    {
+      "title": "Suspicious XXE content type",
+      "severity": "medium",
+      "cwe": "CWE-611",
+      "description": "Detects XML content types often paired with XXE.",
+      "url": "https://cwe.mitre.org/data/definitions/611.html",
+      "rule_match": "(?i)(?:content-type:\\s*(?:text/xml|application/xml|application/soap\\+xml))"
+    },
+    {
+      "title": "Suspicious debug headers",
+      "severity": "low",
+      "cwe": "CWE-489",
+      "description": "Detects debug headers or verbose tooling fingerprints.",
+      "url": "https://cwe.mitre.org/data/definitions/489.html",
+      "rule_match": "(?i)(?:x-debug:|x-php-ob-level:|x-originating-ip:|x-runtime:)"
     }
   ]
 }

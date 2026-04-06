@@ -1,7 +1,7 @@
 
 [package]
 name = "krakenwaf"
-version = "2.7.16"
+version = "2.7.19"
 edition = "2021"
 authors = ["Orangewarrior"]
 description = "TLS-aware Rust WAF inspired by OctopusWAF"
@@ -9,7 +9,7 @@ license = "MIT"
 
 [features]
 default = []
-libinjection-engine = ["dep:libinjection"]
+libinjection-engine = []
 vectorscan-engine = ["dep:vectorscan"]
 
 [dependencies]
@@ -44,9 +44,11 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 url = "2.5"
-libinjection = { git = "https://github.com/libinjection/libinjection-rs", optional = true }
 vectorscan = { package = "vectorscan-rs", version = "0.0.6", optional = true }
 
 [dev-dependencies]
 pretty_assertions = "1.4"
 tempfile = "3.13"
+
+[build-dependencies]
+cc = "1.2"

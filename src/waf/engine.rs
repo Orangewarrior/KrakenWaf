@@ -9,7 +9,7 @@ use anyhow::Result;
 use chrono::Utc;
 use ipnet::IpNet;
 #[cfg(feature = "libinjection-engine")]
-use libinjection::{sqli, xss};
+use crate::ffi::libinjection;
 use std::{borrow::Cow, net::IpAddr, path::Path, sync::{Arc, RwLock}, time::Duration};
 #[cfg(feature = "vectorscan-engine")]
 use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
@@ -75,7 +75,8 @@ pub struct WafEngine {
     rate_limiter: Arc<RateLimiter>,
     matchers: RwLock<EngineMatchers>,
     blocklist_ip_enabled: bool,
-    libinjection_enabled: bool,
+    libinjection_sqli_enabled: bool,
+    libinjection_xss_enabled: bool,
     vectorscan_enabled: bool,
     metrics: Arc<WafMetrics>,
 }
@@ -85,7 +86,8 @@ impl WafEngine {
         rules: Arc<RuleSet>,
         rate_limit_per_minute: u32,
         blocklist_ip_enabled: bool,
-        libinjection_enabled: bool,
+        libinjection_sqli_enabled: bool,
+        libinjection_xss_enabled: bool,
         vectorscan_enabled: bool,
         snapshot_path: std::path::PathBuf,
         metrics: Arc<WafMetrics>,
@@ -98,7 +100,8 @@ impl WafEngine {
             rate_limiter,
             matchers: RwLock::new(matchers),
             blocklist_ip_enabled,
-            libinjection_enabled,
+            libinjection_sqli_enabled,
+            libinjection_xss_enabled,
             vectorscan_enabled,
             metrics,
         })
@@ -214,10 +217,15 @@ impl WafEngine {
                 return Decision::Block(finding);
             }
 
-            if self.libinjection_enabled {
-                #[cfg(feature = "libinjection-engine")]
-                {
-                    if let Some(finding) = libinjection_match(view, text.as_ref()) {
+            #[cfg(feature = "libinjection-engine")]
+            {
+                if self.libinjection_sqli_enabled || self.libinjection_xss_enabled {
+                    if let Some(finding) = libinjection_match(
+                        view.as_bytes(),
+                        text.as_ref(),
+                        self.libinjection_sqli_enabled,
+                        self.libinjection_xss_enabled,
+                    ) {
                         return Decision::Block(finding);
                     }
                 }
@@ -394,35 +402,42 @@ fn parse_ip_net(value: &str) -> Option<IpNet> {
 }
 
 #[cfg(feature = "libinjection-engine")]
-fn libinjection_match(normalized_payload: &str, original_payload: &str) -> Option<Finding> {
-    let data = normalized_payload;
-
-    if sqli(data) {
-        return Some(Finding {
-            title: "Libinjection SQLi detection".into(),
-            severity: Severity::Critical,
-            cwe: "CWE-89".into(),
-            description: "libinjection-rs flagged the payload as probable SQL injection.".into(),
-            reference_url: "https://github.com/libinjection/libinjection-rs".into(),
-            rule_match: "libinjection::sqli".into(),
-            rule_line_match: "runtime".into(),
-            request_payload: truncate_payload(original_payload).into_owned(),
-            timestamp: Utc::now().to_rfc3339(),
-        });
+fn libinjection_match(
+    normalized_payload: &[u8],
+    original_payload: &str,
+    enable_sqli: bool,
+    enable_xss: bool,
+) -> Option<Finding> {
+    if enable_sqli {
+        if let Some(hit) = libinjection::detect_sqli(normalized_payload) {
+            return Some(Finding {
+                title: "LibInjection SQLi detection".into(),
+                severity: Severity::Critical,
+                cwe: "CWE-89".into(),
+                description: "Vendored C libinjection-compatible engine flagged the payload as probable SQL injection.".into(),
+                reference_url: "https://github.com/client9/libinjection".into(),
+                rule_match: format!("libinjection::sqli:{}", hit.fingerprint.unwrap_or_else(|| "match".into())),
+                rule_line_match: "runtime:ffi/libinjection".into(),
+                request_payload: truncate_payload(original_payload).into_owned(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
     }
 
-    if xss(data) {
-        return Some(Finding {
-            title: "Libinjection XSS detection".into(),
-            severity: Severity::High,
-            cwe: "CWE-79".into(),
-            description: "libinjection-rs flagged the payload as probable cross-site scripting.".into(),
-            reference_url: "https://github.com/libinjection/libinjection-rs".into(),
-            rule_match: "libinjection::xss".into(),
-            rule_line_match: "runtime".into(),
-            request_payload: truncate_payload(original_payload).into_owned(),
-            timestamp: Utc::now().to_rfc3339(),
-        });
+    if enable_xss {
+        if let Some(hit) = libinjection::detect_xss(normalized_payload) {
+            return Some(Finding {
+                title: "LibInjection XSS detection".into(),
+                severity: Severity::High,
+                cwe: "CWE-79".into(),
+                description: "Vendored C libinjection-compatible engine flagged the payload as probable cross-site scripting.".into(),
+                reference_url: "https://github.com/client9/libinjection".into(),
+                rule_match: format!("libinjection::xss:{}", hit.fingerprint.unwrap_or_else(|| "match".into())),
+                rule_line_match: "runtime:ffi/libinjection".into(),
+                request_payload: truncate_payload(original_payload).into_owned(),
+                timestamp: Utc::now().to_rfc3339(),
+            });
+        }
     }
 
     None

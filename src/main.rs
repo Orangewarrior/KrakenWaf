@@ -3,9 +3,11 @@ mod app;
 mod banner;
 mod cli;
 mod error;
+mod ffi;
 mod logging;
 mod metrics;
 mod proxy;
+mod response_headers;
 mod rules;
 mod server;
 mod storage;
@@ -18,6 +20,7 @@ use bytes::Bytes;
 use clap::Parser;
 use cli::Cli;
 use metrics::WafMetrics;
+use response_headers::ResponseHeaderPolicy;
 use std::{path::PathBuf, sync::Arc};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info};
@@ -31,6 +34,10 @@ async fn main() -> Result<()> {
     println!("{}", banner::banner());
 
     let logging = Arc::new(logging::init_logging(&root_dir, cli.verbose)?);
+    let response_header_policy = Arc::new(match cli.header_protection_injection.as_deref() {
+        Some(path) => ResponseHeaderPolicy::from_file(&PathBuf::from(path))?,
+        None => ResponseHeaderPolicy::default(),
+    });
     let metrics = Arc::new(WafMetrics::default());
     let rules_root = PathBuf::from(&cli.rules_dir);
     let rules = Arc::new(rules::RuleSet::from_dir(&rules_root)?);
@@ -39,7 +46,8 @@ async fn main() -> Result<()> {
         rules,
         cli.rate_limit_per_minute,
         cli.blocklist_ip,
-        cli.enable_libinjection,
+        cli.libinjection_sqli_enabled(),
+        cli.libinjection_xss_enabled(),
         cli.enable_vectorscan,
         root_dir.join("logs").join("db").join("rate_limit_state.json"),
         metrics.clone(),
@@ -62,6 +70,7 @@ async fn main() -> Result<()> {
         rules_dir: rules_root.clone(),
         block_response_body,
         block_response_content_type,
+        response_header_policy,
     });
 
     spawn_rule_reload(state.clone());
@@ -69,7 +78,7 @@ async fn main() -> Result<()> {
     let tls_config = tls::build_tls_config(PathBuf::from(&cli.sni_map).as_path())?;
     let tls_acceptor = TlsAcceptor::from(tls_config);
 
-    info!(target: "krakenwaf", libinjection_enabled=cli.enable_libinjection, vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, upstream=%cli.upstream, "KrakenWaf initialized");
+    info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, upstream=%cli.upstream, "KrakenWaf initialized");
 
     server::run(cli.listen, tls_acceptor, state).await
 }

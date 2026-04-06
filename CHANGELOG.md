@@ -1,3 +1,24 @@
+
+## 2.7.19
+
+- added focused regex packs for LFI/RFI/traversal, SSRF, command injection, protocol anomalies, and suspicious header patterns
+- added optional response header protection injection via `--header-protection-injection`
+- shipped five response header policy templates under `rules/headers_http/`
+- injects configured response hardening headers on forwarded and local responses while skipping websocket upgrade responses
+- fixed response/header formatting regressions in proxy helpers
+
+## 2.7.18
+- Fixed vendored libinjection FFI static linking by explicitly linking the cc-built archive from the Rust bindings.
+- Silenced unused internal libinjection detection warnings.
+
+## 2.7.17
+
+- Replaced the deprecated external `libinjection-rs` build chain with an internal vendored C FFI module under `ffi/libinjection/vendor`, removing the old Python 2 / make dependency from KrakenWaf builds.
+- Added versioned Rust bindings in `src/ffi/libinjection/bindings.rs` and a safe wrapper API in `src/ffi/libinjection/mod.rs`.
+- Added a `build.rs` that uses `cc` only when the `libinjection-engine` feature is enabled.
+- Added independent runtime flags `--enable-libinjection-sqli` and `--enable-libinjection-xss` while keeping the legacy hidden `--enable-libinjection` flag as a compatibility shortcut.
+- Integrated libinjection-compatible SQLi and XSS detections into the existing finding / JSONL / raw / SQLite logging pipeline so matches now produce normal structured block events.
+
 ## 2.7.16
 
 - Refactored security-event persistence and logging so blocked GET and POST requests now emit a complete structured event with `engine`, `reference_url`, `fullpath_evidence`, `method`, `uri`, `rule_match`, and `rule_line_match` in the text and JSON logs.

@@ -1,4 +1,3 @@
-
 use clap::{ArgAction, Parser};
 use std::net::SocketAddr;
 
@@ -18,8 +17,14 @@ pub struct Cli {
     #[arg(long, default_value = "./rules/tls/sni_map.csv")]
     pub sni_map: String,
 
-    #[arg(long, action = ArgAction::SetTrue)]
+    #[arg(long, action = ArgAction::SetTrue, hide = true)]
     pub enable_libinjection: bool,
+
+    #[arg(long = "enable-libinjection-sqli", action = ArgAction::SetTrue)]
+    pub enable_libinjection_sqli: bool,
+
+    #[arg(long = "enable-libinjection-xss", action = ArgAction::SetTrue)]
+    pub enable_libinjection_xss: bool,
 
     #[arg(long, action = ArgAction::SetTrue)]
     pub enable_vectorscan: bool,
@@ -50,4 +55,17 @@ pub struct Cli {
 
     #[arg(long, default_value_t = 30)]
     pub connection_timeout_secs: u64,
+
+    #[arg(long = "header-protection-injection")]
+    pub header_protection_injection: Option<String>,
+}
+
+impl Cli {
+    pub fn libinjection_sqli_enabled(&self) -> bool {
+        self.enable_libinjection || self.enable_libinjection_sqli
+    }
+
+    pub fn libinjection_xss_enabled(&self) -> bool {
+        self.enable_libinjection || self.enable_libinjection_xss
+    }
 }

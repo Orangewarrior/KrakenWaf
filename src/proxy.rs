@@ -6,7 +6,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
-use http::{header::HOST, HeaderMap, HeaderName, Method, Request, Response, StatusCode, Uri};
+use http::{header::{HOST, CONNECTION, UPGRADE}, HeaderMap, HeaderName, Method, Request, Response, StatusCode, Uri};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use reqwest::{redirect::Policy, Client};
@@ -116,11 +116,13 @@ impl ProxyClient {
             }
         }
 
-        match self.forward_request(method, uri, req.headers(), body_bytes).await {
+        match self.forward_request(state, method, uri, req.headers(), body_bytes).await {
             Ok(response) => response,
             Err(err) => {
                 error!(target: "krakenwaf", "upstream proxy failure: {err:#}");
-                plain_response(StatusCode::BAD_GATEWAY, "KrakenWaf upstream failure")
+                let mut response = plain_response(StatusCode::BAD_GATEWAY, "KrakenWaf upstream failure");
+                apply_response_policy(state, &mut response);
+                response
             }
         }
     }
@@ -151,6 +153,7 @@ impl ProxyClient {
 
     async fn forward_request(
         &self,
+        state: &AppState,
         method: Method,
         uri: Uri,
         headers: &HeaderMap,
@@ -184,7 +187,9 @@ impl ProxyClient {
             }
         }
         let bytes = response.bytes().await?;
-        Ok(response_builder.body(Full::new(bytes)).unwrap())
+        let mut built = response_builder.body(Full::new(bytes)).unwrap();
+        apply_response_policy(state, &mut built);
+        Ok(built)
     }
 }
 
@@ -284,8 +289,7 @@ fn flatten_headers(headers: &HeaderMap) -> String {
         .iter()
         .map(|(name, value)| format!("{}: {}", name.as_str(), value.to_str().unwrap_or("<binary>")))
         .collect::<Vec<_>>()
-        .join("
-")
+        .join("\n")
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
@@ -302,15 +306,31 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
     )
 }
 
+
+fn apply_response_policy(state: &AppState, response: &mut Response<Full<Bytes>>) {
+    let is_websocket_upgrade = response.status() == StatusCode::SWITCHING_PROTOCOLS
+        || response.headers().contains_key(UPGRADE)
+        || response
+            .headers()
+            .get(CONNECTION)
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.to_ascii_lowercase().contains("upgrade"))
+            .unwrap_or(false);
+    state.response_header_policy.apply(response.headers_mut(), is_websocket_upgrade);
+}
+
 fn block_content_response(state: &AppState, status: StatusCode, fallback_message: &str) -> Response<Full<Bytes>> {
-    if let Some(body) = &state.block_response_body {
-        return Response::builder()
+    let mut response = if let Some(body) = &state.block_response_body {
+        Response::builder()
             .status(status)
             .header("content-type", state.block_response_content_type.as_str())
             .body(Full::new(body.clone()))
-            .unwrap();
-    }
-    plain_response(status, fallback_message)
+            .unwrap()
+    } else {
+        plain_response(status, fallback_message)
+    };
+    apply_response_policy(state, &mut response);
+    response
 }
 
 pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {

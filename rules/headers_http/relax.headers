@@ -1,0 +1,10 @@
+# Low-friction baseline for legacy apps
+X-Frame-Options: SAMEORIGIN
+X-Content-Type-Options: nosniff
+Referrer-Policy: strict-origin-when-cross-origin
+Content-Security-Policy: default-src 'self'; base-uri 'self'; frame-ancestors 'self'; object-src 'none'; form-action 'self'; upgrade-insecure-requests
+Strict-Transport-Security: max-age=31536000
+Permissions-Policy: geolocation=(), camera=(), microphone=()
+Cross-Origin-Opener-Policy: same-origin-allow-popups
+Cross-Origin-Resource-Policy: same-site
+Cross-Origin-Embedder-Policy: unsafe-none

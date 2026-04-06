@@ -1,28 +1,268 @@
 {
   "rules": [
     {
-      "title": "RCE command regex",
+      "title": "Command injection separators body",
       "severity": "critical",
       "cwe": "CWE-78",
-      "description": "Detects direct command execution patterns in request bodies.",
+      "description": "Detects shell metacharacters combined with common execution primitives in request bodies.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(cmd(\\.exe)?\\s+/c|powershell(?:\\.exe)?\\s+-enc|/bin/sh\\s+-c|bash\\s+-c|wget\\s+https?://|curl\\s+https?://|nc\\s+-e)"
+      "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd))"
     },
     {
-      "title": "Stored or reflected XSS regex",
-      "severity": "high",
-      "cwe": "CWE-79",
-      "description": "Detects obvious script tags and javascript event handlers in body content.",
-      "url": "https://cwe.mitre.org/data/definitions/79.html",
-      "rule_match": "(?i)(<script[^>]*>|on(?:error|load|mouseover)\\s*=|javascript:)"
-    },
-    {
-      "title": "SQLi regex body",
+      "title": "Command substitution body",
       "severity": "critical",
-      "cwe": "CWE-89",
-      "description": "Detects common SQL injection probes in request bodies, including boolean bypass, UNION SELECT and sleep-based payloads.",
-      "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "(?i)((?:'|%27)\\s*(?:or|and)\\s*(?:'1'='1|1=1)|union(?:/\\*.*?\\*/|\\s)+select|information_schema|sleep\\s*\\()"
+      "cwe": "CWE-78",
+      "description": "Detects command substitution in body payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:\\$\\((?:id|whoami|uname|curl|wget|bash|sh)|`(?:id|whoami|uname|curl|wget|bash|sh))"
+    },
+    {
+      "title": "Shell downloader body",
+      "severity": "high",
+      "cwe": "CWE-78",
+      "description": "Detects common downloader command chains in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:wget\\s+https?://|curl\\s+-[fsSLoO].*https?://|powershell(?:\\.exe)?\\s+-enc|certutil(?:\\.exe)?\\s+-urlcache\\s+-split\\s+-f)"
+    },
+    {
+      "title": "Reverse shell body",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects reverse shell primitives in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:nc\\s+-e|bash\\s+-i\\s*>&|/dev/tcp/\\d{1,3}(?:\\.\\d{1,3}){3}/\\d+|python(?:3)?\\s+-c\\s+[\"\\'].*socket)"
+    },
+    {
+      "title": "LFI file disclosure body",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects direct references to sensitive files in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|boot\\.ini|win\\.ini|\\\\windows\\\\system32)"
+    },
+    {
+      "title": "Traversal body encoded",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects traversal sequences in body payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\|%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f)"
+    },
+    {
+      "title": "PHP wrapper body",
+      "severity": "high",
+      "cwe": "CWE-98",
+      "description": "Detects dangerous PHP wrapper usage in body payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/98.html",
+      "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)"
+    },
+    {
+      "title": "RFI body remote include",
+      "severity": "high",
+      "cwe": "CWE-98",
+      "description": "Detects remote include style body parameters.",
+      "url": "https://cwe.mitre.org/data/definitions/98.html",
+      "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)"
+    },
+    {
+      "title": "SSRF localhost body",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "description": "Detects localhost SSRF targets in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))"
+    },
+    {
+      "title": "SSRF private body",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "description": "Detects internal/private IPv4 SSRF targets in body.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))"
+    },
+    {
+      "title": "SSRF cloud metadata body",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "description": "Detects cloud metadata endpoints in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:metadata\\.google\\.internal|100\\.100\\.100\\.200|latest/meta-data|169\\.254\\.170\\.2)"
+    },
+    {
+      "title": "File and gopher schemes body",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects dangerous URL schemes in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)"
+    },
+    {
+      "title": "SMTP or internal protocol abuse body",
+      "severity": "medium",
+      "cwe": "CWE-918",
+      "description": "Detects unusual callback protocols in body payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:ldap://|ldaps://|rmi://|dns://|smtp://|imap://|pop3://|tftp://)"
+    },
+    {
+      "title": "Deserialization gadget body",
+      "severity": "high",
+      "cwe": "CWE-502",
+      "description": "Detects serialized object markers and gadget hints.",
+      "url": "https://cwe.mitre.org/data/definitions/502.html",
+      "rule_match": "(?i)(?:O:\\d+:\"[A-Za-z_\\\\]+\"|rO0AB|__reduce__|java\\.lang\\.Runtime|TemplatesImpl|ysoserial)"
+    },
+    {
+      "title": "Template injection body",
+      "severity": "high",
+      "cwe": "CWE-94",
+      "description": "Detects obvious SSTI expressions in body payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/94.html",
+      "rule_match": "(?i)(?:\\{\\{\\s*7\\s*\\*\\s*7\\s*\\}\\}|\\$\\{(?:7\\*7|jndi:)|<%=|\\{\\%.*\\%\\}|\\#set\\()"
+    },
+    {
+      "title": "Protocol smuggling body",
+      "severity": "medium",
+      "cwe": "CWE-444",
+      "description": "Detects CRLF/header smuggling primitives in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:%0d%0a|\\r\\n)(?:host:|content-length:|transfer-encoding:|x-forwarded-)"
+    },
+    {
+      "title": "SSRF redirect parameter body",
+      "severity": "medium",
+      "cwe": "CWE-601",
+      "description": "Detects open redirect/SSRF parameter values in bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/601.html",
+      "rule_match": "(?i)(?:\\b(?:url|uri|next|redirect|dest|continue|return|endpoint)=\\s*(?:https?://|//|file://|gopher://))"
+    },
+    {
+      "title": "Archive traversal body",
+      "severity": "medium",
+      "cwe": "CWE-22",
+      "description": "Detects Zip Slip style relative extraction paths in bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:\\.\\./.*\\.(?:jsp|php|aspx|war|jar)|\\.{2}(?:/|\\\\).*(?:web\\.xml|application\\.properties))"
+    },
+    {
+      "title": "Known scanner body",
+      "severity": "medium",
+      "cwe": "CWE-16",
+      "description": "Detects common scanner strings in body content.",
+      "url": "https://owasp.org/www-community/attacks/Web_Application_Firewall",
+      "rule_match": "(?i)(?:sqlmap|acunetix|nikto|nessus|nuclei|masscan|zgrab)"
+    },
+    {
+      "title": "Suspicious XML external entity body",
+      "severity": "high",
+      "cwe": "CWE-611",
+      "description": "Detects classic XXE primitives in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/611.html",
+      "rule_match": "(?i)(?:<!DOCTYPE\\s+[^>]+\\s+\\[|<!ENTITY\\s+[^>]+SYSTEM\\s+[\"\\'](?:file|http|https|ftp)://)"
+    },
+    {
+      "title": "Suspicious log4shell body",
+      "severity": "critical",
+      "cwe": "CWE-94",
+      "description": "Detects JNDI lookup expressions in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/94.html",
+      "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)"
+    },
+    {
+      "title": "Windows shell body",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects cmd.exe or powershell execution markers.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:cmd(?:\\.exe)?\\s+/c|powershell(?:\\.exe)?\\s+-enc|powershell(?:\\.exe)?\\s+-nop)"
+    },
+    {
+      "title": "Unix shell body",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects direct Unix shell invocation markers.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:/bin/(?:sh|bash)\\s+-c|sh\\s+-c|bash\\s+-c)"
+    },
+    {
+      "title": "Container escape body",
+      "severity": "medium",
+      "cwe": "CWE-250",
+      "description": "Detects access to container or orchestrator secrets.",
+      "url": "https://cwe.mitre.org/data/definitions/250.html",
+      "rule_match": "(?i)(?:docker\\.sock|/var/run/secrets/kubernetes\\.io/serviceaccount|/run/secrets/)"
+    },
+    {
+      "title": "Unsafe file upload body",
+      "severity": "medium",
+      "cwe": "CWE-434",
+      "description": "Detects executable upload extensions in multipart names.",
+      "url": "https://cwe.mitre.org/data/definitions/434.html",
+      "rule_match": "(?i)(?:filename\\s*=\\s*\"[^\"]+\\.(?:php\\d*|phtml|phar|jsp|jspx|asp|aspx|cfm|cgi|pl|sh|war|jar)\")"
+    },
+    {
+      "title": "Path traversal zip slip body",
+      "severity": "medium",
+      "cwe": "CWE-22",
+      "description": "Detects archive member traversal paths.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:filename\\s*=\\s*\"(?:\\.\\./|\\.\\.\\\\))"
+    },
+    {
+      "title": "Dangerous binary fetch body",
+      "severity": "high",
+      "cwe": "CWE-494",
+      "description": "Detects package manager driven remote installs.",
+      "url": "https://cwe.mitre.org/data/definitions/494.html",
+      "rule_match": "(?i)(?:apt(?:-get)?\\s+install\\s+|yum\\s+install\\s+|dnf\\s+install\\s+|pip(?:3)?\\s+install\\s+https?://)"
+    },
+    {
+      "title": "OCI metadata SSRF body",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "description": "Detects OCI metadata endpoints in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:opc/v2/instance/|openstack/latest/meta_data\\.json|computeMetadata/v1/)"
+    },
+    {
+      "title": "GraphQL introspection body",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "description": "Detects GraphQL introspection probes in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)(?:__schema|__type|IntrospectionQuery)"
+    },
+    {
+      "title": "Server-side include body",
+      "severity": "medium",
+      "cwe": "CWE-97",
+      "description": "Detects SSI directives in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/97.html",
+      "rule_match": "(?i)(?:<!--#(?:exec|include|echo|printenv)\\s+)"
+    },
+    {
+      "title": "Localhost callback body",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects localhost callback parameters in body.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:\\b(?:callback|webhook|feed|proxy|fetch|target|host)=\\s*(?:https?://)?(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0))"
+    },
+    {
+      "title": "SSRF unix socket body",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects unix socket SSRF notations in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:unix:(?://)?/|http\\+unix://|curl\\s+--unix-socket)"
+    },
+    {
+      "title": "Header smuggling body",
+      "severity": "medium",
+      "cwe": "CWE-444",
+      "description": "Detects HTTP/2 or transfer encoding smuggling hints in body.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:transfer-encoding\\s*:\\s*chunked|content-length\\s*:\\s*\\d+.*transfer-encoding)"
     }
   ]
 }

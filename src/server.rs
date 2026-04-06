@@ -1,4 +1,3 @@
-
 use crate::{app::AppState, proxy::plain_response};
 use anyhow::Result;
 use bytes::Bytes;
@@ -63,14 +62,18 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
 
 async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String) -> Response<Full<Bytes>> {
     if req.uri().path() == "/__krakenwaf/health" {
-        return plain_response(StatusCode::OK, "KrakenWaf OK");
+        let mut response = plain_response(StatusCode::OK, "KrakenWaf OK");
+        state.response_header_policy.apply(response.headers_mut(), false);
+        return response;
     }
     if req.uri().path() == "/metrics" {
-        return Response::builder()
+        let mut response = Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
             .body(Full::new(Bytes::from(state.metrics.render_prometheus())))
             .unwrap();
+        state.response_header_policy.apply(response.headers_mut(), false);
+        return response;
     }
     state.proxy.handle(&state, req, client_ip).await
 }

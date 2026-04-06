@@ -1,36 +1,260 @@
 {
   "rules": [
     {
-      "title": "Admin path exposure",
-      "severity": "high",
-      "cwe": "CWE-306",
-      "description": "Detects requests targeting administrative paths.",
-      "url": "https://cwe.mitre.org/data/definitions/306.html",
-      "rule_match": "(?i)/(admin|wp-admin|manager/html)"
-    },
-    {
-      "title": "Sensitive dotfile access",
-      "severity": "high",
-      "cwe": "CWE-200",
-      "description": "Detects attempts to reach sensitive dotfiles through URI paths.",
-      "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "(?i)\\.(env|git|svn|bak)$"
-    },
-    {
-      "title": "Traversal regex URI",
+      "title": "Traversal dotdot raw",
       "severity": "high",
       "cwe": "CWE-22",
-      "description": "Detects path traversal attempts in the URL, including encoded variants.",
+      "description": "Detects classic ../ traversal in request targets.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:\\.\\./|%2e%2e%2f|%252e%252e%252f|/etc/passwd)"
+      "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\)"
     },
     {
-      "title": "SQLi regex URI",
+      "title": "Traversal encoded",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects percent-encoded traversal in request targets.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f|%c0%ae%c0%ae/)"
+    },
+    {
+      "title": "Traversal sensitive unix files",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects direct access to sensitive Unix files.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|/root/\\.ssh/)"
+    },
+    {
+      "title": "Traversal sensitive windows files",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects direct access to sensitive Windows files.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:boot\\.ini|win\\.ini|windows/system32/drivers/etc/hosts)"
+    },
+    {
+      "title": "LFI php wrappers",
+      "severity": "high",
+      "cwe": "CWE-98",
+      "description": "Detects dangerous PHP stream wrapper access in URIs.",
+      "url": "https://cwe.mitre.org/data/definitions/98.html",
+      "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)"
+    },
+    {
+      "title": "RFI external URL include",
+      "severity": "high",
+      "cwe": "CWE-98",
+      "description": "Detects remote file include style URL parameters.",
+      "url": "https://cwe.mitre.org/data/definitions/98.html",
+      "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)"
+    },
+    {
+      "title": "SSRF localhost targets",
       "severity": "critical",
-      "cwe": "CWE-89",
-      "description": "Detects common SQL injection probes in attacker-controlled URI paths and query strings.",
-      "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "(?i)((?:'|%27)\\s*(?:or|and)\\s*(?:'1'='1|1=1)|union(?:/\\*.*?\\*/|\\s)+select|information_schema|sleep\\s*\\()"
+      "cwe": "CWE-918",
+      "description": "Detects localhost SSRF targets in URIs.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))"
+    },
+    {
+      "title": "SSRF private ipv4",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "description": "Detects private/internal IPv4 SSRF targets.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))"
+    },
+    {
+      "title": "SSRF cloud metadata aliases",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "description": "Detects common cloud metadata endpoints and aliases.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:latest/meta-data|metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.170\\.2)"
+    },
+    {
+      "title": "Command injection separators URI",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects shell separators in URI parameters.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|powershell|cmd))"
+    },
+    {
+      "title": "Command substitution URI",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects command substitution syntax in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:\\$\\((?:id|whoami|curl|wget)|`(?:id|whoami|curl|wget))"
+    },
+    {
+      "title": "Protocol smuggling characters",
+      "severity": "medium",
+      "cwe": "CWE-444",
+      "description": "Detects encoded CRLF or header separator injection in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/444.html",
+      "rule_match": "(?i)(?:%0d%0a|\\r\\n|%0a%0d|%0d|%0a)(?:host:|x-forwarded-|content-length:|transfer-encoding:)"
+    },
+    {
+      "title": "HTTP parameter pollution",
+      "severity": "medium",
+      "cwe": "CWE-235",
+      "description": "Detects repeated suspicious parameters commonly used in HPP attacks.",
+      "url": "https://cwe.mitre.org/data/definitions/235.html",
+      "rule_match": "(?i)(?:[?&](?:url|uri|path|dest|redirect|next|return|continue)=[^&]+(?:&(?:url|uri|path|dest|redirect|next|return|continue)=))"
+    },
+    {
+      "title": "Open redirect style next parameter",
+      "severity": "medium",
+      "cwe": "CWE-601",
+      "description": "Detects protocol-relative or absolute redirect targets.",
+      "url": "https://cwe.mitre.org/data/definitions/601.html",
+      "rule_match": "(?i)(?:[?&](?:next|url|redirect|return|continue|dest)=//|[?&](?:next|url|redirect|return|continue|dest)=https?://)"
+    },
+    {
+      "title": "Suspicious Java deserialization path",
+      "severity": "high",
+      "cwe": "CWE-502",
+      "description": "Detects Java serialized object references in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/502.html",
+      "rule_match": "(?i)(?:rmi://|ldap://|jndi:|java\\.serialized)"
+    },
+    {
+      "title": "Tomcat manager exposure",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "description": "Detects Tomcat/JBoss management paths.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)(?:/(?:manager/html|host-manager/html|jmx-console|web-console|invoker/JMXInvokerServlet))"
+    },
+    {
+      "title": "Source code leak extensions",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "description": "Detects source code or backup extension access.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)(?:\\.(?:bak|old|orig|save|swp|inc|dist|sql|tar|gz|tgz|zip)(?:$|[?&]))"
+    },
+    {
+      "title": "Git and VCS exposure",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "description": "Detects VCS metadata exposure in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)(?:/\\.git/|/\\.svn/|/\\.hg/|/\\.bzr/)"
+    },
+    {
+      "title": "PHP info and env exposure",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "description": "Detects sensitive debug or env endpoints.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)(?:/phpinfo\\.php|/\\.env|/server-status|/actuator/(?:env|heapdump|beans))"
+    },
+    {
+      "title": "Log4Shell style lookup",
+      "severity": "critical",
+      "cwe": "CWE-94",
+      "description": "Detects JNDI lookup patterns in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/94.html",
+      "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)"
+    },
+    {
+      "title": "Path traversal encoded slash",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects overlong slash traversal encodings.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:%2f%2e%2e%2f|%5c%2e%2e%5c|%255c%252e%252e%255c)"
+    },
+    {
+      "title": "UNC path include",
+      "severity": "high",
+      "cwe": "CWE-98",
+      "description": "Detects Windows UNC style include targets.",
+      "url": "https://cwe.mitre.org/data/definitions/98.html",
+      "rule_match": "(?i)(?:\\\\\\\\[a-z0-9._-]+\\\\(?:share|c\\$|admin\\$))"
+    },
+    {
+      "title": "File scheme SSRF",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects file:// and gopher:// SSRF targets.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)"
+    },
+    {
+      "title": "FastCGI and uwsgi abuse",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "description": "Detects protocol handler abuse in URIs.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)(?:fcgi://|uwsgi://|scgi://)"
+    },
+    {
+      "title": "Encoded null byte in path",
+      "severity": "medium",
+      "cwe": "CWE-158",
+      "description": "Detects null-byte poisoning attempts in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/158.html",
+      "rule_match": "(?i)(?:%00|\\\\x00)"
+    },
+    {
+      "title": "AWS instance metadata v1",
+      "severity": "critical",
+      "cwe": "CWE-918",
+      "description": "Detects AWS IMDS path access.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:/latest/meta-data/|/latest/user-data|/latest/dynamic/instance-identity/)"
+    },
+    {
+      "title": "Kubernetes serviceaccount token",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects access to Kubernetes serviceaccount secrets.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:/var/run/secrets/kubernetes\\.io/serviceaccount|kubernetes/default/token)"
+    },
+    {
+      "title": "Docker socket abuse",
+      "severity": "high",
+      "cwe": "CWE-918",
+      "description": "Detects Docker daemon socket references.",
+      "url": "https://cwe.mitre.org/data/definitions/918.html",
+      "rule_match": "(?i)(?:/var/run/docker\\.sock|docker\\.sock)"
+    },
+    {
+      "title": "PHP filter exfiltration",
+      "severity": "high",
+      "cwe": "CWE-98",
+      "description": "Detects php filter chains used for source disclosure.",
+      "url": "https://cwe.mitre.org/data/definitions/98.html",
+      "rule_match": "(?i)(?:php://filter/(?:convert\\.(?:base64|quoted-printable)-(?:encode|decode)|string\\.(?:rot13|toupper|tolower)))"
+    },
+    {
+      "title": "Sensitive admin APIs",
+      "severity": "medium",
+      "cwe": "CWE-285",
+      "description": "Detects common admin API paths.",
+      "url": "https://cwe.mitre.org/data/definitions/285.html",
+      "rule_match": "(?i)(?:/(?:admin|internal|private|manage|management|debug|console)(?:/|$))"
+    },
+    {
+      "title": "GraphQL introspection abuse",
+      "severity": "medium",
+      "cwe": "CWE-200",
+      "description": "Detects GraphQL schema introspection attempts in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/200.html",
+      "rule_match": "(?i)(?:__schema|__type)"
+    },
+    {
+      "title": "Suspicious callback protocols",
+      "severity": "medium",
+      "cwe": "CWE-601",
+      "description": "Detects javascript/data/vbscript callback targets.",
+      "url": "https://cwe.mitre.org/data/definitions/601.html",
+      "rule_match": "(?i)(?:[?&](?:url|next|redirect|return|dest)=\\s*(?:javascript:|data:|vbscript:))"
     }
   ]
 }
