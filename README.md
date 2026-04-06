@@ -3,8 +3,7 @@
 ## 🚀 Overview
 KrakenWaf is a modern, high-performance Web Application Firewall (WAF) written in Rust.
 It is designed for real-world deployments, combining security, performance, and simplicity.
-![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
-
+![logo](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/logo2waf.png)
 ---
 
 ## 🧠 Architecture Overview
@@ -443,3 +442,5 @@ The same schema is used for:
 - SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
 - Send `SIGHUP` to hot-reload rule files without restarting the process.
 - `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
+
+ ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
