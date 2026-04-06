@@ -263,8 +263,8 @@ logs/db/vulns_alert.db
 
 Inspect the database:
 ```bash
-sqlite3 logs/db/vulns_alert.db \
-"SELECT id,title,severity,occurred_at FROM vulnerabilities ORDER BY id DESC LIMIT 10;"
+$ sqlite3 logs/db/vulns_alert.db "SELECT id,title,severity,engine,http_method,request_uri,fullpath_evidence,rule_match,reference_url,occurred_at FROM vulnerabilities ORDER BY id DESC LIMIT 10;"
+1|Remote payload downloader|high|vectorscan|POST|/vulnerabilities/xss_s/|/vulnerabilities/xss_s/|wget http|https://owasp.org/www-community/attacks/Command_Injection|2026-04-06T01:18:56.145777535+00:00
 ```
 
 ---
@@ -321,18 +321,26 @@ Deploy it in minutes and protect your apps with modern Rust-based security.
 KrakenWaf creates the `vulnerabilities` table automatically in `logs/db/vulns_alert.db`:
 
 ```sql
-CREATE TABLE IF NOT EXISTS vulnerabilities  (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  title TEXT NOT NULL,
-  severity TEXT NOT NULL,
-  CWE TEXT NOT NULL,
-  description TEXT NOT NULL,
-  reference_url TEXT NOT NULL,
-  occurred_at TEXT NOT NULL,
-  rule_match TEXT NOT NULL,
-  rule_line_match TEXT NOT NULL,
-  request_payload TEXT NOT NULL
-);
+SQLite version 3.50.2 2025-06-28 14:00:48
+Enter ".help" for usage hints.
+sqlite> .schema
+CREATE TABLE vulnerabilities (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title VARCHAR(256) NOT NULL,
+            severity VARCHAR(32) NOT NULL,
+            cwe VARCHAR(128) NOT NULL,
+            description TEXT NOT NULL,
+            reference_url TEXT NOT NULL,
+            occurred_at TIMESTAMP NOT NULL,
+            rule_match TEXT NOT NULL,
+            rule_line_match VARCHAR(256) NOT NULL,
+            client_ip VARCHAR(64) NOT NULL,
+            http_method VARCHAR(16) NOT NULL,
+            request_uri TEXT NOT NULL,
+            fullpath_evidence TEXT NOT NULL,
+            engine VARCHAR(32) NOT NULL,
+            request_payload TEXT NOT NULL
+        );
 ```
 
 ## Directory layout
