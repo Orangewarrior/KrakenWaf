@@ -29,9 +29,6 @@ impl ResponseHeaderPolicy {
         Ok(Self { entries })
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
 
     pub fn apply(&self, headers: &mut HeaderMap, is_websocket_upgrade: bool) {
         if is_websocket_upgrade || self.entries.is_empty() {
