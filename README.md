@@ -3,7 +3,7 @@
 ## 🚀 Overview
 KrakenWaf is a modern, high-performance Web Application Firewall (WAF) written in Rust.
 It is designed for real-world deployments, combining security, performance, and simplicity.
-![MTG nadir kraken](https://www.artofmtg.com/wp-content/uploads/2020/01/Nadir-Kraken-Theros-Beyond-Death-Art.jpg)
+![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
 
 ---
 
