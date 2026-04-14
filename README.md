@@ -43,7 +43,7 @@ KrakenWaf supports multiple detection layers:
 - Overflow attack detect 
 - SSTI detect
 - Ssi injection detect
-- esi injectiondetect
+- esi injection detect
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
