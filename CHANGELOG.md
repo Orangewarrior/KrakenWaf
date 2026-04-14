@@ -1,3 +1,27 @@
+## [2.7.22] - 2026-04-06
+
+### Added
+- New `enable` field support across all JSON rule files under `rules/`.
+- Rules with `"enable": 0` are now skipped during KrakenWAF initialization.
+
+### Changed
+- Updated bundled JSON rule files to include `"enable": 1` before `title` in every rule entry.
+
+## 2.7.21
+
+- cleaned up DFA integration warnings reported during build
+- removed unused `SstiRule` re-export
+- removed unused `dfa_manager` field from `AppState`
+- removed unused `DfaManager::enabled()` helper
+- removed unused `OverflowDfa::detect_overflow()` helper
+
+## 2.7.20
+
+- added safe DFA modules under `src/dfa` for SQLi comment evasion, repeated-character overflow, SSTI, SSI injection and ESI injection
+- added lenient YAML DFA config loader with `--dfa-load` and example config at `rules/dfa/config.yaml`
+- integrated DFA findings into the normal KrakenWAF block pipeline, including JSONL, raw critical log and SQLite evidence storage
+- documented DFA schema and runtime behavior in `docs/dfa/schema.md`
+
 
 ## 2.7.19
 

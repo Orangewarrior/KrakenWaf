@@ -1,5 +1,6 @@
 
 use crate::{
+    dfa::DfaManager,
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, RuleSet, Severity},
     waf::rate_limit::RateLimiter,
@@ -79,6 +80,7 @@ pub struct WafEngine {
     libinjection_xss_enabled: bool,
     vectorscan_enabled: bool,
     metrics: Arc<WafMetrics>,
+    dfa_manager: Arc<DfaManager>,
 }
 
 impl WafEngine {
@@ -91,6 +93,7 @@ impl WafEngine {
         vectorscan_enabled: bool,
         snapshot_path: std::path::PathBuf,
         metrics: Arc<WafMetrics>,
+        dfa_manager: Arc<DfaManager>,
     ) -> Result<Self> {
         let rate_limiter = Arc::new(RateLimiter::new(rate_limit_per_minute, Duration::from_secs(60), snapshot_path)?);
         rate_limiter.clone().spawn_persistence_task();
@@ -104,6 +107,7 @@ impl WafEngine {
             libinjection_xss_enabled,
             vectorscan_enabled,
             metrics,
+            dfa_manager,
         })
     }
 
@@ -172,6 +176,13 @@ impl WafEngine {
             }
         }
 
+        let dfa_early_view = format!("{}
+{}
+{}", ctx.method, ctx.uri, ctx.headers);
+        if let Some(finding) = self.dfa_manager.inspect(&dfa_early_view) {
+            return Decision::Block(finding);
+        }
+
         let normalized_uri = normalize_for_inspection(&ctx.uri);
         if let Some(finding) = keyword_match(matchers.uri.as_ref(), &normalized_uri, &ctx.uri) {
             return Decision::Block(finding);
@@ -207,6 +218,14 @@ impl WafEngine {
         let rules = self.rules.read().expect("rules lock poisoned").clone();
         let matchers = self.matchers.read().expect("matchers lock poisoned").clone();
         let normalized = normalize_for_inspection(text.as_ref());
+        if let Some(finding) = self.dfa_manager.inspect(text.as_ref()) {
+            return Decision::Block(finding);
+        }
+        if normalized != text.as_ref() {
+            if let Some(finding) = self.dfa_manager.inspect(&normalized) {
+                return Decision::Block(finding);
+            }
+        }
 
         for view in inspection_views(&normalized) {
             if let Some(finding) = keyword_match(matchers.body.as_ref(), view, text.as_ref()) {

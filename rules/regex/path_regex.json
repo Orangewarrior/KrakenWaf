@@ -1,6 +1,7 @@
 {
   "rules": [
     {
+      "enable": 1,
       "title": "Traversal dotdot raw",
       "severity": "high",
       "cwe": "CWE-22",
@@ -9,6 +10,7 @@
       "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\)"
     },
     {
+      "enable": 1,
       "title": "Traversal encoded",
       "severity": "high",
       "cwe": "CWE-22",
@@ -17,6 +19,7 @@
       "rule_match": "(?i)(?:%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f|%c0%ae%c0%ae/)"
     },
     {
+      "enable": 1,
       "title": "Traversal sensitive unix files",
       "severity": "high",
       "cwe": "CWE-22",
@@ -25,6 +28,7 @@
       "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|/root/\\.ssh/)"
     },
     {
+      "enable": 1,
       "title": "Traversal sensitive windows files",
       "severity": "high",
       "cwe": "CWE-22",
@@ -33,6 +37,7 @@
       "rule_match": "(?i)(?:boot\\.ini|win\\.ini|windows/system32/drivers/etc/hosts)"
     },
     {
+      "enable": 1,
       "title": "LFI php wrappers",
       "severity": "high",
       "cwe": "CWE-98",
@@ -41,6 +46,7 @@
       "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)"
     },
     {
+      "enable": 1,
       "title": "RFI external URL include",
       "severity": "high",
       "cwe": "CWE-98",
@@ -49,6 +55,7 @@
       "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)"
     },
     {
+      "enable": 1,
       "title": "SSRF localhost targets",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -57,6 +64,7 @@
       "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))"
     },
     {
+      "enable": 1,
       "title": "SSRF private ipv4",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -65,6 +73,7 @@
       "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))"
     },
     {
+      "enable": 1,
       "title": "SSRF cloud metadata aliases",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -73,6 +82,7 @@
       "rule_match": "(?i)(?:latest/meta-data|metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.170\\.2)"
     },
     {
+      "enable": 1,
       "title": "Command injection separators URI",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -81,6 +91,7 @@
       "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|powershell|cmd))"
     },
     {
+      "enable": 1,
       "title": "Command substitution URI",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -89,6 +100,7 @@
       "rule_match": "(?i)(?:\\$\\((?:id|whoami|curl|wget)|`(?:id|whoami|curl|wget))"
     },
     {
+      "enable": 1,
       "title": "Protocol smuggling characters",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -97,6 +109,7 @@
       "rule_match": "(?i)(?:%0d%0a|\\r\\n|%0a%0d|%0d|%0a)(?:host:|x-forwarded-|content-length:|transfer-encoding:)"
     },
     {
+      "enable": 1,
       "title": "HTTP parameter pollution",
       "severity": "medium",
       "cwe": "CWE-235",
@@ -105,6 +118,7 @@
       "rule_match": "(?i)(?:[?&](?:url|uri|path|dest|redirect|next|return|continue)=[^&]+(?:&(?:url|uri|path|dest|redirect|next|return|continue)=))"
     },
     {
+      "enable": 1,
       "title": "Open redirect style next parameter",
       "severity": "medium",
       "cwe": "CWE-601",
@@ -113,6 +127,7 @@
       "rule_match": "(?i)(?:[?&](?:next|url|redirect|return|continue|dest)=//|[?&](?:next|url|redirect|return|continue|dest)=https?://)"
     },
     {
+      "enable": 1,
       "title": "Suspicious Java deserialization path",
       "severity": "high",
       "cwe": "CWE-502",
@@ -121,6 +136,7 @@
       "rule_match": "(?i)(?:rmi://|ldap://|jndi:|java\\.serialized)"
     },
     {
+      "enable": 1,
       "title": "Tomcat manager exposure",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -129,6 +145,7 @@
       "rule_match": "(?i)(?:/(?:manager/html|host-manager/html|jmx-console|web-console|invoker/JMXInvokerServlet))"
     },
     {
+      "enable": 1,
       "title": "Source code leak extensions",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -137,6 +154,7 @@
       "rule_match": "(?i)(?:\\.(?:bak|old|orig|save|swp|inc|dist|sql|tar|gz|tgz|zip)(?:$|[?&]))"
     },
     {
+      "enable": 1,
       "title": "Git and VCS exposure",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -145,6 +163,7 @@
       "rule_match": "(?i)(?:/\\.git/|/\\.svn/|/\\.hg/|/\\.bzr/)"
     },
     {
+      "enable": 1,
       "title": "PHP info and env exposure",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -153,6 +172,7 @@
       "rule_match": "(?i)(?:/phpinfo\\.php|/\\.env|/server-status|/actuator/(?:env|heapdump|beans))"
     },
     {
+      "enable": 1,
       "title": "Log4Shell style lookup",
       "severity": "critical",
       "cwe": "CWE-94",
@@ -161,6 +181,7 @@
       "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)"
     },
     {
+      "enable": 1,
       "title": "Path traversal encoded slash",
       "severity": "high",
       "cwe": "CWE-22",
@@ -169,6 +190,7 @@
       "rule_match": "(?i)(?:%2f%2e%2e%2f|%5c%2e%2e%5c|%255c%252e%252e%255c)"
     },
     {
+      "enable": 1,
       "title": "UNC path include",
       "severity": "high",
       "cwe": "CWE-98",
@@ -177,6 +199,7 @@
       "rule_match": "(?i)(?:\\\\\\\\[a-z0-9._-]+\\\\(?:share|c\\$|admin\\$))"
     },
     {
+      "enable": 1,
       "title": "File scheme SSRF",
       "severity": "high",
       "cwe": "CWE-918",
@@ -185,6 +208,7 @@
       "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)"
     },
     {
+      "enable": 1,
       "title": "FastCGI and uwsgi abuse",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -193,6 +217,7 @@
       "rule_match": "(?i)(?:fcgi://|uwsgi://|scgi://)"
     },
     {
+      "enable": 1,
       "title": "Encoded null byte in path",
       "severity": "medium",
       "cwe": "CWE-158",
@@ -201,6 +226,7 @@
       "rule_match": "(?i)(?:%00|\\\\x00)"
     },
     {
+      "enable": 1,
       "title": "AWS instance metadata v1",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -209,6 +235,7 @@
       "rule_match": "(?i)(?:/latest/meta-data/|/latest/user-data|/latest/dynamic/instance-identity/)"
     },
     {
+      "enable": 1,
       "title": "Kubernetes serviceaccount token",
       "severity": "high",
       "cwe": "CWE-918",
@@ -217,6 +244,7 @@
       "rule_match": "(?i)(?:/var/run/secrets/kubernetes\\.io/serviceaccount|kubernetes/default/token)"
     },
     {
+      "enable": 1,
       "title": "Docker socket abuse",
       "severity": "high",
       "cwe": "CWE-918",
@@ -225,6 +253,7 @@
       "rule_match": "(?i)(?:/var/run/docker\\.sock|docker\\.sock)"
     },
     {
+      "enable": 1,
       "title": "PHP filter exfiltration",
       "severity": "high",
       "cwe": "CWE-98",
@@ -233,6 +262,7 @@
       "rule_match": "(?i)(?:php://filter/(?:convert\\.(?:base64|quoted-printable)-(?:encode|decode)|string\\.(?:rot13|toupper|tolower)))"
     },
     {
+      "enable": 1,
       "title": "Sensitive admin APIs",
       "severity": "medium",
       "cwe": "CWE-285",
@@ -241,6 +271,7 @@
       "rule_match": "(?i)(?:/(?:admin|internal|private|manage|management|debug|console)(?:/|$))"
     },
     {
+      "enable": 1,
       "title": "GraphQL introspection abuse",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -249,6 +280,7 @@
       "rule_match": "(?i)(?:__schema|__type)"
     },
     {
+      "enable": 1,
       "title": "Suspicious callback protocols",
       "severity": "medium",
       "cwe": "CWE-601",

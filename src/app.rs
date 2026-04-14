@@ -6,7 +6,7 @@ use crate::{
     proxy::ProxyClient,
     response_headers::ResponseHeaderPolicy,
     storage::SqliteStore,
-    waf::WafEngine,
+    waf::WafEngine
 };
 use bytes::Bytes;
 use std::path::PathBuf;

@@ -30,12 +30,19 @@ struct RegexBundle {
 
 #[derive(Debug, Deserialize)]
 struct RuleJson {
+    #[serde(default = "default_rule_enabled")]
+    enable: u8,
     title: String,
     severity: Severity,
     cwe: String,
     description: String,
     url: String,
     rule_match: String,
+}
+
+
+fn default_rule_enabled() -> u8 {
+    1
 }
 
 pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
@@ -149,6 +156,9 @@ fn json_rules_to_detection_rules(values: Vec<RuleJson>, source: &str) -> Vec<Det
         .into_iter()
         .enumerate()
         .filter_map(|(idx, value)| {
+            if value.enable == 0 {
+                return None;
+            }
             let rule_match = value.rule_match.trim().to_string();
             (!rule_match.is_empty()).then(|| DetectionRule {
                 title: value.title,
@@ -191,6 +201,12 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
         .rules
         .into_iter()
         .enumerate()
+        .filter_map(|(idx, rule)| {
+            if rule.enable == 0 {
+                return None;
+            }
+            Some((idx, rule))
+        })
         .map(|(idx, rule)| {
             let line = idx + 1;
             let compiled = RegexBuilder::new(&rule.rule_match)

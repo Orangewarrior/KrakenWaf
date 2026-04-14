@@ -1,7 +1,7 @@
 
 [package]
 name = "krakenwaf"
-version = "2.7.19"
+version = "2.7.22"
 edition = "2021"
 authors = ["Orangewarrior"]
 description = "TLS-aware Rust WAF inspired by OctopusWAF"
@@ -35,6 +35,7 @@ rustls-pemfile = "2.1"
 sea-orm = { version = "1.1", default-features = false, features = ["macros", "runtime-tokio-rustls", "sqlx-sqlite"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+serde_yaml = "0.9"
 thiserror = "2.0.18"
 tokio = { version = "1.40", features = ["full"] }
 tokio-rustls = "0.26"

@@ -1,6 +1,7 @@
 {
   "rules": [
     {
+      "enable": 1,
       "title": "SQLi UNION SELECT extraction",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -9,6 +10,7 @@
       "rule_match": "union select"
     },
     {
+      "enable": 1,
       "title": "SQLi boolean authentication bypass",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -17,6 +19,7 @@
       "rule_match": "' or '1'='1"
     },
     {
+      "enable": 1,
       "title": "SQLi time-based sleep probe",
       "severity": "high",
       "cwe": "CWE-89",
@@ -25,6 +28,7 @@
       "rule_match": "sleep\\("
     },
     {
+      "enable": 1,
       "title": "SQLi information schema enumeration",
       "severity": "high",
       "cwe": "CWE-89",
@@ -33,6 +37,7 @@
       "rule_match": "information_schema"
     },
     {
+      "enable": 1,
       "title": "XSS script tag literal",
       "severity": "high",
       "cwe": "CWE-79",
@@ -41,6 +46,7 @@
       "rule_match": "<script"
     },
     {
+      "enable": 1,
       "title": "XSS onerror handler literal",
       "severity": "high",
       "cwe": "CWE-79",
@@ -49,6 +55,7 @@
       "rule_match": "onerror="
     },
     {
+      "enable": 1,
       "title": "Traversal passwd probe",
       "severity": "high",
       "cwe": "CWE-22",
@@ -57,6 +64,7 @@
       "rule_match": "/etc/passwd"
     },
     {
+      "enable": 1,
       "title": "Command injection shell execution",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -65,6 +73,7 @@
       "rule_match": "/bin/sh -c"
     },
     {
+      "enable": 1,
       "title": "Windows command execution",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -73,6 +82,7 @@
       "rule_match": "cmd.exe /c"
     },
     {
+      "enable": 1,
       "title": "Remote payload downloader",
       "severity": "high",
       "cwe": "CWE-494",

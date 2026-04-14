@@ -1,6 +1,7 @@
 {
   "rules": [
     {
+      "enable": 1,
       "title": "Command injection separators body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -9,6 +10,7 @@
       "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd))"
     },
     {
+      "enable": 1,
       "title": "Command substitution body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -17,6 +19,7 @@
       "rule_match": "(?i)(?:\\$\\((?:id|whoami|uname|curl|wget|bash|sh)|`(?:id|whoami|uname|curl|wget|bash|sh))"
     },
     {
+      "enable": 1,
       "title": "Shell downloader body",
       "severity": "high",
       "cwe": "CWE-78",
@@ -25,6 +28,7 @@
       "rule_match": "(?i)(?:wget\\s+https?://|curl\\s+-[fsSLoO].*https?://|powershell(?:\\.exe)?\\s+-enc|certutil(?:\\.exe)?\\s+-urlcache\\s+-split\\s+-f)"
     },
     {
+      "enable": 1,
       "title": "Reverse shell body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -33,6 +37,7 @@
       "rule_match": "(?i)(?:nc\\s+-e|bash\\s+-i\\s*>&|/dev/tcp/\\d{1,3}(?:\\.\\d{1,3}){3}/\\d+|python(?:3)?\\s+-c\\s+[\"\\'].*socket)"
     },
     {
+      "enable": 1,
       "title": "LFI file disclosure body",
       "severity": "high",
       "cwe": "CWE-22",
@@ -41,6 +46,7 @@
       "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|boot\\.ini|win\\.ini|\\\\windows\\\\system32)"
     },
     {
+      "enable": 1,
       "title": "Traversal body encoded",
       "severity": "high",
       "cwe": "CWE-22",
@@ -49,6 +55,7 @@
       "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\|%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f)"
     },
     {
+      "enable": 1,
       "title": "PHP wrapper body",
       "severity": "high",
       "cwe": "CWE-98",
@@ -57,6 +64,7 @@
       "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)"
     },
     {
+      "enable": 1,
       "title": "RFI body remote include",
       "severity": "high",
       "cwe": "CWE-98",
@@ -65,6 +73,7 @@
       "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)"
     },
     {
+      "enable": 1,
       "title": "SSRF localhost body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -73,6 +82,7 @@
       "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))"
     },
     {
+      "enable": 1,
       "title": "SSRF private body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -81,6 +91,7 @@
       "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))"
     },
     {
+      "enable": 1,
       "title": "SSRF cloud metadata body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -89,6 +100,7 @@
       "rule_match": "(?i)(?:metadata\\.google\\.internal|100\\.100\\.100\\.200|latest/meta-data|169\\.254\\.170\\.2)"
     },
     {
+      "enable": 1,
       "title": "File and gopher schemes body",
       "severity": "high",
       "cwe": "CWE-918",
@@ -97,6 +109,7 @@
       "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)"
     },
     {
+      "enable": 1,
       "title": "SMTP or internal protocol abuse body",
       "severity": "medium",
       "cwe": "CWE-918",
@@ -105,6 +118,7 @@
       "rule_match": "(?i)(?:ldap://|ldaps://|rmi://|dns://|smtp://|imap://|pop3://|tftp://)"
     },
     {
+      "enable": 1,
       "title": "Deserialization gadget body",
       "severity": "high",
       "cwe": "CWE-502",
@@ -113,6 +127,7 @@
       "rule_match": "(?i)(?:O:\\d+:\"[A-Za-z_\\\\]+\"|rO0AB|__reduce__|java\\.lang\\.Runtime|TemplatesImpl|ysoserial)"
     },
     {
+      "enable": 1,
       "title": "Template injection body",
       "severity": "high",
       "cwe": "CWE-94",
@@ -121,6 +136,7 @@
       "rule_match": "(?i)(?:\\{\\{\\s*7\\s*\\*\\s*7\\s*\\}\\}|\\$\\{(?:7\\*7|jndi:)|<%=|\\{\\%.*\\%\\}|\\#set\\()"
     },
     {
+      "enable": 1,
       "title": "Protocol smuggling body",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -129,6 +145,7 @@
       "rule_match": "(?i)(?:%0d%0a|\\r\\n)(?:host:|content-length:|transfer-encoding:|x-forwarded-)"
     },
     {
+      "enable": 1,
       "title": "SSRF redirect parameter body",
       "severity": "medium",
       "cwe": "CWE-601",
@@ -137,6 +154,7 @@
       "rule_match": "(?i)(?:\\b(?:url|uri|next|redirect|dest|continue|return|endpoint)=\\s*(?:https?://|//|file://|gopher://))"
     },
     {
+      "enable": 1,
       "title": "Archive traversal body",
       "severity": "medium",
       "cwe": "CWE-22",
@@ -145,6 +163,7 @@
       "rule_match": "(?i)(?:\\.\\./.*\\.(?:jsp|php|aspx|war|jar)|\\.{2}(?:/|\\\\).*(?:web\\.xml|application\\.properties))"
     },
     {
+      "enable": 1,
       "title": "Known scanner body",
       "severity": "medium",
       "cwe": "CWE-16",
@@ -153,6 +172,7 @@
       "rule_match": "(?i)(?:sqlmap|acunetix|nikto|nessus|nuclei|masscan|zgrab)"
     },
     {
+      "enable": 1,
       "title": "Suspicious XML external entity body",
       "severity": "high",
       "cwe": "CWE-611",
@@ -161,6 +181,7 @@
       "rule_match": "(?i)(?:<!DOCTYPE\\s+[^>]+\\s+\\[|<!ENTITY\\s+[^>]+SYSTEM\\s+[\"\\'](?:file|http|https|ftp)://)"
     },
     {
+      "enable": 1,
       "title": "Suspicious log4shell body",
       "severity": "critical",
       "cwe": "CWE-94",
@@ -169,6 +190,7 @@
       "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)"
     },
     {
+      "enable": 1,
       "title": "Windows shell body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -177,6 +199,7 @@
       "rule_match": "(?i)(?:cmd(?:\\.exe)?\\s+/c|powershell(?:\\.exe)?\\s+-enc|powershell(?:\\.exe)?\\s+-nop)"
     },
     {
+      "enable": 1,
       "title": "Unix shell body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -185,6 +208,7 @@
       "rule_match": "(?i)(?:/bin/(?:sh|bash)\\s+-c|sh\\s+-c|bash\\s+-c)"
     },
     {
+      "enable": 1,
       "title": "Container escape body",
       "severity": "medium",
       "cwe": "CWE-250",
@@ -193,6 +217,7 @@
       "rule_match": "(?i)(?:docker\\.sock|/var/run/secrets/kubernetes\\.io/serviceaccount|/run/secrets/)"
     },
     {
+      "enable": 1,
       "title": "Unsafe file upload body",
       "severity": "medium",
       "cwe": "CWE-434",
@@ -201,6 +226,7 @@
       "rule_match": "(?i)(?:filename\\s*=\\s*\"[^\"]+\\.(?:php\\d*|phtml|phar|jsp|jspx|asp|aspx|cfm|cgi|pl|sh|war|jar)\")"
     },
     {
+      "enable": 1,
       "title": "Path traversal zip slip body",
       "severity": "medium",
       "cwe": "CWE-22",
@@ -209,6 +235,7 @@
       "rule_match": "(?i)(?:filename\\s*=\\s*\"(?:\\.\\./|\\.\\.\\\\))"
     },
     {
+      "enable": 1,
       "title": "Dangerous binary fetch body",
       "severity": "high",
       "cwe": "CWE-494",
@@ -217,6 +244,7 @@
       "rule_match": "(?i)(?:apt(?:-get)?\\s+install\\s+|yum\\s+install\\s+|dnf\\s+install\\s+|pip(?:3)?\\s+install\\s+https?://)"
     },
     {
+      "enable": 1,
       "title": "OCI metadata SSRF body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -225,6 +253,7 @@
       "rule_match": "(?i)(?:opc/v2/instance/|openstack/latest/meta_data\\.json|computeMetadata/v1/)"
     },
     {
+      "enable": 1,
       "title": "GraphQL introspection body",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -233,6 +262,7 @@
       "rule_match": "(?i)(?:__schema|__type|IntrospectionQuery)"
     },
     {
+      "enable": 1,
       "title": "Server-side include body",
       "severity": "medium",
       "cwe": "CWE-97",
@@ -241,6 +271,7 @@
       "rule_match": "(?i)(?:<!--#(?:exec|include|echo|printenv)\\s+)"
     },
     {
+      "enable": 1,
       "title": "Localhost callback body",
       "severity": "high",
       "cwe": "CWE-918",
@@ -249,6 +280,7 @@
       "rule_match": "(?i)(?:\\b(?:callback|webhook|feed|proxy|fetch|target|host)=\\s*(?:https?://)?(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0))"
     },
     {
+      "enable": 1,
       "title": "SSRF unix socket body",
       "severity": "high",
       "cwe": "CWE-918",
@@ -257,6 +289,7 @@
       "rule_match": "(?i)(?:unix:(?://)?/|http\\+unix://|curl\\s+--unix-socket)"
     },
     {
+      "enable": 1,
       "title": "Header smuggling body",
       "severity": "medium",
       "cwe": "CWE-444",

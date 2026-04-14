@@ -13,3 +13,5 @@ pub mod server;
 pub mod storage;
 pub mod tls;
 pub mod waf;
+
+pub mod dfa;

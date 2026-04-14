@@ -1,6 +1,7 @@
 {
   "rules": [
     {
+      "enable": 1,
       "title": "Scanner user agent",
       "severity": "medium",
       "cwe": "CWE-16",
@@ -9,6 +10,7 @@
       "rule_match": "(?i)(?:sqlmap|acunetix|nikto|nessus|nuclei|masscan|zgrab|wpscan|dirbuster)"
     },
     {
+      "enable": 0,
       "title": "SSRF forwarding header localhost",
       "severity": "high",
       "cwe": "CWE-918",
@@ -17,6 +19,7 @@
       "rule_match": "(?i)(?:x-forwarded-(?:for|host|server|proto):\\s*(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|172\\.(?:1[6-9]|2\\d|3[0-1])\\.|192\\.168\\.))"
     },
     {
+      "enable": 1,
       "title": "Host header anomaly",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -25,6 +28,7 @@
       "rule_match": "(?im)(^host:\\s*$|host:\\s*[^\\s]+\\s+host:|host:\\s*(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0)\\s*$)"
     },
     {
+      "enable": 1,
       "title": "CRLF smuggling header",
       "severity": "high",
       "cwe": "CWE-444",
@@ -33,6 +37,7 @@
       "rule_match": "(?i)(?:%0d%0a|\\r\\n)(?:host:|content-length:|transfer-encoding:|x-forwarded-)"
     },
     {
+      "enable": 1,
       "title": "Suspicious content type multipart boundary",
       "severity": "low",
       "cwe": "CWE-16",
@@ -41,6 +46,7 @@
       "rule_match": "(?i)(?:content-type:\\s*multipart/form-data;\\s*boundary=\\s*$|content-type:\\s*application/x-www-form-urlencoded\\s*;\\s*charset=\\s*utf-7)"
     },
     {
+      "enable": 1,
       "title": "Suspicious request smuggling header combo",
       "severity": "high",
       "cwe": "CWE-444",
@@ -49,6 +55,7 @@
       "rule_match": "(?i)(?:transfer-encoding:\\s*chunked.*content-length:|content-length:.*transfer-encoding:\\s*chunked)"
     },
     {
+      "enable": 1,
       "title": "Proxy abuse header",
       "severity": "medium",
       "cwe": "CWE-441",
@@ -57,6 +64,7 @@
       "rule_match": "(?i)(?:x-original-url:|x-rewrite-url:|x-http-method-override:|x-method-override:|x-forwarded-uri:)"
     },
     {
+      "enable": 1,
       "title": "Metadata host header alias",
       "severity": "high",
       "cwe": "CWE-918",
@@ -65,6 +73,7 @@
       "rule_match": "(?i)(?:host:.*(?:metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.169\\.254)|x-forwarded-host:.*(?:metadata\\.google\\.internal|169\\.254\\.169\\.254))"
     },
     {
+      "enable": 1,
       "title": "Desync CL zero header",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -73,6 +82,7 @@
       "rule_match": "(?i)(?:content-length:\\s*0.*(?:connection:\\s*keep-alive|upgrade:))"
     },
     {
+      "enable": 1,
       "title": "Suspicious websocket override header",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -81,6 +91,7 @@
       "rule_match": "(?i)(?:upgrade:\\s*websocket.*x-http-method-override:|sec-websocket-key:.*content-length:)"
     },
     {
+      "enable": 1,
       "title": "Suspicious auth header tooling",
       "severity": "medium",
       "cwe": "CWE-287",
@@ -89,6 +100,7 @@
       "rule_match": "(?i)(?:authorization:\\s*(?:basic\\s+YWRtaW46|bearer\\s+(?:null|undefined|test|fuzz)))"
     },
     {
+      "enable": 1,
       "title": "Request smuggling transfer coding",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -97,6 +109,7 @@
       "rule_match": "(?i)(?:transfer-encoding:\\s*(?:chunked\\s*,|gzip\\s*,\\s*chunked|chunked\\s*,\\s*gzip))"
     },
     {
+      "enable": 1,
       "title": "Malformed accept header fuzzing",
       "severity": "low",
       "cwe": "CWE-20",
@@ -105,6 +118,7 @@
       "rule_match": "(?i)(?:accept:\\s*\\*/\\*;q=0(?:\\.0+)?\\s*,\\s*\\*/\\*)"
     },
     {
+      "enable": 0,
       "title": "Suspicious origin header local",
       "severity": "medium",
       "cwe": "CWE-346",
@@ -113,6 +127,7 @@
       "rule_match": "(?i)(?:origin:\\s*https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|192\\.168\\.))"
     },
     {
+      "enable": 0,
       "title": "Suspicious referer local",
       "severity": "medium",
       "cwe": "CWE-346",
@@ -121,6 +136,7 @@
       "rule_match": "(?i)(?:referer:\\s*https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|192\\.168\\.))"
     },
     {
+      "enable": 1,
       "title": "Suspicious XXE content type",
       "severity": "medium",
       "cwe": "CWE-611",
@@ -129,6 +145,7 @@
       "rule_match": "(?i)(?:content-type:\\s*(?:text/xml|application/xml|application/soap\\+xml))"
     },
     {
+      "enable": 1,
       "title": "Suspicious debug headers",
       "severity": "low",
       "cwe": "CWE-489",

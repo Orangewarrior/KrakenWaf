@@ -5,6 +5,7 @@
   ],
   "uri_keywords": [
     {
+      "enable": 1,
       "title": "SQL Injection probe",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -13,6 +14,7 @@
       "rule_match": "union select"
     },
     {
+      "enable": 1,
       "title": "Boolean SQL injection probe",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -21,6 +23,7 @@
       "rule_match": "' or '1'='1"
     },
     {
+      "enable": 1,
       "title": "Directory traversal URI probe",
       "severity": "high",
       "cwe": "CWE-22",
@@ -29,6 +32,7 @@
       "rule_match": "../"
     },
     {
+      "enable": 1,
       "title": "phpMyAdmin exposure",
       "severity": "high",
       "cwe": "CWE-200",
@@ -39,6 +43,7 @@
   ],
   "header_keywords": [
     {
+      "enable": 1,
       "title": "Known scanner user agent",
       "severity": "medium",
       "cwe": "CWE-113",
@@ -47,6 +52,7 @@
       "rule_match": "sqlmap"
     },
     {
+      "enable": 1,
       "title": "Nikto scanner header",
       "severity": "medium",
       "cwe": "CWE-113",
@@ -57,6 +63,7 @@
   ],
   "body_keywords": [
     {
+      "enable": 1,
       "title": "Directory traversal payload",
       "severity": "high",
       "cwe": "CWE-22",
@@ -65,6 +72,7 @@
       "rule_match": "../"
     },
     {
+      "enable": 1,
       "title": "Shell execution probe",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -73,6 +81,7 @@
       "rule_match": "/bin/sh"
     },
     {
+      "enable": 1,
       "title": "PowerShell encoded command",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -81,6 +90,7 @@
       "rule_match": "powershell"
     },
     {
+      "enable": 1,
       "title": "Inline XSS payload",
       "severity": "high",
       "cwe": "CWE-79",
@@ -89,6 +99,7 @@
       "rule_match": "<script"
     },
     {
+      "enable": 1,
       "title": "SQLi login bypass payload",
       "severity": "critical",
       "cwe": "CWE-89",

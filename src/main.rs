@@ -3,6 +3,7 @@ mod app;
 mod banner;
 mod cli;
 mod error;
+mod dfa;
 mod ffi;
 mod logging;
 mod metrics;
@@ -19,6 +20,7 @@ use app::AppState;
 use bytes::Bytes;
 use clap::Parser;
 use cli::Cli;
+use dfa::{DfaConfig, DfaManagerBuilder};
 use metrics::WafMetrics;
 use response_headers::ResponseHeaderPolicy;
 use std::{path::PathBuf, sync::Arc};
@@ -41,6 +43,11 @@ async fn main() -> Result<()> {
     let metrics = Arc::new(WafMetrics::default());
     let rules_root = PathBuf::from(&cli.rules_dir);
     let rules = Arc::new(rules::RuleSet::from_dir(&rules_root)?);
+    let dfa_config = match cli.dfa_load.as_deref() {
+        Some(path) => DfaConfig::from_file(&PathBuf::from(path))?,
+        None => DfaConfig::default(),
+    };
+    let dfa_manager = Arc::new(DfaManagerBuilder::new(dfa_config).build());
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
     let waf = Arc::new(waf::WafEngine::new(
         rules,
@@ -51,6 +58,7 @@ async fn main() -> Result<()> {
         cli.enable_vectorscan,
         root_dir.join("logs").join("db").join("rate_limit_state.json"),
         metrics.clone(),
+        dfa_manager.clone(),
     )?);
     let proxy = Arc::new(proxy::ProxyClient::new(
         &cli.upstream,
@@ -78,7 +86,7 @@ async fn main() -> Result<()> {
     let tls_config = tls::build_tls_config(PathBuf::from(&cli.sni_map).as_path())?;
     let tls_acceptor = TlsAcceptor::from(tls_config);
 
-    info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, upstream=%cli.upstream, "KrakenWaf initialized");
+    info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, dfa_config_loaded=cli.dfa_load.is_some(), upstream=%cli.upstream, "KrakenWaf initialized");
 
     server::run(cli.listen, tls_acceptor, state).await
 }

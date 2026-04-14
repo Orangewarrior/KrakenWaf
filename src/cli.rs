@@ -58,6 +58,9 @@ pub struct Cli {
 
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,
+
+    #[arg(long = "dfa-load")]
+    pub dfa_load: Option<String>,
 }
 
 impl Cli {
