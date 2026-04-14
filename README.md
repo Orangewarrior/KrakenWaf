@@ -1,4 +1,4 @@
-# KrakenWaf 2.7.19
+# KrakenWaf 2.7.22
 
 ## 🚀 Overview
 
@@ -15,6 +15,7 @@ KrakenWaf is built on:
 - **Reverse proxy model** → sits in front of your application
 - **Streaming inspection pipeline** → analyzes requests in chunks
 - **Modular WAF engine** → rule-based + advanced detection engines
+- **Modular custom DFA** → to detect anomalys
 
 ### Flow
 
@@ -36,6 +37,13 @@ KrakenWaf supports multiple detection layers:
 - SIMD optimized
 - Extremely fast multi-pattern matching
 - Used in tools such as Suricata for high-speed pattern matching
+
+### 🔹 Custom DFA(deterministic finite automaton)
+- SQLinjection comments evasion detect
+- Overflow attack detect 
+- SSTI detect
+- Ssi injection detect
+- esi injectiondetect
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -96,7 +104,6 @@ hostname,cert_path,key_path,is_default
 Example:
 ```csv
 blog.local,/opt/certs/blog.crt,/opt/certs/blog.key,true
-dvwa.local,/opt/certs/dvwa.crt,/opt/certs/dvwa.key,false
 ```
 
 Meaning:
@@ -203,7 +210,8 @@ target/release/krakenwaf \
   --allow-private-upstream \
   --enable-vectorscan \
   --enable-libinjection-sqli \
-  --enable-libinjection-xss 
+  --enable-libinjection-xss \
+  --dfa-load ./rules/dfa/config.yaml
 ```
 
 Access the protected app at:
@@ -298,6 +306,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--help` | Shows CLI help and exits |
 | `--version` | Prints the current KrakenWaf version and exits |
 | `--header-protection-injection` | Load rules to inject custom HTTP headers for all responses, you can see headers in /rules/headers_http/ |
+| `--dfa-load` | Load Custom DFAs look at the file ./rules/dfa/config.yaml to enable or disable each one |
 
 ---
 
@@ -382,25 +391,32 @@ KrakenWaf/
 
 ```json
 {
-  "blocked_ip_prefixes": ["10.10.10.", "192.0.2."],
+  "blocked_ip_prefixes": [
+    "10.10.10.",
+    "192.0.2."
+  ],
   "uri_keywords": [
     {
+      "enable": 1,
       "title": "SQL Injection probe",
       "severity": "critical",
       "cwe": "CWE-89",
       "description": "Detects common UNION SELECT probes in the request target.",
       "url": "https://cwe.mitre.org/data/definitions/89.html",
       "rule_match": "union select"
-    }
-  ],
-  "header_keywords": [],
-  "body_keywords": [],
-  "allow_paths": ["/health", "/__krakenwaf/health"],
-  "body_limits": {
-    "/upload": 10485760,
-    "/": 1048576
-  }
-}
+    },
+    {
+      "enable": 1,
+      "title": "Boolean SQL injection probe",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects classic boolean-based SQL injection probes in the URI query string.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "' or '1'='1"
+    },
+
+etc...
+
 ```
 
 ## Regex format
@@ -411,15 +427,61 @@ KrakenWaf/
 {
   "rules": [
     {
-      "title": "RCE regex",
+      "enable": 1,
+      "title": "Command injection separators body",
       "severity": "critical",
       "cwe": "CWE-78",
-      "description": "Detects command execution payloads.",
+      "description": "Detects shell metacharacters combined with common execution primitives in request bodies.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(cmd(\\.exe)?\\s+/c|powershell\\s+-enc)"
-    }
-  ]
-}
+      "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd))"
+    },
+    {
+      "enable": 1,
+      "title": "Command substitution body",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects command substitution in body payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:\\$\\((?:id|whoami|uname|curl|wget|bash|sh)|`(?:id|whoami|uname|curl|wget|bash|sh))"
+    },
+    {
+      "enable": 1,
+      "title": "Shell downloader body",
+      "severity": "high",
+      "cwe": "CWE-78",
+      "description": "Detects common downloader command chains in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:wget\\s+https?://|curl\\s+-[fsSLoO].*https?://|powershell(?:\\.exe)?\\s+-enc|certutil(?:\\.exe)?\\s+-urlcache\\s+-split\\s+-f)"
+    },
+    {
+      "enable": 1,
+      "title": "Reverse shell body",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects reverse shell primitives in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:nc\\s+-e|bash\\s+-i\\s*>&|/dev/tcp/\\d{1,3}(?:\\.\\d{1,3}){3}/\\d+|python(?:3)?\\s+-c\\s+[\"\\'].*socket)"
+    },
+    {
+      "enable": 1,
+      "title": "LFI file disclosure body",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects direct references to sensitive files in body content.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|boot\\.ini|win\\.ini|\\\\windows\\\\system32)"
+    },
+    {
+      "enable": 1,
+      "title": "Traversal body encoded",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects traversal sequences in body payloads.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\|%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f)"
+    },
+...
+etc
 ```
 
 The same schema is used for:
@@ -427,7 +489,8 @@ The same schema is used for:
 - `rules/regex/path_regex.json`
 - `rules/regex/header_regex.json`
 - `rules/Vectorscan/strings2block.json`
-- 
+- KrakenWaf have 80 rules or more with DFA...
+  
 ## Notes
 
 - Every public function is documented with Rust doc comments so `cargo doc` can render API documentation.
