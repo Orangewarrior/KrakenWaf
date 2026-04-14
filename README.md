@@ -498,6 +498,7 @@ The same schema is used for:
 - The primary rules format is JSON via `rules/rules.json`.
 - Vectorscan and libinjection are runtime-toggleable through CLI flags and compile-time optional through Cargo features.
 - The custom block page is optional; when omitted, KrakenWaf returns a plain text fallback block message.
+- - DOcs about DFA https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/dfa/schema.md
 
 
 ## Operational notes
