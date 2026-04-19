@@ -60,7 +60,8 @@ use anyhow::Result;
 use chrono::Utc;
 use ipnet::IpNet;
 use crate::ffi::libinjection;
-use std::{borrow::Cow, net::IpAddr, path::Path, sync::{Arc, RwLock}, time::Duration};
+use parking_lot::RwLock;
+use std::{borrow::Cow, net::IpAddr, path::Path, sync::Arc, time::Duration};
 use tracing::warn;
 #[cfg(feature = "vectorscan-engine")]
 use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
@@ -163,21 +164,21 @@ impl WafEngine {
     }
 
     pub fn body_limit_for_path(&self, path: &str) -> usize {
-        self.rules.read().unwrap_or_else(|poisoned| poisoned.into_inner()).body_limit_for_path(path)
+        self.rules.read().body_limit_for_path(path)
     }
 
     pub async fn reload_from_dir(&self, root: &Path) -> Result<()> {
         let new_rules = Arc::new(RuleSet::from_dir(root)?);
         let new_matchers = build_matchers(&new_rules, self.vectorscan_enabled)?;
-        *self.rules.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = new_rules;
-        *self.matchers.write().unwrap_or_else(|poisoned| poisoned.into_inner()) = new_matchers;
+        *self.rules.write() = new_rules;
+        *self.matchers.write() = new_matchers;
         Ok(())
     }
 
     pub async fn inspect_early(&self, ctx: &InspectionContext) -> Decision {
         self.metrics.inc_inspected();
-        let rules = self.rules.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        let matchers = self.matchers.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let rules = self.rules.read().clone();
+        let matchers = self.matchers.read().clone();
 
         if rules.is_allowlisted(&ctx.path) {
             return Decision::Allow;
@@ -240,30 +241,34 @@ self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
     }
 
     pub fn inspect_complete_payload_with_context(&self, payload: &[u8], _method_hint: Option<&str>) -> Decision {
-        let rules = self.rules.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
-        let matchers = self.matchers.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+        let rules = self.rules.read().clone();
+        let matchers = self.matchers.read().clone();
 
         // Always URL-decode the payload (iteratively, bounded). Previously this was gated to
         // GET requests, which let percent-encoded POST bodies bypass keyword/regex matching.
         let normalized_bytes = normalize_request_bytes(payload);
         let original_text = String::from_utf8_lossy(payload);
         let normalized_text = String::from_utf8_lossy(normalized_bytes.as_ref());
-        let normalized_lower = normalize_for_inspection(&normalized_text);
 
-        if let Some(finding) = self.dfa_manager.inspect(&normalized_lower) {
-            return Decision::Block(finding);
+        // DFA requires a fully-lowercased input. Every other matcher is already
+        // case-insensitive (AhoCorasick → ascii_case_insensitive, Vectorscan → CASELESS,
+        // Regex patterns → (?i)), so we avoid one full heap allocation per request by
+        // only lowercasing for the DFA check and dropping that copy immediately after.
+        {
+            let dfa_lower = normalized_text.to_lowercase();
+            if let Some(finding) = self.dfa_manager.inspect(&dfa_lower) {
+                return Decision::Block(finding);
+            }
         }
 
-                {
-            if self.libinjection_sqli_enabled || self.libinjection_xss_enabled {
-                if let Some(finding) = libinjection_match(
-                    normalized_bytes.as_ref(),
-                    original_text.as_ref(),
-                    self.libinjection_sqli_enabled,
-                    self.libinjection_xss_enabled,
-                ) {
-                    return Decision::Block(finding);
-                }
+        if self.libinjection_sqli_enabled || self.libinjection_xss_enabled {
+            if let Some(finding) = libinjection_match(
+                normalized_bytes.as_ref(),
+                original_text.as_ref(),
+                self.libinjection_sqli_enabled,
+                self.libinjection_xss_enabled,
+            ) {
+                return Decision::Block(finding);
             }
         }
 
@@ -271,14 +276,14 @@ self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
             #[cfg(feature = "vectorscan-engine")]
             {
                 if let Some(matcher) = &matchers.vectorscan {
-                    if let Some(finding) = vectorscan_match(matcher, &normalized_lower, original_text.as_ref()) {
+                    if let Some(finding) = vectorscan_match(matcher, normalized_text.as_ref(), original_text.as_ref()) {
                         return Decision::Block(finding);
                     }
                 }
             }
         }
 
-        for view in inspection_views(&normalized_lower) {
+        for view in inspection_views(normalized_text.as_ref()) {
             if let Some(finding) = keyword_match(matchers.uri.as_ref(), view, original_text.as_ref()) {
                 return Decision::Block(finding);
             }
@@ -392,9 +397,6 @@ fn normalize_request_bytes(payload: &[u8]) -> Cow<'_, [u8]> {
     }
 }
 
-fn normalize_for_inspection(input: &str) -> String {
-    input.to_lowercase()
-}
 
 fn inspection_views<'a>(normalized: &'a str) -> Vec<&'a str> {
     let mut views = Vec::with_capacity(8);
