@@ -1,4 +1,4 @@
-## [2.7.28] - 2026-04-16
+## [2.7.37] - 2026-04-16
 
 ### Added
 - Vendored **real libinjection 4.0.0** C sources under `ffi/libinjection/vendor/libinjection-4.0.0/src`.
