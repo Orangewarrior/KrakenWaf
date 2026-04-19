@@ -1,6 +1,7 @@
 
 use crate::error::KrakenError;
 use anyhow::{Context, Result};
+use tracing::warn;
 use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer},
     server::{ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni, ServerConfig},
@@ -108,6 +109,27 @@ struct FallbackResolver {
 
 impl ResolvesServerCert for FallbackResolver {
     fn resolve(&self, ch: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
-        self.resolver.resolve(ch).or_else(|| Some(self.default.clone()))
+        // Extract SNI before moving ch into the resolver (borrow ends after map).
+        let sni = ch.server_name().map(str::to_owned);
+        match self.resolver.resolve(ch) {
+            Some(cert) => Some(cert),
+            None => {
+                // Serve the default certificate but always log: in multi-tenant deployments
+                // this may expose the wrong cert to a client — operators must know it happened.
+                match &sni {
+                    Some(name) => warn!(
+                        target: "krakenwaf",
+                        sni = %name,
+                        "TLS: SNI not found in sni_map, serving default certificate — \
+                         add an entry for this hostname to silence this warning"
+                    ),
+                    None => warn!(
+                        target: "krakenwaf",
+                        "TLS: ClientHello carries no SNI, serving default certificate"
+                    ),
+                }
+                Some(self.default.clone())
+            }
+        }
     }
 }

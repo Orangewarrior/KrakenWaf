@@ -131,9 +131,11 @@ async fn set_user_version(db: &DatabaseConnection, version: i64) -> Result<()> {
 }
 
 async fn table_exists(db: &DatabaseConnection, name: &str) -> Result<bool> {
-    let escaped = name.replace("'", "''");
-    let sql = format!("SELECT name FROM sqlite_master WHERE type='table' AND name='{}' LIMIT 1;", escaped);
-    let row = db.query_one(Statement::from_string(DatabaseBackend::Sqlite, sql)).await?;
+    let row = db.query_one(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1;",
+        [name.to_owned().into()],
+    )).await?;
     Ok(row.is_some())
 }
 

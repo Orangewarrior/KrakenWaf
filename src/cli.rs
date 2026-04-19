@@ -53,6 +53,11 @@ pub struct Cli {
     #[arg(long, default_value_t = 2048)]
     pub max_connections: usize,
 
+    /// Maximum upstream response body to buffer (bytes). Prevents an upstream returning
+    /// an unbounded body from exhausting WAF memory. Default: 100 MiB.
+    #[arg(long, default_value_t = 100 * 1024 * 1024)]
+    pub max_upstream_response_bytes: usize,
+
     #[arg(long, default_value_t = 30)]
     pub connection_timeout_secs: u64,
 

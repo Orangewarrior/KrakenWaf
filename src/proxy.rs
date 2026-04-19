@@ -200,7 +200,21 @@ impl ProxyClient {
                 response_builder = response_builder.header(name, value);
             }
         }
-        let bytes = response.bytes().await?;
+        // Stream the upstream body in chunks so an oversized response (e.g. 1 GB from a
+        // compromised upstream) cannot exhaust WAF heap. Limit is operator-configurable.
+        let max_response = state.cli.max_upstream_response_bytes;
+        let mut body_buf = BytesMut::new();
+        let mut response = response;
+        while let Some(chunk) = response.chunk().await.map_err(|err| KrakenError::Upstream(err.to_string()))? {
+            body_buf.extend_from_slice(&chunk);
+            if body_buf.len() > max_response {
+                anyhow::bail!(
+                    "upstream response body exceeds limit of {max_response} bytes; \
+                     increase --max-upstream-response-bytes if the upstream legitimately returns large responses"
+                );
+            }
+        }
+        let bytes = body_buf.freeze();
         let mut built = response_builder
             .body(Full::new(bytes))
             .map_err(|err| anyhow::anyhow!("failed to assemble upstream response: {err}"))?;
