@@ -1364,6 +1364,7 @@ dependencies = [
  "ipnet",
  "memchr",
  "once_cell",
+ "parking_lot",
  "percent-encoding",
  "pretty_assertions",
  "regex",

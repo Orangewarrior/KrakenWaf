@@ -71,7 +71,7 @@ async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String)
             .status(StatusCode::OK)
             .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
             .body(Full::new(Bytes::from(state.metrics.render_prometheus())))
-            .unwrap();
+            .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
         state.response_header_policy.apply(response.headers_mut(), false);
         return response;
     }

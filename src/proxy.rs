@@ -201,7 +201,9 @@ impl ProxyClient {
             }
         }
         let bytes = response.bytes().await?;
-        let mut built = response_builder.body(Full::new(bytes)).unwrap();
+        let mut built = response_builder
+            .body(Full::new(bytes))
+            .map_err(|err| anyhow::anyhow!("failed to assemble upstream response: {err}"))?;
         apply_response_policy(state, &mut built);
         Ok(built)
     }
@@ -400,7 +402,7 @@ fn block_content_response(state: &AppState, status: StatusCode, fallback_message
             .status(status)
             .header("content-type", state.block_response_content_type.as_str())
             .body(Full::new(body.clone()))
-            .unwrap()
+            .unwrap_or_else(|_| plain_response(status, fallback_message))
     } else {
         plain_response(status, fallback_message)
     };
@@ -431,9 +433,11 @@ fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppStat
         Ok(ip) => ip,
         Err(_) => return peer_ip.to_string(),
     };
-    let mut trusted = state.cli.trusted_proxy_cidrs.iter().filter_map(|cidr| cidr.parse::<ipnet::IpNet>().ok());
-    let behind_trusted_proxy = trusted.any(|net| net.contains(&peer));
-    if !behind_trusted_proxy {
+    let trusted_nets: Vec<ipnet::IpNet> = state.cli.trusted_proxy_cidrs
+        .iter()
+        .filter_map(|cidr| cidr.parse().ok())
+        .collect();
+    if !trusted_nets.iter().any(|net| net.contains(&peer)) {
         return peer_ip.to_string();
     }
     let header_name = match state.cli.real_ip_header.as_deref() {
@@ -445,12 +449,25 @@ fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppStat
         None => return peer_ip.to_string(),
     };
     let candidate = if header_name.eq_ignore_ascii_case("x-forwarded-for") {
-        raw.split(',').next().map(str::trim).unwrap_or("")
+        // Rightmost-trusted algorithm (RFC 7239 §5.3): walk right-to-left, skip IPs that
+        // belong to a trusted proxy CIDR, and pick the first one that does not. Using the
+        // leftmost value (split(',').next()) is client-controlled and trivially bypassable —
+        // an attacker can prepend any IP to spoof past blocklist and rate-limit checks.
+        raw.split(',')
+            .rev()
+            .map(str::trim)
+            .find(|s| {
+                s.parse::<IpAddr>()
+                    .ok()
+                    .map_or(true, |ip| !trusted_nets.iter().any(|net| net.contains(&ip)))
+            })
+            .unwrap_or(peer_ip)
+            .to_string()
     } else {
-        raw.trim()
+        raw.trim().to_string()
     };
     if candidate.parse::<IpAddr>().is_ok() {
-        candidate.to_string()
+        candidate
     } else {
         peer_ip.to_string()
     }
