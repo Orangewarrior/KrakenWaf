@@ -162,15 +162,33 @@ fn finding(title: &str, severity: Severity, cwe: &str, description: &str, refere
 }
 
 fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
+    // Accept both integer (0/1) and YAML-boolean (true/false) values so that
+    // `SSTI_detect: true` enables the engine instead of silently coercing to 0.
+    #[derive(Debug, Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrInt {
+        Bool(bool),
+        Int(i64),
+    }
+    impl From<BoolOrInt> for i64 {
+        fn from(v: BoolOrInt) -> i64 {
+            match v {
+                BoolOrInt::Bool(b) => b as i64,
+                BoolOrInt::Int(n) => n,
+            }
+        }
+    }
+
     #[derive(Debug, Deserialize)]
     struct StrictCfg {
         #[serde(rename = "DFA-Rules")]
-        dfa_rules: Option<BTreeMap<String, i64>>,
+        dfa_rules: Option<BTreeMap<String, BoolOrInt>>,
     }
 
     if let Ok(strict) = serde_yaml::from_str::<StrictCfg>(content) {
         if let Some(map) = strict.dfa_rules {
-            return Ok(from_map(&map));
+            let int_map: BTreeMap<String, i64> = map.into_iter().map(|(k, v)| (k, v.into())).collect();
+            return Ok(from_map(&int_map));
         }
     }
 
@@ -185,7 +203,22 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
         if let Some((k, v)) = normalized.split_once(':') {
             saw_candidate = true;
             let key = k.trim().to_string();
-            let value = v.trim().parse::<i64>().unwrap_or(0);
+            let raw = v.trim();
+            let value = if raw.eq_ignore_ascii_case("true") {
+                1i64
+            } else if raw.eq_ignore_ascii_case("false") {
+                0i64
+            } else if let Ok(n) = raw.parse::<i64>() {
+                n
+            } else {
+                warn!(
+                    target: "krakenwaf",
+                    key = %key,
+                    raw_value = %raw,
+                    "DFA config: unrecognised value, treating as disabled (expected 0/1 or true/false)"
+                );
+                0i64
+            };
             map.insert(key, value);
         }
     }

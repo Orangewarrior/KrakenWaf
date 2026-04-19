@@ -16,20 +16,19 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
     info!(target: "krakenwaf", addr=%listener_addr, "KrakenWaf listener started");
 
     loop {
+        // Acquire a connection slot BEFORE accepting the TCP connection. This prevents
+        // the kernel from completing the 3-way handshake (and allocating TLS state) for
+        // connections we cannot serve yet, providing backpressure under SYN floods.
+        let permit = match semaphore.clone().acquire_owned().await {
+            Ok(p) => p,
+            Err(_) => return Err(anyhow::anyhow!("connection semaphore closed")),
+        };
+
         let (stream, peer) = listener.accept().await?;
         let acceptor = tls_acceptor.clone();
         let state = state.clone();
-        let semaphore = semaphore.clone();
 
         task::spawn(async move {
-            let permit = match semaphore.acquire_owned().await {
-                Ok(permit) => permit,
-                Err(err) => {
-                    error!(target: "krakenwaf", "failed to acquire connection permit: {err}");
-                    return;
-                }
-            };
-
             let _permit = permit;
             match acceptor.accept(stream).await {
                 Ok(tls_stream) => {
