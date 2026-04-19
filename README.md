@@ -142,6 +142,8 @@ Example `blocked.html`:
 ## 🧪 Example: Protect DVWA for Testing attacks
 With Vectorscan:
 ```bash
+git clone https://github.com/Orangewarrior/KrakenWaf
+cd KrakenWaf
 cargo clean
 cargo build --release --features "vectorscan-engine"
 ```
