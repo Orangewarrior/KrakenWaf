@@ -61,6 +61,13 @@ pub struct Cli {
 
     #[arg(long = "dfa-load")]
     pub dfa_load: Option<String>,
+
+    #[arg(long = "real-ip-header")]
+    pub real_ip_header: Option<String>,
+
+    #[arg(long = "trusted-proxy-cidrs", value_delimiter = ',')]
+    pub trusted_proxy_cidrs: Vec<String>,
+
 }
 
 impl Cli {

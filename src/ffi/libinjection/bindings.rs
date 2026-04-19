@@ -1,4 +1,4 @@
-#[link(name = "krakenwaf_libinjection", kind = "static")]
+#![allow(dead_code)]
 unsafe extern "C" {
     pub fn kwaf_libinjection_sqli(
         data: *const u8,

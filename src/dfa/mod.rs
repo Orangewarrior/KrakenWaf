@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
+use tracing::warn;
 
 mod esi_injection_detect;
 mod overflow_detect;
@@ -174,6 +175,7 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
     }
 
     let mut map = BTreeMap::new();
+    let mut saw_candidate = false;
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" || trimmed.eq_ignore_ascii_case("DFA-Rules") || trimmed.eq_ignore_ascii_case("DFA-Rules:") {
@@ -181,10 +183,16 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
         }
         let normalized = trimmed.replace('=', ":");
         if let Some((k, v)) = normalized.split_once(':') {
+            saw_candidate = true;
             let key = k.trim().to_string();
             let value = v.trim().parse::<i64>().unwrap_or(0);
             map.insert(key, value);
         }
+    }
+    if map.is_empty() && saw_candidate {
+        warn!(target: "krakenwaf", "DFA YAML fallback parser did not recover any valid rules; all DFA engines will remain disabled");
+    } else if map.is_empty() {
+        warn!(target: "krakenwaf", "DFA config parsed to an empty rule map; all DFA engines are disabled");
     }
     Ok(from_map(&map))
 }

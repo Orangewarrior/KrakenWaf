@@ -1,4 +1,5 @@
 use krakenwaf::{
+    dfa::{DfaConfig, DfaManagerBuilder},
     metrics::WafMetrics,
     rules::RuleSet,
     waf::{Decision, InspectionContext, WafEngine},
@@ -12,9 +13,11 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
         240,
         false,
         false,
+        false,
         vectorscan_enabled,
         tempfile::tempdir().unwrap().path().join("rate_limit.json"),
         Arc::new(WafMetrics::default()),
+        Arc::new(DfaManagerBuilder::new(DfaConfig::default()).build()),
     )
     .expect("engine")
 }

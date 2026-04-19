@@ -59,13 +59,14 @@ impl ProxyClient {
 
     pub async fn handle(&self, state: &AppState, mut req: Request<Incoming>, client_ip: String) -> Response<Full<Bytes>> {
         let method = req.method().clone();
+        let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
         let uri = req.uri().clone();
         let path = crate::rules::normalize_url_path(uri.path());
         let headers_flat = flatten_headers(req.headers());
         let body_limit = state.waf.body_limit_for_path(&path);
 
         let context = InspectionContext {
-            client_ip: client_ip.clone(),
+            client_ip: effective_ip.clone(),
             method: method.to_string(),
             uri: uri.to_string(),
             path: path.clone(),
@@ -80,19 +81,6 @@ impl ProxyClient {
                 return self.block_response(state, event).await;
             }
         }
-
-        if let Some(query) = uri.query() {
-            if !query.is_empty() {
-                match state.waf.inspect_complete_payload(query.as_bytes()) {
-                    Decision::Allow => {}
-                    Decision::Block(finding) => {
-                        let event = build_event(&context, &finding, None);
-                        return self.block_response(state, event).await;
-                    }
-                }
-            }
-        }
-
         let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut()).await {
             Ok(bytes) => bytes,
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
@@ -108,7 +96,8 @@ impl ProxyClient {
             }
         };
 
-        match state.waf.inspect_complete_payload(&body_bytes) {
+        let full_request = format_full_request_bytes(&context, Some(&body_bytes));
+        match state.waf.inspect_complete_payload_with_context(&full_request, Some(&context.method)) {
             Decision::Allow => {}
             Decision::Block(finding) => {
                 let event = build_event(&context, &finding, Some(&body_bytes));
@@ -212,7 +201,8 @@ async fn consume_and_inspect_body(
             inspection_buf.extend_from_slice(&overlap);
             inspection_buf.extend_from_slice(chunk);
 
-            match state.waf.inspect_body_chunk(&inspection_buf) {
+            let request_window = format_full_request_window_bytes(ctx, &inspection_buf);
+            match state.waf.inspect_complete_payload_with_context(&request_window, Some(&ctx.method)) {
                 Decision::Allow => {
                     acc.extend_from_slice(chunk);
                     overlap = inspection_buf[inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..].to_vec();
@@ -233,6 +223,38 @@ async fn consume_and_inspect_body(
 fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>) -> SecurityEvent {
     let request_payload = format_full_request(ctx, body, &finding.request_payload);
     SecurityEvent::from_finding(finding, ctx, request_payload)
+}
+
+pub(crate) fn format_request_prefix_bytes(ctx: &InspectionContext) -> Vec<u8> {
+    let mut out = Vec::with_capacity(
+        ctx.method.len() + 1 + ctx.uri.len() + 10 + ctx.headers.len() + 4
+    );
+    out.extend_from_slice(ctx.method.as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(ctx.uri.as_bytes());
+    out.extend_from_slice(b" HTTP/1.1\n");
+    if !ctx.headers.is_empty() {
+        out.extend_from_slice(ctx.headers.as_bytes());
+        if !ctx.headers.ends_with('\n') {
+            out.push(b'\n');
+        }
+    }
+    out.push(b'\n');
+    out
+}
+
+fn format_full_request_window_bytes(ctx: &InspectionContext, body_window: &[u8]) -> Vec<u8> {
+    let mut out = format_request_prefix_bytes(ctx);
+    out.extend_from_slice(body_window);
+    out
+}
+
+fn format_full_request_bytes(ctx: &InspectionContext, body: Option<&Bytes>) -> Vec<u8> {
+    let mut out = format_request_prefix_bytes(ctx);
+    if let Some(bytes) = body {
+        out.extend_from_slice(bytes);
+    }
+    out
 }
 
 fn format_full_request(ctx: &InspectionContext, body: Option<&Bytes>, matched_payload: &str) -> String {
@@ -339,4 +361,44 @@ pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>
         .header("content-type", "text/plain; charset=utf-8")
         .body(Full::new(Bytes::copy_from_slice(message.as_bytes())))
         .unwrap()
+}
+
+
+fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Option<String> {
+    headers
+        .iter()
+        .find(|(k, _)| k.as_str().eq_ignore_ascii_case(name))
+        .and_then(|(_, v)| v.to_str().ok())
+        .map(str::to_owned)
+}
+
+fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppState) -> String {
+    use std::net::IpAddr;
+    let peer = match peer_ip.parse::<IpAddr>() {
+        Ok(ip) => ip,
+        Err(_) => return peer_ip.to_string(),
+    };
+    let mut trusted = state.cli.trusted_proxy_cidrs.iter().filter_map(|cidr| cidr.parse::<ipnet::IpNet>().ok());
+    let behind_trusted_proxy = trusted.any(|net| net.contains(&peer));
+    if !behind_trusted_proxy {
+        return peer_ip.to_string();
+    }
+    let header_name = match state.cli.real_ip_header.as_deref() {
+        Some(h) if !h.trim().is_empty() => h.trim(),
+        _ => return peer_ip.to_string(),
+    };
+    let raw = match header_value_case_insensitive(headers, header_name) {
+        Some(v) => v,
+        None => return peer_ip.to_string(),
+    };
+    let candidate = if header_name.eq_ignore_ascii_case("x-forwarded-for") {
+        raw.split(',').next().map(str::trim).unwrap_or("")
+    } else {
+        raw.trim()
+    };
+    if candidate.parse::<IpAddr>().is_ok() {
+        candidate.to_string()
+    } else {
+        peer_ip.to_string()
+    }
 }

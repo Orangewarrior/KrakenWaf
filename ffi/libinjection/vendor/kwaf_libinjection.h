@@ -1,5 +1,5 @@
-#ifndef KWAF_LIBINJECTION_COMPAT_H
-#define KWAF_LIBINJECTION_COMPAT_H
+#ifndef KWAF_LIBINJECTION_H
+#define KWAF_LIBINJECTION_H
 
 #include <stddef.h>
 

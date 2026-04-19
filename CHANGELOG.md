@@ -1,3 +1,23 @@
+## [2.7.28] - 2026-04-16
+
+### Added
+- Vendored **real libinjection 4.0.0** C sources under `ffi/libinjection/vendor/libinjection-4.0.0/src`.
+- Added a real `cc` build pipeline in `build.rs` for libinjection SQLi/XSS FFI.
+- Added `docs/libinjection.md` documenting the vendored FFI integration.
+- Added `docs/deployment.md` documenting trusted reverse-proxy deployment for rate limiting and real-client IP extraction.
+
+### Changed
+- Replaced the placeholder compatibility shim with a real FFI wrapper built on top of libinjection 4.0.0.
+- Optimized `src/dfa/esi_injection_detect.rs` to use `memchr` + byte scanning instead of `to_lowercase()` + repeated `contains()`.
+- Optimized `src/dfa/ssi_injection_detect.rs` to use `memchr` + byte scanning instead of `to_lowercase()` + repeated `contains()`.
+- Added CLI support for trusted proxy CIDRs and a configurable real-IP header:
+  - `--trusted-proxy-cidrs`
+  - `--real-ip-header`
+
+### Fixed
+- Recovered safely from poisoned `RwLock` guards in the WAF engine instead of panicking.
+- Emitted explicit warnings when the lenient DFA YAML parser yields an empty/invalid configuration instead of silently disabling DFA engines.
+
 ## [2.7.22] - 2026-04-06
 
 ### Added
@@ -269,3 +289,160 @@
 - Removed unused `ActiveModelTrait` import from `src/storage.rs`.
 - Removed unused `Ipv6Addr` import from `src/waf/engine.rs`.
 - Silenced the non-feature `vectorscan_enabled` warning in `src/waf/engine.rs` without changing runtime behavior.
+
+## 2.7.28.1
+- Removed unused compatibility shim files (`libinjection_compat.c` / `.h`) from the vendored libinjection integration.
+
+## 2.7.28.2
+- Fixed compile error E0596 in `src/proxy.rs` by making the `trusted_proxy_cidrs` iterator mutable before calling `.any(...)`.
+
+## 2.7.28.3
+- Fixed libinjection FFI static linking: corrected library name and removed invalid rustc-link-lib directive causing build failure.
+
+## 2.7.28.4
+- Fixed libinjection FFI linking properly: removed #[link(...)] attribute and relied on cc::Build automatic linkage.
+
+
+## 2.7.28.5
+- Removed unused `libinjection_sqli_enabled` and `libinjection_xss_enabled` fields from `WafEngine`, fixing dead-code warnings.
+- Suppressed dead-code warning noise for vendored libinjection FFI wrappers in `src/ffi/libinjection/mod.rs` and `bindings.rs`.
+- Consolidated today's fixes in the changelog:
+  - real libinjection 4.0.0 vendored FFI integration
+  - static-link / build.rs fixes
+  - proxy iterator mutability compile fix
+  - removal of unused `libinjection_compat.*` shim files
+- No behavior change in runtime detection logic.
+
+
+## 2.7.28.6
+- Fixed constructor mismatch in `main.rs` (E0061): removed extra arguments after refactor of `WafEngine::new`.
+- Cleaned integration after removal of libinjection flags from struct.
+- Build now compiles without errors.
+
+
+## 2.7.28.7
+- Fixed `main.rs` constructor call for `WafEngine::new` when building with `vectorscan-engine`.
+- Restored the missing `cli.enable_vectorscan` argument so the call matches the current constructor signature.
+- Kept prior libinjection/linker/build fixes intact.
+
+
+## 2.7.28.8
+- Fixed request-scope inspection bug for DFA and libinjection.
+- KrakenWaf now inspects a synthesized full-request payload composed of method, URI, headers, and body bytes.
+- Removed query-only inspection path and replaced it with full-request inspection after body assembly.
+- Streaming body inspection now evaluates a rolling full-request window, improving POST / REST payload detection before forwarding upstream.
+- Documented the inspection scope in `docs/libinjection.md` and `docs/deployment.md`.
+
+
+## 2.7.29
+- Fixed warning in `src/waf/engine.rs` by annotating the currently-unused `inspect_body_chunk` method with `#[allow(dead_code)]`.
+- Preserved the full-request inspection fix so DFA and libinjection evaluate GET, POST, REST-style requests, including body payloads.
+- Consolidated this release after the recent libinjection FFI, vectorscan constructor, proxy iterator, linker, and warning cleanup fixes.
+
+
+## 2.7.30
+- Added GET request URL decoding before inspection
+- Unified inspection pipeline for DFA, libinjection, vectorscan
+- Improved detection for URL-encoded attacks
+
+
+## 2.7.31
+- Fixed request inspection precedence so normalization happens before detector evaluation.
+- Added unified `inspect_complete_payload_with_context(...)` path and routed proxy body/full-request inspection through it.
+- Reintroduced libinjection runtime flags into `WafEngine` and wired FFI detections into the active inspection pipeline.
+- Normalized GET requests with URL decoding before DFA, vectorscan, libinjection and regex/keyword rule evaluation.
+- Left POST request bodies undecoded so body payloads are inspected as-sent.
+- Evaluated DFA/libinjection/vectorscan before keyword/regex rules, keeping rule filters as the last stage.
+- Disabled SSRF regex rules by default in bundled rule files to allow localhost/127.0.0.1 testing.
+- Updated integration tests for the current `WafEngine::new(...)` signature.
+
+
+## 2.7.31.1
+- Fixed compile error `E0425` in `src/waf/engine.rs` by exporting `format_request_prefix_bytes` from `src/proxy.rs` as `pub(crate)`.
+- Kept the request-normalization / full-request inspection changes from 2.7.31 intact.
+
+
+## 2.7.31.2
+- Reworked `normalize_request_bytes` to avoid unnecessary allocation on non-GET requests.
+- Replaced `payload.to_vec()` fallback with `Cow<[u8]>`, so non-GET requests now borrow the original byte slice and only GET normalization allocates.
+- Updated call sites in `src/waf/engine.rs` to use `normalized_bytes.as_ref()`.
+
+
+## 2.7.31.3
+- Fixed malformed import insertion in `src/waf/engine.rs` introduced by the previous normalization patch.
+- Added the missing `use crate::proxy::format_request_prefix_bytes;` import to resolve `E0425`.
+- Added the missing `use std::borrow::Cow;` import at module scope to resolve parsing/import errors.
+- Preserved the `Cow<[u8]>` normalization optimization for non-GET requests.
+
+
+## 2.7.31.4
+- Fixed duplicate `Cow` import in `src/waf/engine.rs` (`E0252`).
+- Removed the extra `use std::borrow::Cow;` line while keeping the grouped `std::{borrow::Cow, ...}` import.
+- Preserved the request normalization and full-request inspection changes from 2.7.31.x.
+
+
+## 2.7.31.5
+- Fixed dead_code warnings for libinjection flags in WafEngine
+
+
+## 2.7.32
+- Fixed invalid Cargo.toml version (SemVer compliant)
+- Removed `cfg(feature = "libinjection-engine")` so libinjection is always compiled
+- Libinjection is now always available at runtime and controlled only via argv flags
+- Removed dead_code workaround since fields are now used in all builds
+
+
+## 2.7.32.1
+- Fixed `Cargo.toml` syntax regression by updating only the `[package]` version field.
+- Preserved the always-built libinjection integration and runtime argv control.
+
+
+## 2.7.32.2
+- Fixed `Cargo.toml` corruption where a dependency inline table (`chrono`) had been overwritten with an invalid version string.
+- Preserved package version as valid SemVer (`2.7.32`) and limited version normalization to the package section.
+
+
+## 2.7.32.3
+- Repaired `Cargo.toml` dependency syntax corruption introduced by earlier automated version replacement.
+- Restored sane dependency specifications for `clap`, `hyper`, `hyper-util`, `reqwest`, `rustls`, `sea-orm`, `serde`, `tokio`, `tokio-util`, `tower`, `tracing-subscriber`, and `vectorscan-rs`.
+- Kept the package version as valid SemVer (`2.7.32`).
+- Removed the unused `libinjection-engine` feature from `[features]`; libinjection remains built-in and runtime-controlled by argv.
+
+
+## 2.7.32.4
+- Fixed `tracing_subscriber::fmt::Layer::json()` build error by enabling the `json` feature in `tracing-subscriber`.
+- Preserved the Cargo.toml dependency repairs from 2.7.32.3.
+
+
+## 2.7.32.5
+- Fixed linker errors for libinjection (undefined symbols)
+- Added build.rs compiling libinjection C sources via cc crate
+- libinjection now properly linked into binary
+
+
+## 2.7.33
+- Fixed libinjection native build paths in `build.rs`.
+- Switched from nonexistent `src/ffi/libinjection/*.c` paths to the vendored sources under `ffi/libinjection/vendor/libinjection-4.0.0/src/`.
+- Added compilation of `ffi/libinjection/vendor/kwaf_libinjection.c`, which exports `kwaf_libinjection_sqli` and `kwaf_libinjection_xss`.
+- Added required include directories for the wrapper and vendored libinjection headers.
+
+
+## 2.7.34
+- Fixed native libinjection linkage by making the `build.rs` export explicit `cargo:rustc-link-search` and `cargo:rustc-link-lib=static=kwaf_libinjection`.
+- Kept compilation of the vendored wrapper (`kwaf_libinjection.c`) plus libinjection SQLi/XSS/HTML5 sources.
+- Added `-Wno-enum-int-mismatch` for the vendored libinjection 4.0.0 C sources to suppress upstream enum/int signature mismatch warnings during the C build.
+
+
+## 2.7.35
+- Fixed unresolved symbols `kwaf_libinjection_*` by adding explicit Rust FFI linkage:
+  #[link(name = "kwaf_libinjection", kind = "static")]
+- Ensures Rust linker pulls symbols from cc-built static lib.
+
+
+## 2.7.36
+- Fixed missing symbol export in kwaf_libinjection.c (removed static/inline)
+- Added -fvisibility=default in build.rs
+
+
+## 2.7.37
+- Forced linker to include libinjection symbols using --whole-archive
