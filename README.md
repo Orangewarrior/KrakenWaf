@@ -1,4 +1,4 @@
-# KrakenWaf 2.7.22
+# KrakenWaf 2.7.37
 
 ## 🚀 Overview
 
@@ -61,11 +61,6 @@ cargo build --release
 With Vectorscan:
 ```bash
 cargo build --release --features "vectorscan-engine"
-```
-
-With libinjection + Vectorscan:
-```bash
-cargo build --release --features "libinjection-engine vectorscan-engine"
 ```
 
 ---
@@ -136,7 +131,6 @@ Run:
   --max-connections 2048 \
   --internal-header-name x-krakenwaf \
   --blockmsg ./blockpages/blocked.html \
-  --verbose
 ```
 
 Access:
@@ -177,7 +171,7 @@ Example `blocked.html`:
 With Vectorscan:
 ```bash
 cargo clean
-cargo build --release --features "libinjection-engine vectorscan-engine"
+cargo build --release --features "vectorscan-engine"
 ```
 Prepare certs:
 ```bash
@@ -211,7 +205,9 @@ target/release/krakenwaf \
   --enable-vectorscan \
   --enable-libinjection-sqli \
   --enable-libinjection-xss \
-  --dfa-load ./rules/dfa/config.yaml
+  --dfa-load ./rules/dfa/config.yaml \
+  --real-ip-header X-Forwarded-For \
+  --trusted-proxy-cidrs 127.0.0.1/32
 ```
 
 Access the protected app at:
@@ -305,8 +301,10 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--verbose` | Enables more detailed runtime logging |
 | `--help` | Shows CLI help and exits |
 | `--version` | Prints the current KrakenWaf version and exits |
-| `--header-protection-injection` | Load rules to inject custom HTTP headers for all responses, you can see headers in /rules/headers_http/ |
+| `--header-protection-injection` | Load rules to inject custom HTTP headers for all responses, you can see headers in /rules/headers_http/ 
 | `--dfa-load` | Load Custom DFAs look at the file ./rules/dfa/config.yaml to enable or disable each one |
+| --real-ip-header | This tells KrakenWaf which HTTP header contains the original client IP. |
+| --trusted-proxy-cidrs |This tells KrakenWaf which source IPs are allowed to be trusted as proxies. |
 
 ---
 
