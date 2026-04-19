@@ -281,6 +281,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--trusted-proxy-cidrs`[2] |This tells KrakenWaf which source IPs are allowed to be trusted as proxies. |
 
 More info [1][2] [here real ip and proxy cidrs options](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/real-ip-header-and-trusted-proxy-cidrs.md)
+
 ---
 
 ## 🚀 Why KrakenWaf?
