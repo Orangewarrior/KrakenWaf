@@ -1,17 +1,23 @@
 
 
-fn url_decode(input: &[u8]) -> Vec<u8> {
+/// Maximum number of URL-decode passes to perform when canonicalizing a payload.
+/// Bounded to defeat double/triple-encoding evasions while keeping the cost O(n·k).
+const MAX_URL_DECODE_PASSES: usize = 4;
+
+fn url_decode_once(input: &[u8]) -> (Vec<u8>, bool) {
     let mut out = Vec::with_capacity(input.len());
+    let mut changed = false;
     let mut i = 0;
     while i < input.len() {
         match input[i] {
             b'%' if i + 2 < input.len() => {
                 if let (Some(h), Some(l)) = (
-                    (input[i+1] as char).to_digit(16),
-                    (input[i+2] as char).to_digit(16),
+                    (input[i + 1] as char).to_digit(16),
+                    (input[i + 2] as char).to_digit(16),
                 ) {
                     out.push((h * 16 + l) as u8);
                     i += 3;
+                    changed = true;
                     continue;
                 }
                 out.push(input[i]);
@@ -20,6 +26,7 @@ fn url_decode(input: &[u8]) -> Vec<u8> {
             b'+' => {
                 out.push(b' ');
                 i += 1;
+                changed = true;
             }
             _ => {
                 out.push(input[i]);
@@ -27,7 +34,19 @@ fn url_decode(input: &[u8]) -> Vec<u8> {
             }
         }
     }
-    out
+    (out, changed)
+}
+
+fn url_decode(input: &[u8]) -> Vec<u8> {
+    let (mut current, mut changed) = url_decode_once(input);
+    let mut passes = 1;
+    while changed && passes < MAX_URL_DECODE_PASSES {
+        let (next, next_changed) = url_decode_once(&current);
+        current = next;
+        changed = next_changed;
+        passes += 1;
+    }
+    current
 }
 
 use crate::{
@@ -42,6 +61,7 @@ use chrono::Utc;
 use ipnet::IpNet;
 use crate::ffi::libinjection;
 use std::{borrow::Cow, net::IpAddr, path::Path, sync::{Arc, RwLock}, time::Duration};
+use tracing::warn;
 #[cfg(feature = "vectorscan-engine")]
 use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
 use crate::proxy::format_request_prefix_bytes;
@@ -219,12 +239,13 @@ self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
         self.inspect_complete_payload_with_context(payload, None)
     }
 
-    pub fn inspect_complete_payload_with_context(&self, payload: &[u8], method_hint: Option<&str>) -> Decision {
+    pub fn inspect_complete_payload_with_context(&self, payload: &[u8], _method_hint: Option<&str>) -> Decision {
         let rules = self.rules.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
         let matchers = self.matchers.read().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
 
-        let decode_get = method_hint.map(|m| m.eq_ignore_ascii_case("GET")).unwrap_or_else(|| looks_like_get_request(payload));
-        let normalized_bytes = normalize_request_bytes(payload, decode_get);
+        // Always URL-decode the payload (iteratively, bounded). Previously this was gated to
+        // GET requests, which let percent-encoded POST bodies bypass keyword/regex matching.
+        let normalized_bytes = normalize_request_bytes(payload);
         let original_text = String::from_utf8_lossy(payload);
         let normalized_text = String::from_utf8_lossy(normalized_bytes.as_ref());
         let normalized_lower = normalize_for_inspection(&normalized_text);
@@ -362,15 +383,12 @@ fn rule_to_finding(rule: &DetectionRule, haystack: &str) -> Finding {
 }
 
 
-fn looks_like_get_request(payload: &[u8]) -> bool {
-    payload.starts_with(b"GET ")
-}
-
-fn normalize_request_bytes<'a>(payload: &'a [u8], decode_get: bool) -> Cow<'a, [u8]> {
-    if decode_get {
-        Cow::Owned(url_decode(payload))
-    } else {
+fn normalize_request_bytes(payload: &[u8]) -> Cow<'_, [u8]> {
+    let decoded = url_decode(payload);
+    if decoded.as_slice() == payload {
         Cow::Borrowed(payload)
+    } else {
+        Cow::Owned(decoded)
     }
 }
 
@@ -431,13 +449,25 @@ fn parse_ip_net(value: &str) -> Option<IpNet> {
 
     if trimmed.ends_with('.') {
         let parts = trimmed.trim_end_matches('.').split('.').collect::<Vec<_>>();
-        let cidr = match parts.len() {
-            1 => format!("{}.0.0.0/8", parts[0]),
-            2 => format!("{}.{}.0.0/16", parts[0], parts[1]),
-            3 => format!("{}.{}.{}.0/24", parts[0], parts[1], parts[2]),
+        let (cidr, expanded_prefix) = match parts.len() {
+            1 => (format!("{}.0.0.0/8", parts[0]), 8u8),
+            2 => (format!("{}.{}.0.0/16", parts[0], parts[1]), 16),
+            3 => (format!("{}.{}.{}.0/24", parts[0], parts[1], parts[2]), 24),
             _ => return None,
         };
-        return cidr.parse::<IpNet>().ok();
+        let parsed = cidr.parse::<IpNet>().ok();
+        if parsed.is_some() {
+            // Surface silent CIDR widening so operators see a misconfigured short prefix
+            // (e.g. "10." -> 10.0.0.0/8) instead of accidentally blackholing huge ranges.
+            warn!(
+                target: "krakenwaf",
+                input = %trimmed,
+                expanded_to = %cidr,
+                prefix_bits = expanded_prefix,
+                "blocked_ip_prefixes entry expanded from dotted prefix; prefer explicit CIDR notation"
+            );
+        }
+        return parsed;
     }
 
     canonical_ip(trimmed).map(|ip| match ip {

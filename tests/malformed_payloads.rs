@@ -1,11 +1,16 @@
 
 use krakenwaf::{
+    dfa::{DfaConfig, DfaManagerBuilder},
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, RuleSet, Severity},
     waf::{Decision, WafEngine},
 };
 use regex::Regex;
 use std::{collections::HashMap, sync::Arc};
+
+fn empty_dfa_manager() -> Arc<krakenwaf::dfa::DfaManager> {
+    Arc::new(DfaManagerBuilder::new(DfaConfig::default()).build())
+}
 
 #[test]
 fn blocks_malformed_traversal_payload() {
@@ -38,8 +43,10 @@ fn blocks_malformed_traversal_payload() {
         false,
         false,
         false,
+        false,
         tempfile::tempdir().unwrap().path().join("rate_limit.json"),
         Arc::new(WafMetrics::default()),
+        empty_dfa_manager(),
     ).unwrap();
     let decision = engine.inspect_body_chunk(br"../../../../etc/passwd");
     assert!(matches!(decision, Decision::Block(_)));
@@ -79,8 +86,10 @@ fn blocks_regex_based_rce_pattern() {
         false,
         false,
         false,
+        false,
         tempfile::tempdir().unwrap().path().join("rate_limit.json"),
         Arc::new(WafMetrics::default()),
+        empty_dfa_manager(),
     ).unwrap();
     let decision = engine.inspect_body_chunk(br"powershell -enc AAAA");
     assert!(matches!(decision, Decision::Block(_)));

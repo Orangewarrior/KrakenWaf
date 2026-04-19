@@ -13,7 +13,18 @@ use reqwest::{redirect::Policy, Client};
 use tracing::{error, info, warn};
 use url::{Host, Url};
 
-const STREAM_OVERLAP_BYTES: usize = 4096;
+/// Bytes carried between adjacent body chunks when streaming-inspecting the body.
+/// Sized to be larger than any realistic detection pattern so attackers cannot
+/// reliably split a payload across TCP frames to evade the keyword/regex matchers.
+const STREAM_OVERLAP_BYTES: usize = 16 * 1024;
+
+/// Hard ceiling on the number of headers forwarded upstream and embedded into the
+/// inspection prefix. Defends against header-amplification DoS and request smuggling
+/// surface. Browsers send ~20-30 headers in practice.
+const MAX_FORWARDED_HEADERS: usize = 100;
+
+/// Hard ceiling on the cumulative bytes of forwarded headers (name + value sum).
+const MAX_FORWARDED_HEADER_BYTES: usize = 32 * 1024;
 
 pub struct ProxyClient {
     client: Client,
@@ -148,13 +159,27 @@ impl ProxyClient {
         headers: &HeaderMap,
         body: Bytes,
     ) -> Result<Response<Full<Bytes>>> {
-        let target = self.upstream.join(uri.path_and_query().map(|pq| pq.as_str()).unwrap_or("/"))?;
+        // Build the upstream URL by overlaying ONLY the request path and query on top of the
+        // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
+        // request URI (RFC 7230 §5.3.2) such as `http://attacker.tld/x` would otherwise
+        // *replace* the upstream base entirely (SSRF / upstream hijack).
+        let target = build_upstream_target(&self.upstream, &uri);
         let mut builder = self.client.request(method, target);
 
+        let mut forwarded_count: usize = 0;
+        let mut forwarded_bytes: usize = 0;
         for (name, value) in headers.iter() {
-            if !is_hop_by_hop(name) && name != HOST {
-                builder = builder.header(name, value);
+            if is_hop_by_hop(name) || name == HOST {
+                continue;
             }
+            forwarded_count += 1;
+            forwarded_bytes += name.as_str().len() + value.as_bytes().len();
+            if forwarded_count > MAX_FORWARDED_HEADERS || forwarded_bytes > MAX_FORWARDED_HEADER_BYTES {
+                anyhow::bail!(
+                    "request rejected: forwarded headers exceed limits (count<={MAX_FORWARDED_HEADERS}, bytes<={MAX_FORWARDED_HEADER_BYTES})"
+                );
+            }
+            builder = builder.header(name, value);
         }
 
         builder = builder.header("x-forwarded-proto", "https");
@@ -307,11 +332,39 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
 }
 
 fn flatten_headers(headers: &HeaderMap) -> String {
-    headers
-        .iter()
-        .map(|(name, value)| format!("{}: {}", name.as_str(), value.to_str().unwrap_or("<binary>")))
-        .collect::<Vec<_>>()
-        .join("\n")
+    let mut out = String::new();
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    for (name, value) in headers.iter() {
+        count += 1;
+        bytes += name.as_str().len() + value.as_bytes().len();
+        if count > MAX_FORWARDED_HEADERS || bytes > MAX_FORWARDED_HEADER_BYTES {
+            out.push_str("\n<truncated: header limit reached>");
+            break;
+        }
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(name.as_str());
+        out.push_str(": ");
+        out.push_str(value.to_str().unwrap_or("<binary>"));
+    }
+    out
+}
+
+/// Build the upstream URL by overlaying the request path and query on top of the
+/// configured upstream base URL. Never accepts the user-supplied authority/scheme.
+/// Leading `//` segments are collapsed to a single `/` to defeat protocol-relative
+/// reinterpretation by downstream HTTP libraries.
+fn build_upstream_target(upstream: &Url, uri: &Uri) -> Url {
+    let mut target = upstream.clone();
+    let raw_path = uri.path();
+    let trimmed = raw_path.trim_start_matches('/');
+    let safe_path = format!("/{}", trimmed);
+    target.set_path(&safe_path);
+    target.set_query(uri.query());
+    target.set_fragment(None);
+    target
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
