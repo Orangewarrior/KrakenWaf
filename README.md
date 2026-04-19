@@ -277,8 +277,8 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--version` | Prints the current KrakenWaf version and exits |
 | `--header-protection-injection` | Load rules to inject custom HTTP headers for all responses, you can see headers in /rules/headers_http/ 
 | `--dfa-load` | Load Custom DFAs look at the file ./rules/dfa/config.yaml to enable or disable each one |
-| --real-ip-header[1] | This tells KrakenWaf which HTTP header contains the original client IP. |
-| --trusted-proxy-cidrs[2] |This tells KrakenWaf which source IPs are allowed to be trusted as proxies. |
+| `--real-ip-header`[1] | This tells KrakenWaf which HTTP header contains the original client IP. |
+| `--trusted-proxy-cidrs`[2] |This tells KrakenWaf which source IPs are allowed to be trusted as proxies. |
 
 More info [1][2] [here real ip and proxy cidrs options](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/real-ip-header-and-trusted-proxy-cidrs.md)
 ---
