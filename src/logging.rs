@@ -1,7 +1,7 @@
 use crate::{rules::Severity, waf::{Finding, InspectionContext}};
 use anyhow::Result;
 use serde::Serialize;
-use std::{fs, path::Path};
+use std::{fs, io::Write as _, path::Path};
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -125,7 +125,10 @@ pub fn write_critical(handles: &LoggingHandles, event: &SecurityEvent) {
         event.cwe,
         event.reference_url,
     );
-    let _ = std::io::Write::write_all(&mut handles.critical_writer.clone(), line.as_bytes());
+    if let Err(err) = std::io::Write::write_all(&mut handles.critical_writer.clone(), line.as_bytes()) {
+        // Avoid routing through tracing here (would recurse into write_critical).
+        let _ = writeln!(std::io::stderr(), "krakenwaf: critical log write failed: {err}");
+    }
 }
 
 fn infer_engine(rule_line_match: &str, rule_match: &str) -> String {

@@ -415,6 +415,7 @@ fn block_content_response(state: &AppState, status: StatusCode, fallback_message
         Response::builder()
             .status(status)
             .header("content-type", state.block_response_content_type.as_str())
+            .header("x-content-type-options", "nosniff")
             .body(Full::new(body.clone()))
             .unwrap_or_else(|_| plain_response(status, fallback_message))
     } else {
@@ -428,6 +429,7 @@ pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>
     Response::builder()
         .status(status)
         .header("content-type", "text/plain; charset=utf-8")
+        .header("x-content-type-options", "nosniff")
         .body(Full::new(Bytes::copy_from_slice(message.as_bytes())))
         .unwrap()
 }

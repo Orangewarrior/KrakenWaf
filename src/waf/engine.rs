@@ -266,7 +266,7 @@ self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
         // Regex patterns → (?i)), so we avoid one full heap allocation per request by
         // only lowercasing for the DFA check and dropping that copy immediately after.
         {
-            let dfa_lower = normalized_text.to_lowercase();
+            let dfa_lower = normalized_text.to_ascii_lowercase();
             if let Some(finding) = self.dfa_manager.inspect(&dfa_lower) {
                 return Decision::Block(finding);
             }
@@ -415,7 +415,7 @@ fn inspection_views<'a>(normalized: &'a str) -> Vec<&'a str> {
         views.push(normalized);
     }
 
-    for part in normalized.split(|c| matches!(c, '&' | '\n' | '\r' | '\0')) {
+    for part in normalized.split(|c| matches!(c, '&' | ';' | '?' | '\n' | '\r' | '\0')) {
         let trimmed = part.trim();
         if !trimmed.is_empty() && trimmed != normalized {
             views.push(trimmed);
