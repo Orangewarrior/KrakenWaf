@@ -93,9 +93,19 @@ impl RuleSet {
 
 pub fn normalize_url_path(path: &str) -> String {
     let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
+    // On Linux, std::path::Path treats `\` as a regular character, not a separator.
+    // Without this replacement, `foo\..\bar` would be a single Normal component
+    // and the `..` would never be popped, opening a Windows-style traversal bypass.
+    let with_fwd: String;
+    let to_parse: &str = if decoded.contains('\\') {
+        with_fwd = decoded.replace('\\', "/");
+        &with_fwd
+    } else {
+        decoded.as_ref()
+    };
     let mut out = Vec::new();
 
-    for component in Path::new(decoded.as_ref()).components() {
+    for component in Path::new(to_parse).components() {
         match component {
             Component::RootDir => {}
             Component::CurDir => {}

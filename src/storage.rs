@@ -6,8 +6,12 @@ use sea_orm::{
     DatabaseConnection, EntityTrait, Statement,
 };
 use std::{fs, path::Path, time::Duration};
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, time::interval};
 use tracing::{error, warn};
+
+/// Attack-payload rows older than this are purged to bound DB size.
+const PAYLOAD_RETENTION_DAYS: i64 = 90;
+const PURGE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -61,6 +65,31 @@ impl SqliteStore {
 
         let db = Database::connect(opts).await?;
         init_schema(&db).await?;
+
+        // Restrict the DB file to owner-only so other OS users cannot read
+        // stored attack payloads (SQLite files are not encrypted at rest).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = fs::metadata(&db_path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                let _ = fs::set_permissions(&db_path, perms);
+            }
+        }
+
+        // Background purge: delete rows older than PAYLOAD_RETENTION_DAYS so the
+        // DB does not grow unboundedly from long-running attack campaigns.
+        let db_purge = db.clone();
+        tokio::spawn(async move {
+            let mut ticker = interval(PURGE_INTERVAL);
+            loop {
+                ticker.tick().await;
+                if let Err(err) = purge_old_events(&db_purge).await {
+                    warn!(target: "krakenwaf", "sqlite purge failed: {err:#}");
+                }
+            }
+        });
 
         let (tx, mut rx) = mpsc::unbounded_channel::<SecurityEvent>();
         let db_clone = db.clone();
@@ -265,5 +294,14 @@ async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Resu
     }).collect::<Vec<_>>();
 
     Entity::insert_many(models).exec(db).await?;
+    Ok(())
+}
+
+async fn purge_old_events(db: &DatabaseConnection) -> Result<()> {
+    db.execute(Statement::from_sql_and_values(
+        DatabaseBackend::Sqlite,
+        "DELETE FROM vulnerabilities WHERE occurred_at < datetime('now', ?);",
+        [format!("-{PAYLOAD_RETENTION_DAYS} days").into()],
+    )).await?;
     Ok(())
 }

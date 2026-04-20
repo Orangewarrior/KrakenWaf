@@ -45,7 +45,7 @@ struct PersistedCounter {
 
 impl RateLimiter {
     pub fn new(limit: u32, window: Duration, snapshot_path: PathBuf) -> Result<Self> {
-        let counters = load_snapshot(&snapshot_path);
+        let counters = tokio::task::block_in_place(|| load_snapshot(&snapshot_path));
 
         Ok(Self {
             limit,

@@ -5,6 +5,7 @@ use regex::RegexBuilder;
 use serde::Deserialize;
 use serde_json::Value;
 use std::{collections::HashMap, fs, path::Path};
+use tracing::warn;
 
 #[derive(Debug, Deserialize)]
 struct MainRulesJson {
@@ -83,6 +84,7 @@ fn parse_json_value_with_rule_escape_repair(content: &str, path: &Path) -> Resul
     match serde_json::from_str::<Value>(content) {
         Ok(value) => Ok(value),
         Err(_) => {
+            warn!(target: "krakenwaf", path = %path.display(), "rule file has invalid JSON string escapes — auto-repairing; fix the source file to suppress this warning");
             let repaired = repair_invalid_json_string_escapes(content);
             serde_json::from_str::<Value>(&repaired)
                 .with_context(|| format!("failed to validate JSON structure {}", path.display()))
@@ -97,6 +99,7 @@ where
     match serde_json::from_str::<T>(content) {
         Ok(value) => Ok(value),
         Err(_) => {
+            warn!(target: "krakenwaf", path = %path.display(), "rule file has invalid JSON string escapes — auto-repairing; fix the source file to suppress this warning");
             let repaired = repair_invalid_json_string_escapes(content);
             serde_json::from_str::<T>(&repaired)
                 .with_context(|| format!("failed to parse {} {}", kind, path.display()))
