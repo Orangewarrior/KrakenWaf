@@ -27,12 +27,18 @@ fn main() {
         .warnings(true)
         .compile("kwaf_libinjection");
 
-    // cc::Build::compile() already emits cargo:rustc-link-lib and
-    // cargo:rustc-link-search automatically. These explicit directives are
-    // belt-and-suspenders for linkers (e.g. lld on Fedora) that need the
-    // search path and library name to appear after the cc compilation step.
-    // Duplicate rustc-link-lib without --whole-archive is safe: the linker
-    // searches the archive twice but only includes each object once.
-    println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=kwaf_libinjection");
+    // cc::Build::compile() emits cargo:rustc-link-lib and cargo:rustc-link-search
+    // automatically, but on packages that have both a lib and a bin target the
+    // -l flag sometimes does not survive into the final binary link step (a
+    // known Cargo edge case with same-package lib→bin native-dep propagation).
+    //
+    // cargo:rustc-link-arg passes a raw argument directly to the binary linker,
+    // bypassing the -l name-resolution path entirely.  Providing the archive by
+    // its full path is the most robust option: lld, GNU ld, and the macOS
+    // linker all accept a bare archive path as a positional argument.  Without
+    // --whole-archive the linker only pulls in symbols that are actually
+    // referenced, so there are no duplicate-symbol errors even if the archive
+    // also appears via the -l path emitted by compile().
+    let archive = out_dir.join("libkwaf_libinjection.a");
+    println!("cargo:rustc-link-arg={}", archive.display());
 }
