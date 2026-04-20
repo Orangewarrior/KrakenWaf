@@ -1,7 +1,6 @@
----
 DFA-Rules:
-  SQLi_comments_detect: 1
-  Overflow_detect: 1
-  SSTI_detect: 1
-  SSI_injection_detect: 1
-  ESI_injection_detect: 1
+  SQLi_comments_detect: true
+  Overflow_detect: true
+  SSTI_detect: true
+  SSI_injection_detect: true
+  ESI_injection_detect: true
