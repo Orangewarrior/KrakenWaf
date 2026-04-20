@@ -125,7 +125,11 @@ impl RateLimiter {
             fs::create_dir_all(parent).await?;
         }
         let payload = serde_json::to_vec_pretty(&rows)?;
-        fs::write(&self.snapshot_path, payload).await?;
+        // Write to a sibling temp file then rename so readers never see a
+        // partial JSON file if the process crashes mid-write.
+        let tmp_path = self.snapshot_path.with_extension("json.tmp");
+        fs::write(&tmp_path, &payload).await?;
+        fs::rename(&tmp_path, &self.snapshot_path).await?;
         Ok(())
     }
 }

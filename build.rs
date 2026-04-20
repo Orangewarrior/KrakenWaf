@@ -1,10 +1,5 @@
 
-use std::env;
-use std::path::PathBuf;
-
 fn main() {
-    let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
-
     println!("cargo:rerun-if-changed=ffi/libinjection/vendor/kwaf_libinjection.c");
     println!("cargo:rerun-if-changed=ffi/libinjection/vendor/kwaf_libinjection.h");
     println!("cargo:rerun-if-changed=ffi/libinjection/vendor/libinjection-4.0.0/src/libinjection_sqli.c");
@@ -27,11 +22,4 @@ fn main() {
         .warnings(true)
         .compile("kwaf_libinjection");
 
-    println!("cargo:rustc-link-lib=static=kwaf_libinjection");
-    println!("cargo:rustc-link-arg=-Wl,--whole-archive");
-    println!("cargo:rustc-link-arg=-lkwaf_libinjection");
-    println!("cargo:rustc-link-arg=-Wl,--no-whole-archive");
-
-    println!("cargo:rustc-link-search=native={}", out_dir.display());
-    println!("cargo:rustc-link-lib=static=kwaf_libinjection");
 }
