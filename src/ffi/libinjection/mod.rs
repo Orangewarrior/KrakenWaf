@@ -1,8 +1,6 @@
 #![allow(dead_code)]
 mod bindings;
 
-use std::ffi::CStr;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DetectionKind {
     Sqli,
@@ -16,11 +14,18 @@ pub struct Detection {
 }
 
 fn collect_fingerprint(buf: &[core::ffi::c_char]) -> Option<String> {
-    if buf.is_empty() {
+    // CStr::from_ptr scans memory past the buffer end if the C library omits the
+    // null terminator. Find the null byte within our known bounds first, then
+    // cast each c_char (i8 or u8 depending on target) to u8 byte-by-byte.
+    // libinjection fingerprints are ASCII so the cast is always correct.
+    let null_pos = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    if null_pos == 0 {
         return None;
     }
-    let value = unsafe { CStr::from_ptr(buf.as_ptr()) }.to_string_lossy().trim().to_string();
-    (!value.is_empty()).then_some(value)
+    let bytes: Vec<u8> = buf[..null_pos].iter().map(|&c| c as u8).collect();
+    let s = String::from_utf8_lossy(&bytes);
+    let trimmed = s.trim();
+    (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
 
 pub fn detect_sqli(input: &[u8]) -> Option<Detection> {

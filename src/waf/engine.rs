@@ -122,11 +122,20 @@ struct VectorscanMatcher {
     keywords: Vec<DetectionRule>,
 }
 
+/// Immutable snapshot of rules + their pre-compiled matchers. Held behind a
+/// single `Arc` so a hot-reload swaps both atomically — no window where a
+/// reader can see new rules paired with stale matchers or vice versa.
+struct RulesSnapshot {
+    rules: Arc<RuleSet>,
+    matchers: EngineMatchers,
+}
+
 /// Main KrakenWaf engine containing rules and optional accelerated detectors.
 pub struct WafEngine {
-    rules: RwLock<Arc<RuleSet>>,
+    /// Single lock covers both rules and matchers; readers always see a
+    /// consistent pair because reload replaces the whole Arc at once.
+    snapshot: RwLock<Arc<RulesSnapshot>>,
     rate_limiter: Arc<RateLimiter>,
-    matchers: RwLock<EngineMatchers>,
     blocklist_ip_enabled: bool,
     libinjection_sqli_enabled: bool,
     libinjection_xss_enabled: bool,
@@ -151,9 +160,8 @@ impl WafEngine {
         rate_limiter.clone().spawn_persistence_task();
         let matchers = build_matchers(&rules, vectorscan_enabled)?;
         Ok(Self {
-            rules: RwLock::new(rules),
+            snapshot: RwLock::new(Arc::new(RulesSnapshot { rules, matchers })),
             rate_limiter,
-            matchers: RwLock::new(matchers),
             blocklist_ip_enabled,
             libinjection_sqli_enabled,
             libinjection_xss_enabled,
@@ -164,21 +172,23 @@ impl WafEngine {
     }
 
     pub fn body_limit_for_path(&self, path: &str) -> usize {
-        self.rules.read().body_limit_for_path(path)
+        self.snapshot.read().rules.body_limit_for_path(path)
     }
 
     pub async fn reload_from_dir(&self, root: &Path) -> Result<()> {
         let new_rules = Arc::new(RuleSet::from_dir(root)?);
         let new_matchers = build_matchers(&new_rules, self.vectorscan_enabled)?;
-        *self.rules.write() = new_rules;
-        *self.matchers.write() = new_matchers;
+        // Atomic swap: readers see either the old snapshot or the new one,
+        // never a mixture of old rules with new matchers (or vice versa).
+        *self.snapshot.write() = Arc::new(RulesSnapshot { rules: new_rules, matchers: new_matchers });
         Ok(())
     }
 
     pub async fn inspect_early(&self, ctx: &InspectionContext) -> Decision {
         self.metrics.inc_inspected();
-        let rules = self.rules.read().clone();
-        let matchers = self.matchers.read().clone();
+        let snap = self.snapshot.read().clone();
+        let rules = &snap.rules;
+        let matchers = &snap.matchers;
 
         if rules.is_allowlisted(&ctx.path) {
             return Decision::Allow;
@@ -241,8 +251,9 @@ self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
     }
 
     pub fn inspect_complete_payload_with_context(&self, payload: &[u8], _method_hint: Option<&str>) -> Decision {
-        let rules = self.rules.read().clone();
-        let matchers = self.matchers.read().clone();
+        let snap = self.snapshot.read().clone();
+        let rules = &snap.rules;
+        let matchers = &snap.matchers;
 
         // Always URL-decode the payload (iteratively, bounded). Previously this was gated to
         // GET requests, which let percent-encoded POST bodies bypass keyword/regex matching.

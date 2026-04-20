@@ -94,18 +94,24 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
 }
 
 pub fn sanitize_for_log(s: &str) -> String {
+    // Strip control characters (except the three we translate), then escape
+    // characters that could break the key="value" format used by write_critical:
+    // a raw `"` would terminate the quoted field and inject new key=value pairs.
     s.chars()
         .filter(|c| !c.is_control() || matches!(*c, '\n' | '\r' | '\t'))
         .collect::<String>()
         .replace('\r', "\\r")
         .replace('\n', "\\n")
         .replace('\t', "\\t")
+        .replace('"', "\\\"")
 }
 
 
 pub fn write_critical(handles: &LoggingHandles, event: &SecurityEvent) {
+    // Values are quoted so a payload containing ` injected=field` cannot forge
+    // additional key=value pairs. sanitize_for_log() also escapes inner `"`.
     let line = format!(
-        "[{}] severity={} engine={} title={} ip={} method={} uri={} fullpath_evidence={} rule={} source={} cwe={} reference_url={}\n",
+        "[{}] severity=\"{}\" engine=\"{}\" title=\"{}\" ip=\"{}\" method=\"{}\" uri=\"{}\" fullpath_evidence=\"{}\" rule=\"{}\" source=\"{}\" cwe=\"{}\" reference_url=\"{}\"\n",
         event.timestamp,
         event.severity,
         event.engine,

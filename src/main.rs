@@ -15,7 +15,7 @@ mod storage;
 mod tls;
 mod waf;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use app::AppState;
 use bytes::Bytes;
 use clap::Parser;
@@ -66,7 +66,7 @@ async fn main() -> Result<()> {
         cli.allow_private_upstream,
         Some(cli.internal_header_name.clone()),
     )?);
-    let (block_response_body, block_response_content_type) = load_block_message(cli.blockmsg.as_deref())?;
+    let (block_response_body, block_response_content_type) = load_block_message(cli.blockmsg.as_deref(), &root_dir)?;
 
     let state = Arc::new(AppState {
         cli: cli.clone(),
@@ -114,16 +114,28 @@ fn spawn_rule_reload(state: Arc<AppState>) {
     }
 }
 
-fn load_block_message(path: Option<&str>) -> Result<(Option<Bytes>, String)> {
+fn load_block_message(path: Option<&str>, root: &std::path::Path) -> Result<(Option<Bytes>, String)> {
     match path {
-        Some(path) => {
-            let content = std::fs::read(path)?;
-            let content_type = match std::path::Path::new(path)
-                .extension()
-                .and_then(|ext| ext.to_str())
+        Some(raw) => {
+            // Canonicalize to resolve symlinks and `../` components, then verify the
+            // resulting path stays inside the process working directory. Prevents
+            // `--blockmsg /etc/shadow` or `--blockmsg ../../secret` from reading
+            // arbitrary files even when the CLI is driven by a compromised operator.
+            let canonical = std::fs::canonicalize(raw)
+                .with_context(|| format!("--blockmsg: cannot resolve path '{raw}'"))?;
+            anyhow::ensure!(
+                canonical.starts_with(root),
+                "--blockmsg path '{}' is outside the allowed root '{}'; \
+                 place the file inside the KrakenWaf working directory",
+                canonical.display(),
+                root.display()
+            );
+            let content = std::fs::read(&canonical)?;
+            let ext = canonical.extension()
+                .and_then(|e| e.to_str())
                 .unwrap_or_default()
-                .to_ascii_lowercase()
-                .as_str()
+                .to_ascii_lowercase();
+            let content_type = match ext.as_str()
             {
                 "html" | "htm" => "text/html; charset=utf-8",
                 "json" => "application/json",
