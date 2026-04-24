@@ -22,7 +22,7 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
     .expect("engine")
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn blocks_common_dvwa_get_sqli_probe() {
     let engine = build_engine(false);
     let ctx = InspectionContext {

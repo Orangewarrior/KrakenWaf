@@ -1,3 +1,14 @@
+## [2.8.1] - 2026-04-24
+
+### Changed
+- Bumped `Cargo.toml` version to reflect the full `2.8.0` security hardening already shipped.
+- `normalize_request_bytes` now applies up to 4 URL-decode passes (multi-pass) to defeat double/triple-encoding evasion; previously only a single pass was performed for GET requests. All payloads (GET and POST) are normalised before pattern matching.
+
+### Fixed
+- Integration tests (`dvwa_payloads`) were silently skipped due to pre-existing linker errors (`kwaf_libinjection_*` duplicate/undefined symbols). Build script now passes the C archive by full path via `cargo:rustc-link-arg`, resolving a Cargo edge case where `cargo:rustc-link-lib=static` is not propagated from lib → bin within the same package.
+
+---
+
 ## [2.8.0] - 2026-04-20
 
 ### Security — Critical & High severity fixes (AppSec + Rust expert review)
