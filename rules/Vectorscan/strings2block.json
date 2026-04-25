@@ -7,7 +7,8 @@
       "cwe": "CWE-89",
       "description": "Detects OWASP-style UNION SELECT extraction attempts in attacker-controlled input.",
       "url": "https://owasp.org/www-community/attacks/SQL_Injection",
-      "rule_match": "union select"
+      "rule_match": "union select",
+      "id": "00001"
     },
     {
       "enable": 1,
@@ -16,7 +17,8 @@
       "cwe": "CWE-89",
       "description": "Detects classic boolean SQL injection probes used to bypass authentication.",
       "url": "https://owasp.org/www-community/attacks/SQL_Injection",
-      "rule_match": "' or '1'='1"
+      "rule_match": "' or '1'='1",
+      "id": "00002"
     },
     {
       "enable": 1,
@@ -25,7 +27,8 @@
       "cwe": "CWE-89",
       "description": "Detects obvious time-based SQL injection probes.",
       "url": "https://owasp.org/www-community/attacks/SQL_Injection",
-      "rule_match": "sleep\\("
+      "rule_match": "sleep\\(",
+      "id": "00003"
     },
     {
       "enable": 1,
@@ -34,7 +37,8 @@
       "cwe": "CWE-89",
       "description": "Detects information_schema enumeration keywords.",
       "url": "https://owasp.org/www-community/attacks/SQL_Injection",
-      "rule_match": "information_schema"
+      "rule_match": "information_schema",
+      "id": "00004"
     },
     {
       "enable": 1,
@@ -43,7 +47,8 @@
       "cwe": "CWE-79",
       "description": "Detects obvious inline script tag payloads.",
       "url": "https://owasp.org/www-community/attacks/xss/",
-      "rule_match": "<script"
+      "rule_match": "<script",
+      "id": "00005"
     },
     {
       "enable": 1,
@@ -52,7 +57,8 @@
       "cwe": "CWE-79",
       "description": "Detects common onerror event-handler XSS payloads.",
       "url": "https://owasp.org/www-community/attacks/xss/",
-      "rule_match": "onerror="
+      "rule_match": "onerror=",
+      "id": "00006"
     },
     {
       "enable": 1,
@@ -61,7 +67,8 @@
       "cwe": "CWE-22",
       "description": "Detects direct traversal attempts for /etc/passwd.",
       "url": "https://owasp.org/www-community/attacks/Path_Traversal",
-      "rule_match": "/etc/passwd"
+      "rule_match": "/etc/passwd",
+      "id": "00007"
     },
     {
       "enable": 1,
@@ -70,7 +77,8 @@
       "cwe": "CWE-78",
       "description": "Detects direct shell execution strings frequently used in command injection.",
       "url": "https://owasp.org/www-community/attacks/Command_Injection",
-      "rule_match": "/bin/sh -c"
+      "rule_match": "/bin/sh -c",
+      "id": "00008"
     },
     {
       "enable": 1,
@@ -79,7 +87,8 @@
       "cwe": "CWE-78",
       "description": "Detects cmd.exe invocation frequently used in command injection.",
       "url": "https://owasp.org/www-community/attacks/Command_Injection",
-      "rule_match": "cmd.exe /c"
+      "rule_match": "cmd.exe /c",
+      "id": "00009"
     },
     {
       "enable": 1,
@@ -88,7 +97,8 @@
       "cwe": "CWE-494",
       "description": "Detects simple downloader strings used in post-exploitation payload fetches.",
       "url": "https://owasp.org/www-community/attacks/Command_Injection",
-      "rule_match": "wget http"
+      "rule_match": "wget http",
+      "id": "00010"
     }
   ]
 }

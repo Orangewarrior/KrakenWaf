@@ -1,3 +1,50 @@
+## [2.9.0] - 2026-04-25
+
+### Added
+
+#### Rule IDs (Point 1)
+- All rule JSON files now carry a per-file sequential `"id"` field (5-digit zero-padded, e.g. `"00001"`).
+  - `rules/rules.json` — `uri_keywords`, `header_keywords`, `body_keywords` sections
+  - `rules/regex/path_regex.json`, `body_regex.json`, `header_regex.json`
+  - `rules/Vectorscan/strings2block.json`
+- `DetectionRule` struct gains an `id: String` field populated from the JSON file.
+- IDs are sequenced per-file, starting at `00001` in each file independently.
+- Rules not present in JSON (DFA, libinjection, rate-limit, IP-block) receive the sentinel value `"00000"`.
+
+#### Rule ID in logs (Point 2)
+- `Finding` struct gains `rule_id: String` carrying the rule's file-local ID.
+- `SecurityEvent` struct gains `rule_id: String` field — present in the JSON event log.
+- `write_critical` now emits `rule_id="…"` in the structured key=value log line.
+- The `info!` tracing span in `proxy.rs` emits `rule_id` for every blocked or detected request.
+
+#### `--mode` flag (Point 3)
+- New `WafMode` enum (`block` | `silent`) added to `src/cli.rs`.
+- New `--mode <block|silent>` CLI flag (default: `block`).
+  - `block` — existing behaviour: matching requests receive HTTP 403.
+  - `silent` — WAF inspects all traffic, logs detections and increments the `blocked` metric counter, but **never** returns 403. All requests are forwarded to upstream. Useful for tuning rules in production before enabling enforcement.
+- `AppState` carries `mode: WafMode`; `proxy.rs` calls `log_and_enforce` which returns `None` in silent mode and `Some(403)` in block mode.
+
+#### Allow-Paths (Point 5)
+- New `--allow-paths <path>` CLI flag accepting a YAML file path.
+- New `src/allowpaths.rs` module:
+  - `AllowPathConfig` / `AllowPathEntry` structs deserialized from YAML.
+  - `load_and_validate(path)` validates presence of `title` and non-empty `paths` on startup.
+  - `is_allowed(uri_path)` performs prefix matching after URL normalization.
+- `AppState` carries `allow_path_config: Option<AllowPathConfig>`.
+- In `proxy::handle()`, URIs matching an allow-path bypass WAF inspection entirely and are forwarded without inspection (takes precedence over `--mode`).
+- Optional `log: true` per entry emits an `info` log line on each match.
+- New example file: `rules/allowpaths/lists.yaml`.
+- New documentation: `docs/allowpaths.md` (format reference, matching rules, CMS/SIEM/health-check examples).
+
+#### RulesSnapshot consistency (Point 4)
+- The `RulesSnapshot` struct (introduced in 2.8.0) holds `Arc<RuleSet>` + `EngineMatchers` behind a single `RwLock<Arc<RulesSnapshot>>`. Hot-reload swaps the arc atomically — readers always see a consistent rule/matcher pair. No additional changes needed.
+
+### Changed
+- `proxy.rs` `block_response` renamed to `log_and_enforce` returning `Option<Response>` to support silent mode.
+- Startup `info!` log now includes `mode` and `allow_paths_file` fields.
+
+---
+
 ## [2.8.1] - 2026-04-24
 
 ### Changed

@@ -20,6 +20,7 @@ fn blocks_malformed_traversal_payload() {
         uri_keywords: vec![],
         header_keywords: vec![],
         body_keywords: vec![DetectionRule {
+            id: "00001".into(),
             line: 1,
             title: "Traversal".into(),
             severity: Severity::High,
@@ -65,6 +66,7 @@ fn blocks_regex_based_rce_pattern() {
         path_regex: vec![],
         body_regex: vec![CompiledDetectionRule {
             meta: DetectionRule {
+                id: "00001".into(),
                 line: 1,
                 title: "RCE regex".into(),
                 severity: Severity::Critical,

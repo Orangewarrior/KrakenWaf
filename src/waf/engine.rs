@@ -88,6 +88,7 @@ pub enum Decision {
 /// Normalized structured detection finding.
 #[derive(Debug, Clone)]
 pub struct Finding {
+    pub rule_id: String,
     pub title: String,
     pub severity: Severity,
     pub cwe: String,
@@ -331,6 +332,7 @@ self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
         request_payload: impl Into<String>,
     ) -> Finding {
         Finding {
+            rule_id: "00000".to_string(),
             title: title.to_string(),
             severity,
             cwe: cwe.to_string(),
@@ -386,6 +388,7 @@ fn regex_match(rules: &[CompiledDetectionRule], haystack: &str, original_payload
 
 fn rule_to_finding(rule: &DetectionRule, haystack: &str) -> Finding {
     Finding {
+        rule_id: rule.id.clone(),
         title: rule.title.clone(),
         severity: rule.severity.clone(),
         cwe: rule.cwe.clone(),
@@ -498,6 +501,7 @@ fn libinjection_match(
     if enable_sqli {
         if let Some(hit) = libinjection::detect_sqli(normalized_payload) {
             return Some(Finding {
+                rule_id: "00000".to_string(),
                 title: "LibInjection SQLi detection".into(),
                 severity: Severity::Critical,
                 cwe: "CWE-89".into(),
@@ -514,6 +518,7 @@ fn libinjection_match(
     if enable_xss {
         if let Some(hit) = libinjection::detect_xss(normalized_payload) {
             return Some(Finding {
+                rule_id: "00000".to_string(),
                 title: "LibInjection XSS detection".into(),
                 severity: Severity::High,
                 cwe: "CWE-79".into(),

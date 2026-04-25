@@ -21,6 +21,7 @@ pub struct SecurityEvent {
     pub uri: String,
     pub fullpath_evidence: String,
     pub engine: String,
+    pub rule_id: String,
     pub title: String,
     pub severity: Severity,
     pub cwe: String,
@@ -41,6 +42,7 @@ impl SecurityEvent {
             uri: sanitize_for_log(&ctx.uri),
             fullpath_evidence: sanitize_for_log(&ctx.uri),
             engine: infer_engine(&finding.rule_line_match, &finding.rule_match),
+            rule_id: finding.rule_id.clone(),
             title: sanitize_for_log(&finding.title),
             severity: finding.severity.clone(),
             cwe: sanitize_for_log(&finding.cwe),
@@ -111,10 +113,11 @@ pub fn write_critical(handles: &LoggingHandles, event: &SecurityEvent) {
     // Values are quoted so a payload containing ` injected=field` cannot forge
     // additional key=value pairs. sanitize_for_log() also escapes inner `"`.
     let line = format!(
-        "[{}] severity=\"{}\" engine=\"{}\" title=\"{}\" ip=\"{}\" method=\"{}\" uri=\"{}\" fullpath_evidence=\"{}\" rule=\"{}\" source=\"{}\" cwe=\"{}\" reference_url=\"{}\"\n",
+        "[{}] severity=\"{}\" engine=\"{}\" rule_id=\"{}\" title=\"{}\" ip=\"{}\" method=\"{}\" uri=\"{}\" fullpath_evidence=\"{}\" rule=\"{}\" source=\"{}\" cwe=\"{}\" reference_url=\"{}\"\n",
         event.timestamp,
         event.severity,
         event.engine,
+        event.rule_id,
         event.title,
         event.client_ip,
         event.method,
