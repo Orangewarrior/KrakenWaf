@@ -1,0 +1,25 @@
+allow:
+  - order: 1
+    title: "WordPress admin panel"
+    description: "Trusted admin resource — operators must restrict access at the network level"
+    log: true
+    paths:
+      - /wp-admin
+      - /wp-json
+
+  - order: 2
+    title: "Grafana monitoring"
+    description: "Internal Grafana dashboard; protected by separate auth middleware"
+    log: false
+    paths:
+      - /grafana/login
+      - /grafana/api
+      - /grafana/api/org
+
+  - order: 3
+    title: "Health check endpoint"
+    description: "Load-balancer liveness probe — safe to bypass WAF inspection"
+    log: false
+    paths:
+      - /healthz
+      - /readyz

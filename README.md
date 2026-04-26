@@ -1,4 +1,4 @@
-# KrakenWaf v2.8.1
+# KrakenWaf v2.9.0
 
 ## 🚀 Overview
 
@@ -255,32 +255,33 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 
 ## ⚙️ CLI Arguments
 
-| Argument | Description |
-|-----|------------|
-| `--listen` | Bind address and port used by KrakenWaf, for example `0.0.0.0:443` |
-| `--upstream` | Backend origin URL, such as `https://192.168.0.2` or `http://127.0.0.1:8080` |
-| `--rules-dir` | Root directory containing rule files, blocklists, regex rules, and TLS files |
-| `--sni-map` | Path to the TLS SNI CSV file used to map hostnames to certificate and key files |
-| `--blocklist-ip` | Enables IP and CIDR blocklist enforcement |
-| `--allow-private-upstream` | Allows private or local upstream targets such as RFC1918 addresses |
-| `--enable-libinjection-sqli` | Enables libinjection-based SQLi-oriented inspection |
-| `--enable-libinjection-xss` | Enables libinjection-based XSS-oriented inspection |
-| `--enable-vectorscan` | Enables Vectorscan-based fast multi-pattern matching |
-| `--rate-limit-per-minute` | Maximum number of requests allowed per client IP per minute |
-| `--upstream-timeout-secs` | Timeout in seconds for upstream requests |
-| `--connection-timeout-secs` | Timeout in seconds for client connections accepted by the WAF |
-| `--max-connections` | Maximum simultaneous connections the WAF will allow |
-| `--internal-header-name` | Optional header added to forwarded requests to mark them as processed by KrakenWaf |
-| `--blockmsg` | Path to a custom HTML or text file returned when a request is blocked |
-| `--verbose` | Enables more detailed runtime logging |
-| `--help` | Shows CLI help and exits |
-| `--version` | Prints the current KrakenWaf version and exits |
-| `--header-protection-injection` | Load rules to inject custom HTTP headers for all responses, you can see headers in /rules/headers_http/ 
-| `--dfa-load` | Load Custom DFAs look at the file ./rules/dfa/config.yaml to enable or disable each one |
-| `--real-ip-header`[1] | This tells KrakenWaf which HTTP header contains the original client IP. |
-| `--trusted-proxy-cidrs`[2] |This tells KrakenWaf which source IPs are allowed to be trusted as proxies. |
-
-More info [1][2] [here real ip and proxy cidrs options](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/real-ip-header-and-trusted-proxy-cidrs.md)
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--listen` | `0.0.0.0:8443` | Bind address and port used by KrakenWaf |
+| `--upstream` | `http://127.0.0.1:8080` | Backend origin URL — see [docs/deployment.md](docs/deployment.md) |
+| `--rules-dir` | `./rules` | Root directory containing rule files, blocklists, regex rules, and TLS files |
+| `--sni-map` | `./rules/tls/sni_map.csv` | Path to the TLS SNI CSV file mapping hostnames to certificate and key files |
+| `--mode` | `block` | Enforcement mode: `block` returns HTTP 403 on detections; `silent` logs and counts detections without blocking — useful for tuning rules in production |
+| `--allow-paths` | — | Path to a YAML file listing URI prefixes that bypass WAF inspection entirely — see [docs/allowpaths.md](docs/allowpaths.md) |
+| `--blocklist-ip` | `false` | Enable IP and CIDR blocklist enforcement from `rules/blocklist_ip.txt` |
+| `--allow-private-upstream` | `false` | Allow RFC1918/loopback upstream targets — see [docs/deployment.md](docs/deployment.md) |
+| `--enable-libinjection-sqli` | `false` | Enable libinjection-based SQL injection detection — see [docs/libinjection.md](docs/libinjection.md) |
+| `--enable-libinjection-xss` | `false` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
+| `--enable-vectorscan` | `false` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature) |
+| `--rate-limit-per-minute` | `240` | Maximum requests allowed per client IP per minute |
+| `--upstream-timeout-secs` | `15` | Timeout in seconds for upstream requests |
+| `--connection-timeout-secs` | `30` | Timeout in seconds for client connections accepted by the WAF |
+| `--max-connections` | `2048` | Maximum simultaneous client connections |
+| `--max-upstream-response-bytes` | `104857600` (100 MiB) | Hard ceiling on upstream response body buffered in memory; prevents a misbehaving upstream from exhausting WAF heap |
+| `--internal-header-name` | — | Optional header added to forwarded requests to mark them as processed by KrakenWaf |
+| `--blockmsg` | — | Path to a custom HTML or text file returned when a request is blocked |
+| `--verbose` | `false` | Enable debug-level logging |
+| `--header-protection-injection` | — | Path to a YAML file that injects custom security headers into all responses; see examples in `rules/headers_http/` |
+| `--dfa-load` | — | Path to DFA config YAML enabling/disabling each DFA detector — see [docs/dfa/schema.md](docs/dfa/schema.md) |
+| `--real-ip-header` | — | HTTP header containing the real client IP forwarded by a trusted proxy — see [docs/deployment.md](docs/deployment.md) |
+| `--trusted-proxy-cidrs` | — | Comma-separated list of trusted proxy CIDRs for real-IP extraction — see [docs/deployment.md](docs/deployment.md) |
+| `--help` | — | Show CLI help and exit |
+| `--version` | — | Print the current KrakenWaf version and exit |
 
 ---
 

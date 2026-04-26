@@ -1,5 +1,6 @@
 use crate::{
     app::AppState,
+    cli::WafMode,
     error::KrakenError,
     logging::{write_critical, SecurityEvent},
     waf::{Decision, Finding, InspectionContext},
@@ -85,21 +86,41 @@ impl ProxyClient {
             body_limit,
         };
 
-        match state.waf.inspect_early(&context).await {
-            Decision::Allow => {}
-            Decision::Block(finding) => {
-                let event = build_event(&context, &finding, None);
-                return self.block_response(state, event).await;
+        // Check allow-paths: if the URI is explicitly allowed, skip WAF inspection entirely.
+        let skip_inspection = state.allow_path_config.as_ref().and_then(|c| c.is_allowed(&path)).map(|entry| {
+            if entry.log {
+                info!(target: "krakenwaf", uri=%context.uri, title=%entry.title, "allow-paths match: skipping WAF inspection");
+            }
+        }).is_some();
+
+        if !skip_inspection {
+            match state.waf.inspect_early(&context).await {
+                Decision::Allow => {}
+                Decision::Block(finding) => {
+                    let event = build_event(&context, &finding, None);
+                    if let Some(response) = self.log_and_enforce(state, event).await {
+                        return response;
+                    }
+                }
             }
         }
+
         let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut()).await {
             Ok(bytes) => bytes,
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
                 return block_content_response(state, StatusCode::PAYLOAD_TOO_LARGE, "KrakenWaf blocked the request body");
             }
             Err(BodyInspectionError::Blocked { finding, partial_body }) => {
-                let event = build_event(&context, &finding, Some(&partial_body));
-                return self.block_response(state, event).await;
+                if skip_inspection {
+                    partial_body
+                } else {
+                    let event = build_event(&context, &finding, Some(&partial_body));
+                    if let Some(response) = self.log_and_enforce(state, event).await {
+                        return response;
+                    }
+                    // Silent mode: forward whatever body we accumulated before detection.
+                    partial_body
+                }
             }
             Err(BodyInspectionError::Other(err)) => {
                 warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
@@ -107,12 +128,16 @@ impl ProxyClient {
             }
         };
 
-        let full_request = format_full_request_bytes(&context, Some(&body_bytes));
-        match state.waf.inspect_complete_payload_with_context(&full_request, Some(&context.method)) {
-            Decision::Allow => {}
-            Decision::Block(finding) => {
-                let event = build_event(&context, &finding, Some(&body_bytes));
-                return self.block_response(state, event).await;
+        if !skip_inspection {
+            let full_request = format_full_request_bytes(&context, Some(&body_bytes));
+            match state.waf.inspect_complete_payload_with_context(&full_request, Some(&context.method)) {
+                Decision::Allow => {}
+                Decision::Block(finding) => {
+                    let event = build_event(&context, &finding, Some(&body_bytes));
+                    if let Some(response) = self.log_and_enforce(state, event).await {
+                        return response;
+                    }
+                }
             }
         }
 
@@ -127,11 +152,14 @@ impl ProxyClient {
         }
     }
 
-    async fn block_response(&self, state: &AppState, event: SecurityEvent) -> Response<Full<Bytes>> {
+    /// Log the detection event and, in `Block` mode, return a 403 response.
+    /// Returns `None` in `Silent` mode so the caller can continue forwarding the request.
+    async fn log_and_enforce(&self, state: &AppState, event: SecurityEvent) -> Option<Response<Full<Bytes>>> {
         state.metrics.inc_blocked();
 
         info!(
             target: "krakenwaf",
+            rule_id=%event.rule_id,
             title=%event.title,
             severity=%event.severity,
             cwe=%event.cwe,
@@ -143,12 +171,17 @@ impl ProxyClient {
             rule=%event.rule_match,
             rule_source=%event.rule_line_match,
             reference_url=%event.reference_url,
-            "request blocked"
+            mode=?state.mode,
+            "request detected"
         );
         write_critical(&state.logging, &event);
         state.store.enqueue(event.clone());
 
-        block_content_response(state, StatusCode::FORBIDDEN, "Blocked by KrakenWaf")
+        if state.mode == WafMode::Silent {
+            return None;
+        }
+
+        Some(block_content_response(state, StatusCode::FORBIDDEN, "Blocked by KrakenWaf"))
     }
 
     async fn forward_request(

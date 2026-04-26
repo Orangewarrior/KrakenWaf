@@ -1,4 +1,5 @@
 
+mod allowpaths;
 mod app;
 mod banner;
 mod cli;
@@ -68,7 +69,15 @@ async fn main() -> Result<()> {
     )?);
     let (block_response_body, block_response_content_type) = load_block_message(cli.blockmsg.as_deref(), &root_dir)?;
 
+    let allow_path_config = match cli.allow_paths_file.as_deref() {
+        Some(path) => Some(allowpaths::load_and_validate(&PathBuf::from(path))
+            .with_context(|| format!("--allow-paths: failed to load '{path}'"))?),
+        None => None,
+    };
+
     let state = Arc::new(AppState {
+        mode: cli.mode,
+        allow_path_config,
         cli: cli.clone(),
         waf,
         proxy,
@@ -86,7 +95,7 @@ async fn main() -> Result<()> {
     let tls_config = tls::build_tls_config(PathBuf::from(&cli.sni_map).as_path())?;
     let tls_acceptor = TlsAcceptor::from(tls_config);
 
-    info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, dfa_config_loaded=cli.dfa_load.is_some(), upstream=%cli.upstream, "KrakenWaf initialized");
+    info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, dfa_config_loaded=cli.dfa_load.is_some(), mode=?cli.mode, allow_paths_file=?cli.allow_paths_file, upstream=%cli.upstream, "KrakenWaf initialized");
 
     server::run(cli.listen, tls_acceptor, state).await
 }

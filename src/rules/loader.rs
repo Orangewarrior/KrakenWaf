@@ -31,6 +31,8 @@ struct RegexBundle {
 
 #[derive(Debug, Deserialize)]
 struct RuleJson {
+    #[serde(default)]
+    id: String,
     #[serde(default = "default_rule_enabled")]
     enable: u8,
     title: String,
@@ -164,6 +166,7 @@ fn json_rules_to_detection_rules(values: Vec<RuleJson>, source: &str) -> Vec<Det
             }
             let rule_match = value.rule_match.trim().to_string();
             (!rule_match.is_empty()).then(|| DetectionRule {
+                id: if value.id.is_empty() { format!("{:05}", idx + 1) } else { value.id },
                 title: value.title,
                 severity: value.severity,
                 cwe: value.cwe,
@@ -212,6 +215,7 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
         })
         .map(|(idx, rule)| {
             let line = idx + 1;
+            let id = if rule.id.is_empty() { format!("{:05}", line) } else { rule.id.clone() };
             let compiled = RegexBuilder::new(&rule.rule_match)
                 .size_limit(10_000_000)
                 .dfa_size_limit(2_000_000)
@@ -219,6 +223,7 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
                 .with_context(|| format!("invalid regex at {}:{} => {}", source, line, rule.rule_match))?;
             Ok(CompiledDetectionRule {
                 meta: DetectionRule {
+                    id,
                     title: rule.title,
                     severity: rule.severity,
                     cwe: rule.cwe,

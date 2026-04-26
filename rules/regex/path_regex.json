@@ -7,7 +7,8 @@
       "cwe": "CWE-22",
       "description": "Detects classic ../ traversal in request targets.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\)"
+      "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\)",
+      "id": "00001"
     },
     {
       "enable": 1,
@@ -16,7 +17,8 @@
       "cwe": "CWE-22",
       "description": "Detects percent-encoded traversal in request targets.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f|%c0%ae%c0%ae/)"
+      "rule_match": "(?i)(?:%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f|%c0%ae%c0%ae/)",
+      "id": "00002"
     },
     {
       "enable": 1,
@@ -25,7 +27,8 @@
       "cwe": "CWE-22",
       "description": "Detects direct access to sensitive Unix files.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|/root/\\.ssh/)"
+      "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|/root/\\.ssh/)",
+      "id": "00003"
     },
     {
       "enable": 1,
@@ -34,7 +37,8 @@
       "cwe": "CWE-22",
       "description": "Detects direct access to sensitive Windows files.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:boot\\.ini|win\\.ini|windows/system32/drivers/etc/hosts)"
+      "rule_match": "(?i)(?:boot\\.ini|win\\.ini|windows/system32/drivers/etc/hosts)",
+      "id": "00004"
     },
     {
       "enable": 1,
@@ -43,7 +47,8 @@
       "cwe": "CWE-98",
       "description": "Detects dangerous PHP stream wrapper access in URIs.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
-      "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)"
+      "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)",
+      "id": "00005"
     },
     {
       "enable": 1,
@@ -52,7 +57,8 @@
       "cwe": "CWE-98",
       "description": "Detects remote file include style URL parameters.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
-      "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)"
+      "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)",
+      "id": "00006"
     },
     {
       "enable": 0,
@@ -61,7 +67,8 @@
       "cwe": "CWE-918",
       "description": "Detects localhost SSRF targets in URIs.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
-      "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))"
+      "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))",
+      "id": "00007"
     },
     {
       "enable": 0,
@@ -70,7 +77,8 @@
       "cwe": "CWE-918",
       "description": "Detects private/internal IPv4 SSRF targets.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
-      "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))"
+      "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))",
+      "id": "00008"
     },
     {
       "enable": 0,
@@ -79,7 +87,8 @@
       "cwe": "CWE-918",
       "description": "Detects common cloud metadata endpoints and aliases.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
-      "rule_match": "(?i)(?:latest/meta-data|metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.170\\.2)"
+      "rule_match": "(?i)(?:latest/meta-data|metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.170\\.2)",
+      "id": "00009"
     },
     {
       "enable": 1,
@@ -88,7 +97,8 @@
       "cwe": "CWE-78",
       "description": "Detects shell separators in URI parameters.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|powershell|cmd))"
+      "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|powershell|cmd))",
+      "id": "00010"
     },
     {
       "enable": 1,
@@ -97,7 +107,8 @@
       "cwe": "CWE-78",
       "description": "Detects command substitution syntax in URI.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(?:\\$\\((?:id|whoami|curl|wget)|`(?:id|whoami|curl|wget))"
+      "rule_match": "(?i)(?:\\$\\((?:id|whoami|curl|wget)|`(?:id|whoami|curl|wget))",
+      "id": "00011"
     },
     {
       "enable": 1,
@@ -106,7 +117,8 @@
       "cwe": "CWE-444",
       "description": "Detects encoded CRLF or header separator injection in URI.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
-      "rule_match": "(?i)(?:%0d%0a|\\r\\n|%0a%0d|%0d|%0a)(?:host:|x-forwarded-|content-length:|transfer-encoding:)"
+      "rule_match": "(?i)(?:%0d%0a|\\r\\n|%0a%0d|%0d|%0a)(?:host:|x-forwarded-|content-length:|transfer-encoding:)",
+      "id": "00012"
     },
     {
       "enable": 1,
@@ -115,7 +127,8 @@
       "cwe": "CWE-235",
       "description": "Detects repeated suspicious parameters commonly used in HPP attacks.",
       "url": "https://cwe.mitre.org/data/definitions/235.html",
-      "rule_match": "(?i)(?:[?&](?:url|uri|path|dest|redirect|next|return|continue)=[^&]+(?:&(?:url|uri|path|dest|redirect|next|return|continue)=))"
+      "rule_match": "(?i)(?:[?&](?:url|uri|path|dest|redirect|next|return|continue)=[^&]+(?:&(?:url|uri|path|dest|redirect|next|return|continue)=))",
+      "id": "00013"
     },
     {
       "enable": 1,
@@ -124,7 +137,8 @@
       "cwe": "CWE-601",
       "description": "Detects protocol-relative or absolute redirect targets.",
       "url": "https://cwe.mitre.org/data/definitions/601.html",
-      "rule_match": "(?i)(?:[?&](?:next|url|redirect|return|continue|dest)=//|[?&](?:next|url|redirect|return|continue|dest)=https?://)"
+      "rule_match": "(?i)(?:[?&](?:next|url|redirect|return|continue|dest)=//|[?&](?:next|url|redirect|return|continue|dest)=https?://)",
+      "id": "00014"
     },
     {
       "enable": 1,
@@ -133,7 +147,8 @@
       "cwe": "CWE-502",
       "description": "Detects Java serialized object references in URI.",
       "url": "https://cwe.mitre.org/data/definitions/502.html",
-      "rule_match": "(?i)(?:rmi://|ldap://|jndi:|java\\.serialized)"
+      "rule_match": "(?i)(?:rmi://|ldap://|jndi:|java\\.serialized)",
+      "id": "00015"
     },
     {
       "enable": 1,
@@ -142,7 +157,8 @@
       "cwe": "CWE-200",
       "description": "Detects Tomcat/JBoss management paths.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "(?i)(?:/(?:manager/html|host-manager/html|jmx-console|web-console|invoker/JMXInvokerServlet))"
+      "rule_match": "(?i)(?:/(?:manager/html|host-manager/html|jmx-console|web-console|invoker/JMXInvokerServlet))",
+      "id": "00016"
     },
     {
       "enable": 1,
@@ -151,7 +167,8 @@
       "cwe": "CWE-200",
       "description": "Detects source code or backup extension access.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "(?i)(?:\\.(?:bak|old|orig|save|swp|inc|dist|sql|tar|gz|tgz|zip)(?:$|[?&]))"
+      "rule_match": "(?i)(?:\\.(?:bak|old|orig|save|swp|inc|dist|sql|tar|gz|tgz|zip)(?:$|[?&]))",
+      "id": "00017"
     },
     {
       "enable": 1,
@@ -160,7 +177,8 @@
       "cwe": "CWE-200",
       "description": "Detects VCS metadata exposure in URI.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "(?i)(?:/\\.git/|/\\.svn/|/\\.hg/|/\\.bzr/)"
+      "rule_match": "(?i)(?:/\\.git/|/\\.svn/|/\\.hg/|/\\.bzr/)",
+      "id": "00018"
     },
     {
       "enable": 1,
@@ -169,7 +187,8 @@
       "cwe": "CWE-200",
       "description": "Detects sensitive debug or env endpoints.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "(?i)(?:/phpinfo\\.php|/\\.env|/server-status|/actuator/(?:env|heapdump|beans))"
+      "rule_match": "(?i)(?:/phpinfo\\.php|/\\.env|/server-status|/actuator/(?:env|heapdump|beans))",
+      "id": "00019"
     },
     {
       "enable": 1,
@@ -178,7 +197,8 @@
       "cwe": "CWE-94",
       "description": "Detects JNDI lookup patterns in URI.",
       "url": "https://cwe.mitre.org/data/definitions/94.html",
-      "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)"
+      "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)",
+      "id": "00020"
     },
     {
       "enable": 1,
@@ -187,7 +207,8 @@
       "cwe": "CWE-22",
       "description": "Detects overlong slash traversal encodings.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:%2f%2e%2e%2f|%5c%2e%2e%5c|%255c%252e%252e%255c)"
+      "rule_match": "(?i)(?:%2f%2e%2e%2f|%5c%2e%2e%5c|%255c%252e%252e%255c)",
+      "id": "00021"
     },
     {
       "enable": 1,
@@ -196,7 +217,8 @@
       "cwe": "CWE-98",
       "description": "Detects Windows UNC style include targets.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
-      "rule_match": "(?i)(?:\\\\\\\\[a-z0-9._-]+\\\\(?:share|c\\$|admin\\$))"
+      "rule_match": "(?i)(?:\\\\\\\\[a-z0-9._-]+\\\\(?:share|c\\$|admin\\$))",
+      "id": "00022"
     },
     {
       "enable": 0,
@@ -205,7 +227,8 @@
       "cwe": "CWE-918",
       "description": "Detects file:// and gopher:// SSRF targets.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
-      "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)"
+      "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)",
+      "id": "00023"
     },
     {
       "enable": 1,
@@ -214,7 +237,8 @@
       "cwe": "CWE-200",
       "description": "Detects protocol handler abuse in URIs.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "(?i)(?:fcgi://|uwsgi://|scgi://)"
+      "rule_match": "(?i)(?:fcgi://|uwsgi://|scgi://)",
+      "id": "00024"
     },
     {
       "enable": 1,
@@ -223,7 +247,8 @@
       "cwe": "CWE-158",
       "description": "Detects null-byte poisoning attempts in URI.",
       "url": "https://cwe.mitre.org/data/definitions/158.html",
-      "rule_match": "(?i)(?:%00|\\\\x00)"
+      "rule_match": "(?i)(?:%00|\\\\x00)",
+      "id": "00025"
     },
     {
       "enable": 1,
@@ -232,7 +257,8 @@
       "cwe": "CWE-918",
       "description": "Detects AWS IMDS path access.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
-      "rule_match": "(?i)(?:/latest/meta-data/|/latest/user-data|/latest/dynamic/instance-identity/)"
+      "rule_match": "(?i)(?:/latest/meta-data/|/latest/user-data|/latest/dynamic/instance-identity/)",
+      "id": "00026"
     },
     {
       "enable": 1,
@@ -241,7 +267,8 @@
       "cwe": "CWE-918",
       "description": "Detects access to Kubernetes serviceaccount secrets.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
-      "rule_match": "(?i)(?:/var/run/secrets/kubernetes\\.io/serviceaccount|kubernetes/default/token)"
+      "rule_match": "(?i)(?:/var/run/secrets/kubernetes\\.io/serviceaccount|kubernetes/default/token)",
+      "id": "00027"
     },
     {
       "enable": 1,
@@ -250,7 +277,8 @@
       "cwe": "CWE-918",
       "description": "Detects Docker daemon socket references.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
-      "rule_match": "(?i)(?:/var/run/docker\\.sock|docker\\.sock)"
+      "rule_match": "(?i)(?:/var/run/docker\\.sock|docker\\.sock)",
+      "id": "00028"
     },
     {
       "enable": 1,
@@ -259,7 +287,8 @@
       "cwe": "CWE-98",
       "description": "Detects php filter chains used for source disclosure.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
-      "rule_match": "(?i)(?:php://filter/(?:convert\\.(?:base64|quoted-printable)-(?:encode|decode)|string\\.(?:rot13|toupper|tolower)))"
+      "rule_match": "(?i)(?:php://filter/(?:convert\\.(?:base64|quoted-printable)-(?:encode|decode)|string\\.(?:rot13|toupper|tolower)))",
+      "id": "00029"
     },
     {
       "enable": 1,
@@ -268,7 +297,8 @@
       "cwe": "CWE-285",
       "description": "Detects common admin API paths.",
       "url": "https://cwe.mitre.org/data/definitions/285.html",
-      "rule_match": "(?i)(?:/(?:admin|internal|private|manage|management|debug|console)(?:/|$))"
+      "rule_match": "(?i)(?:/(?:admin|internal|private|manage|management|debug|console)(?:/|$))",
+      "id": "00030"
     },
     {
       "enable": 1,
@@ -277,7 +307,8 @@
       "cwe": "CWE-200",
       "description": "Detects GraphQL schema introspection attempts in URI.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "(?i)(?:__schema|__type)"
+      "rule_match": "(?i)(?:__schema|__type)",
+      "id": "00031"
     },
     {
       "enable": 1,
@@ -286,7 +317,8 @@
       "cwe": "CWE-601",
       "description": "Detects javascript/data/vbscript callback targets.",
       "url": "https://cwe.mitre.org/data/definitions/601.html",
-      "rule_match": "(?i)(?:[?&](?:url|next|redirect|return|dest)=\\s*(?:javascript:|data:|vbscript:))"
+      "rule_match": "(?i)(?:[?&](?:url|next|redirect|return|dest)=\\s*(?:javascript:|data:|vbscript:))",
+      "id": "00032"
     }
   ]
 }

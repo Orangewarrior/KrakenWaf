@@ -51,6 +51,7 @@ pub struct RuleSet {
 /// Generic metadata-backed rule loaded from external JSON files.
 #[derive(Debug, Clone)]
 pub struct DetectionRule {
+    pub id: String,
     pub title: String,
     pub severity: Severity,
     pub cwe: String,

@@ -1,5 +1,13 @@
-use clap::{ArgAction, Parser};
+use clap::{ArgAction, Parser, ValueEnum};
 use std::net::SocketAddr;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WafMode {
+    /// Block detected threats (default behaviour).
+    Block,
+    /// Log detections but never block (observation mode).
+    Silent,
+}
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "krakenwaf")]
@@ -72,6 +80,16 @@ pub struct Cli {
 
     #[arg(long = "trusted-proxy-cidrs", value_delimiter = ',')]
     pub trusted_proxy_cidrs: Vec<String>,
+
+    /// WAF enforcement mode. `block` (default) blocks matching requests; `silent` logs
+    /// detections without blocking, useful for tuning rule sets in production.
+    #[arg(long, value_enum, default_value = "block")]
+    pub mode: WafMode,
+
+    /// Path to an allow-paths YAML file (e.g. rules/allowpaths/lists.yaml). URIs
+    /// matching any entry are passed through without blocking even when a rule fires.
+    #[arg(long = "allow-paths")]
+    pub allow_paths_file: Option<String>,
 
 }
 

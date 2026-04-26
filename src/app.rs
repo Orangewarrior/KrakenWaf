@@ -1,6 +1,7 @@
 
 use crate::{
-    cli::Cli,
+    allowpaths::AllowPathConfig,
+    cli::{Cli, WafMode},
     logging::LoggingHandles,
     metrics::WafMetrics,
     proxy::ProxyClient,
@@ -24,4 +25,6 @@ pub struct AppState {
     pub block_response_body: Option<Bytes>,
     pub block_response_content_type: String,
     pub response_header_policy: Arc<ResponseHeaderPolicy>,
+    pub mode: WafMode,
+    pub allow_path_config: Option<AllowPathConfig>,
 }

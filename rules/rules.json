@@ -11,7 +11,8 @@
       "cwe": "CWE-89",
       "description": "Detects common UNION SELECT probes in the request target.",
       "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "union select"
+      "rule_match": "union select",
+      "id": "00001"
     },
     {
       "enable": 1,
@@ -20,7 +21,8 @@
       "cwe": "CWE-89",
       "description": "Detects classic boolean-based SQL injection probes in the URI query string.",
       "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "' or '1'='1"
+      "rule_match": "' or '1'='1",
+      "id": "00002"
     },
     {
       "enable": 1,
@@ -29,7 +31,8 @@
       "cwe": "CWE-22",
       "description": "Detects encoded or raw traversal attempts in request targets.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "../"
+      "rule_match": "../",
+      "id": "00003"
     },
     {
       "enable": 1,
@@ -38,7 +41,8 @@
       "cwe": "CWE-200",
       "description": "Detects requests that target phpMyAdmin paths.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
-      "rule_match": "/phpmyadmin"
+      "rule_match": "/phpmyadmin",
+      "id": "00004"
     }
   ],
   "header_keywords": [
@@ -49,7 +53,8 @@
       "cwe": "CWE-113",
       "description": "Detects common offensive scanning tooling in request headers.",
       "url": "https://owasp.org",
-      "rule_match": "sqlmap"
+      "rule_match": "sqlmap",
+      "id": "00001"
     },
     {
       "enable": 1,
@@ -58,7 +63,8 @@
       "cwe": "CWE-113",
       "description": "Detects the Nikto scanner string in request headers.",
       "url": "https://owasp.org",
-      "rule_match": "nikto"
+      "rule_match": "nikto",
+      "id": "00002"
     }
   ],
   "body_keywords": [
@@ -69,7 +75,8 @@
       "cwe": "CWE-22",
       "description": "Detects directory traversal sequences in body data.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "../"
+      "rule_match": "../",
+      "id": "00001"
     },
     {
       "enable": 1,
@@ -78,7 +85,8 @@
       "cwe": "CWE-78",
       "description": "Detects command execution probes using /bin/sh.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "/bin/sh"
+      "rule_match": "/bin/sh",
+      "id": "00002"
     },
     {
       "enable": 1,
@@ -87,7 +95,8 @@
       "cwe": "CWE-78",
       "description": "Detects PowerShell invocation attempts in request bodies.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "powershell"
+      "rule_match": "powershell",
+      "id": "00003"
     },
     {
       "enable": 1,
@@ -96,7 +105,8 @@
       "cwe": "CWE-79",
       "description": "Detects classic inline script payloads in POST bodies.",
       "url": "https://cwe.mitre.org/data/definitions/79.html",
-      "rule_match": "<script"
+      "rule_match": "<script",
+      "id": "00004"
     },
     {
       "enable": 1,
@@ -105,7 +115,8 @@
       "cwe": "CWE-89",
       "description": "Detects classic SQLi login bypass probes in POST data.",
       "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "' or '1'='1"
+      "rule_match": "' or '1'='1",
+      "id": "00005"
     }
   ],
   "allow_paths": [
