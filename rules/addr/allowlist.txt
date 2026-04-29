@@ -1,0 +1,9 @@
+# IP Allowlist for health/metrics endpoints — one IPv4/IPv6/CIDR per line.
+# Only IPs matching an entry here may access /__krakenwaf/health and /metrics.
+# If this file is empty or absent, all IPs may access those endpoints.
+# Examples:
+# 127.0.0.1
+# 10.0.0.0/8
+# ::1
+127.0.0.1
+::1

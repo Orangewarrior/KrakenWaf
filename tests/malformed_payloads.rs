@@ -2,7 +2,7 @@
 use krakenwaf::{
     dfa::{DfaConfig, DfaManagerBuilder},
     metrics::WafMetrics,
-    rules::{CompiledDetectionRule, DetectionRule, RuleSet, Severity},
+    rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
     waf::{Decision, WafEngine},
 };
 use regex::Regex;
@@ -29,7 +29,10 @@ fn blocks_malformed_traversal_payload() {
             reference_url: "https://cwe.mitre.org/data/definitions/22.html".into(),
             rule_match: "../".into(),
             source: "rules.json:body_keywords".into(),
+            http_action: HttpAction::Request,
         }],
+        allowed_ips: vec![],
+        scanner_agents: vec![],
         allow_paths: vec![],
         body_limits: HashMap::new(),
         path_regex: vec![],
@@ -63,6 +66,8 @@ fn blocks_regex_based_rce_pattern() {
         body_keywords: vec![],
         allow_paths: vec![],
         body_limits: HashMap::new(),
+        allowed_ips: vec![],
+        scanner_agents: vec![],
         path_regex: vec![],
         body_regex: vec![CompiledDetectionRule {
             meta: DetectionRule {
@@ -75,6 +80,7 @@ fn blocks_regex_based_rce_pattern() {
                 reference_url: "https://cwe.mitre.org/data/definitions/78.html".into(),
                 rule_match: r"(?i)(cmd(\.exe)?\s+/c|powershell\s+-enc)".into(),
                 source: "regex/body_regex.json".into(),
+                http_action: HttpAction::Request,
             },
             compiled: Regex::new(r"(?i)(cmd(\.exe)?\s+/c|powershell\s+-enc)").unwrap(),
         }],

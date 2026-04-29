@@ -1,3 +1,53 @@
+## [2.10.0] - 2026-04-29
+
+### Added
+
+#### Response inspection via `http_action` (Point 1)
+- New `http_action` field (`"Request"` | `"Response"`, default `"Request"`) added to all rule JSON files.
+- `DetectionRule` and `CompiledDetectionRule` carry `http_action: HttpAction`.
+- `EngineMatchers` split into `req_*` / `resp_*` pools: separate Aho-Corasick matchers and Vectorscan databases built per phase at startup.
+- New `ResponseContext { status, headers, body }` struct passed to `inspect_response()`.
+- New `WafEngine::inspect_response(&ResponseContext) -> Decision` method — runs Response-phase rules against the buffered upstream body and headers.
+- `proxy.rs`: after buffering the upstream response body, calls `inspect_response()`; a Block result returns HTTP 403 to the client and logs the finding.
+- `rules/Vectorscan/strings2block.json` and `rules/regex/*.json` updated with `"http_action": "Request"`.
+- New documentation: `docs/http_action.md`.
+
+#### Integration test server (Point 2)
+- New `tests/server_real_test.rs`: Axum micro-backend on port 9077 with four routes (`/test_one`, `/test_get`, `/test_two`, `/test_post`).
+- KrakenWAF spawned as subprocess in `--no-tls` mode; unique port allocated per test via atomic counter.
+- Six test cases: XSS POST blocked, SQLi GET blocked, scanner UA blocked, blocklisted IP blocked, clean GET passes, clean POST passes.
+- `axum` added to `[dev-dependencies]`.
+- New documentation: `docs/integration_tests.md`.
+
+#### Scanner User-Agent blocklist (Point 3)
+- New `rules/user_agents/scanners.txt`: 78 scanner/crawler UA substrings from the OWASP CRS `scanners-user-agents.data`.
+- `RuleSet` gains `scanner_agents: Vec<String>` loaded via `load_scanner_agents()`.
+- `EngineMatchers` gains `req_scanner_agents: Option<KeywordMatcher>` (Aho-Corasick) and, when Vectorscan is enabled, `scanner_vectorscan`.
+- `inspect_early()` extracts the `User-Agent` header and matches it against the scanner pool; a match returns HTTP 403 + Alert logged to JSON, raw critical, and SQLite.
+- New documentation: `docs/scanner_agents.md`.
+
+#### Address blocklist / allowlist (Point 5)
+- `rules/addr/blocklist.txt` **replaces** `rules/blocklist_ip.txt` — one IPv4/IPv6/CIDR per line.
+- `rules/addr/allowlist.txt` — only listed IPs may access `/__krakenwaf/health` and `/metrics`; empty file disables the check.
+- `RuleSet` gains `allowed_ips: Vec<String>` and `blocked_ips` now loaded from `addr/blocklist.txt`.
+- New `RuleSet::is_ip_allowed(&str) -> bool` — returns `true` (allow all) when `allowed_ips` is empty.
+- `server.rs` enforces the allowlist before serving management endpoints.
+- `safe_join()` helper added to `loader.rs` — canonicalises paths and rejects traversal out of the rules root.
+- New documentation: `docs/blockaddrs_allowaddrs.md`.
+
+#### `--no-tls` mode (Point 4)
+- New `--no-tls` CLI flag; when set the WAF listens on plain HTTP, ignoring `--sni-map`. Useful for deployments where TLS is terminated by an upstream load balancer, and required for integration tests.
+- `server::run_plain()` added alongside the existing `server::run()`.
+
+### Changed
+- `--blocklist-ip` now reads `rules/addr/blocklist.txt` instead of `rules/blocklist_ip.txt`.
+- README CLI table updated: `--blocklist-ip`, `--no-tls` entries added/updated; directory structure updated.
+
+### Fixed
+- `proxy.rs`: `method` move-before-use compile error fixed by saving `method_str` before moving `method` into the reqwest builder.
+
+---
+
 ## [2.9.0] - 2026-04-25
 
 ### Added

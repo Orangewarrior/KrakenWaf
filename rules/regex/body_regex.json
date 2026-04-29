@@ -2,6 +2,7 @@
   "rules": [
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Command injection separators body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -12,6 +13,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Command substitution body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -22,6 +24,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Shell downloader body",
       "severity": "high",
       "cwe": "CWE-78",
@@ -32,6 +35,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Reverse shell body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -42,6 +46,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "LFI file disclosure body",
       "severity": "high",
       "cwe": "CWE-22",
@@ -52,6 +57,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Traversal body encoded",
       "severity": "high",
       "cwe": "CWE-22",
@@ -62,6 +68,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "PHP wrapper body",
       "severity": "high",
       "cwe": "CWE-98",
@@ -72,6 +79,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "RFI body remote include",
       "severity": "high",
       "cwe": "CWE-98",
@@ -82,6 +90,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF localhost body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -92,6 +101,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF private body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -102,6 +112,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF cloud metadata body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -112,6 +123,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "File and gopher schemes body",
       "severity": "high",
       "cwe": "CWE-918",
@@ -122,6 +134,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "SMTP or internal protocol abuse body",
       "severity": "medium",
       "cwe": "CWE-918",
@@ -132,6 +145,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Deserialization gadget body",
       "severity": "high",
       "cwe": "CWE-502",
@@ -142,6 +156,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Template injection body",
       "severity": "high",
       "cwe": "CWE-94",
@@ -152,6 +167,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Protocol smuggling body",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -162,6 +178,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF redirect parameter body",
       "severity": "medium",
       "cwe": "CWE-601",
@@ -172,6 +189,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Archive traversal body",
       "severity": "medium",
       "cwe": "CWE-22",
@@ -182,6 +200,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Known scanner body",
       "severity": "medium",
       "cwe": "CWE-16",
@@ -192,6 +211,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious XML external entity body",
       "severity": "high",
       "cwe": "CWE-611",
@@ -202,6 +222,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious log4shell body",
       "severity": "critical",
       "cwe": "CWE-94",
@@ -212,6 +233,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Windows shell body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -222,6 +244,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Unix shell body",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -232,6 +255,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Container escape body",
       "severity": "medium",
       "cwe": "CWE-250",
@@ -242,6 +266,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Unsafe file upload body",
       "severity": "medium",
       "cwe": "CWE-434",
@@ -252,6 +277,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Path traversal zip slip body",
       "severity": "medium",
       "cwe": "CWE-22",
@@ -262,6 +288,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Dangerous binary fetch body",
       "severity": "high",
       "cwe": "CWE-494",
@@ -272,6 +299,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "OCI metadata SSRF body",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -282,6 +310,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "GraphQL introspection body",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -292,6 +321,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Server-side include body",
       "severity": "medium",
       "cwe": "CWE-97",
@@ -302,6 +332,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Localhost callback body",
       "severity": "high",
       "cwe": "CWE-918",
@@ -312,6 +343,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF unix socket body",
       "severity": "high",
       "cwe": "CWE-918",
@@ -322,6 +354,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Header smuggling body",
       "severity": "medium",
       "cwe": "CWE-444",

@@ -6,6 +6,14 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, fmt, path::{Component, Path}};
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub enum HttpAction {
+    #[default]
+    Request,
+    Response,
+}
+
 pub use loader::load_rules_from_dir;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -35,8 +43,14 @@ impl fmt::Display for Severity {
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RuleSet {
+    /// Exact IPs blocked from all access (from rules/addr/blocklist.txt).
     pub blocked_ips: Vec<String>,
+    /// CIDR ranges blocked (from rules.json:blocked_ip_prefixes — kept for compat).
     pub blocked_ip_prefixes: Vec<String>,
+    /// IPs allowed to access /metrics and /__krakenwaf/health (from rules/addr/allowlist.txt).
+    pub allowed_ips: Vec<String>,
+    /// Scanner/crawler user-agent substrings (from rules/user_agents/scanners.txt).
+    pub scanner_agents: Vec<String>,
     pub uri_keywords: Vec<DetectionRule>,
     pub header_keywords: Vec<DetectionRule>,
     pub body_keywords: Vec<DetectionRule>,
@@ -60,6 +74,7 @@ pub struct DetectionRule {
     pub rule_match: String,
     pub source: String,
     pub line: usize,
+    pub http_action: HttpAction,
 }
 
 /// A compiled regex rule with its metadata.
@@ -81,6 +96,21 @@ impl RuleSet {
             .find(|(prefix, _)| normalized.starts_with(&normalize_url_path(prefix)))
             .map(|(_, limit)| *limit)
             .unwrap_or(1024 * 1024)
+    }
+
+    /// Returns true if the client IP is in rules/addr/allowlist.txt (may access health/metrics).
+    pub fn is_ip_allowed(&self, ip: &str) -> bool {
+        if self.allowed_ips.is_empty() {
+            return true; // No allowlist configured → all IPs may access health/metrics.
+        }
+        self.allowed_ips.iter().any(|entry| {
+            if let Ok(net) = entry.parse::<ipnet::IpNet>() {
+                if let Ok(client) = ip.parse::<std::net::IpAddr>() {
+                    return net.contains(&client);
+                }
+            }
+            entry.trim() == ip.trim()
+        })
     }
 
     pub fn is_allowlisted(&self, path: &str) -> bool {
