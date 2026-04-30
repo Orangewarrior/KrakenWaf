@@ -1,4 +1,4 @@
-# KrakenWaf v2.9.0
+# KrakenWaf v2.10.0
 
 ## 🚀 Overview
 
@@ -136,6 +136,67 @@ Example `blocked.html`:
   </body>
 </html>
 ```
+
+---
+
+## 🧪 Testing
+
+KrakenWAF ships two complementary test strategies: automated integration tests
+and standalone binaries for manual end-to-end validation.
+
+### Automated tests
+
+```sh
+# All tests (unit + integration)
+cargo test
+
+# Integration tests only (spawns real WAF subprocesses)
+cargo test --test server_real_test
+
+# Single test with stdout
+cargo test --test server_real_test -- xss_payload_sweep_post --nocapture
+```
+
+Each integration test in `tests/server_real_test.rs` starts a real WAF
+subprocess with a unique port and isolated SQLite directory, then fires
+crafted HTTP requests through it. Eight cases: XSS sweep (POST/GET),
+SQLi sweep (GET/POST), scanner UA sweep, blocklisted IP, clean GET/POST
+pass-through.
+
+→ Full details: [docs/integration_tests.md](docs/integration_tests.md)
+
+---
+
+### Manual end-to-end with `demo_server` + `attack`
+
+Two standalone binaries are provided for manual validation and demos:
+
+| Binary | Description |
+|--------|-------------|
+| `demo_server` | Intentionally vulnerable Axum HTTP backend on `:9077` |
+| `attack` | Payload sweep tool — 215 requests, reports `[BLOCK]`/`[PASS ]` per payload |
+
+```sh
+# 1. Build
+cargo build --bin demo_server --bin attack
+
+# 2. Start the vulnerable backend
+cargo run --bin demo_server
+
+# 3. Start KrakenWAF in front of it (separate terminal)
+cargo run -- --no-tls --allow-private-upstream \
+             --listen 0.0.0.0:8080 \
+             --upstream http://127.0.0.1:9077 \
+             --rules-dir ./rules
+
+# 4. Run the attack sweep
+cargo run --bin attack -- --target http://127.0.0.1:8080 --verbose
+```
+
+Expected result: **215 blocked | 0 bypassed | 0 errors**
+(50 XSS POST + 50 XSS GET + 50 SQLi GET + 50 SQLi POST + 15 scanner UAs)
+
+→ Full details: [docs/attack_tool.md](docs/attack_tool.md)
 
 ---
 
@@ -342,6 +403,17 @@ CREATE TABLE vulnerabilities (
 KrakenWaf/
 ├── Cargo.toml
 ├── certs/
+├── docs/
+│   ├── attack_tool.md           ← demo_server + attack binary guide
+│   ├── allowpaths.md
+│   ├── blockaddrs_allowaddrs.md
+│   ├── deployment.md
+│   ├── http_action.md
+│   ├── integration_tests.md
+│   ├── libinjection.md
+│   ├── scanner_agents.md
+│   └── dfa/
+│       └── schema.md
 ├── logs/
 │   ├── db/
 │   ├── json/
@@ -350,8 +422,18 @@ KrakenWaf/
 │   ├── Vectorscan/
 │   │   └── strings2block.json
 │   ├── addr/
-│   │   ├── blocklist.txt        ← blocked IPs/CIDRs (replaces blocklist_ip.txt)
+│   │   ├── blocklist.txt        ← blocked IPs/CIDRs
 │   │   └── allowlist.txt        ← IPs allowed to reach /metrics and /health
+│   ├── allowpaths/
+│   │   └── lists.yaml           ← URI prefixes that bypass WAF inspection
+│   ├── dfa/
+│   │   └── config.yaml          ← enable/disable each DFA detector
+│   ├── headers_http/
+│   │   ├── strict.headers       ← maximum hardening profile
+│   │   ├── balanced.headers
+│   │   ├── relax.headers
+│   │   ├── locked_down.headers
+│   │   └── api_compat.headers
 │   ├── regex/
 │   │   ├── body_regex.json
 │   │   ├── header_regex.json
@@ -362,7 +444,13 @@ KrakenWaf/
 │   └── tls/
 │       └── sni_map.csv
 ├── src/
+│   ├── bin/
+│   │   ├── demo_server.rs       ← intentionally vulnerable demo backend
+│   │   └── attack.rs            ← standalone payload-sweep attack tool
+│   └── ...
 └── tests/
+    ├── malformed_payloads.rs
+    └── server_real_test.rs      ← end-to-end integration tests
 ```
 
 ## Main rules format
@@ -470,7 +558,141 @@ The same schema is used for:
 - `rules/regex/header_regex.json`
 - `rules/Vectorscan/strings2block.json`
 - KrakenWaf have 80 rules or more with DFA...
-  
+
+---
+
+## YAML rule files
+
+### Allow-paths — `rules/allowpaths/lists.yaml`
+
+Defines URI prefixes that bypass WAF inspection entirely.
+Loaded via `--allow-paths rules/allowpaths/lists.yaml`.
+
+```yaml
+allow:
+  - order: 1
+    title: "WordPress admin panel"
+    description: "Trusted admin resource — restrict access at the network level"
+    log: true          # emit a log entry when this path is bypassed
+    paths:
+      - /wp-admin
+      - /wp-json
+
+  - order: 2
+    title: "Health check endpoint"
+    description: "Load-balancer liveness probe — safe to bypass WAF inspection"
+    log: false
+    paths:
+      - /healthz
+      - /readyz
+```
+
+Fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `order` | int | Evaluation priority (lower = first) |
+| `title` | string | Human-readable label for logs |
+| `description` | string | Operator notes |
+| `log` | bool | Whether to log bypassed requests |
+| `paths` | list | URI prefixes — matched with `starts_with` |
+
+→ Full details: [docs/allowpaths.md](docs/allowpaths.md)
+
+---
+
+### DFA config — `rules/dfa/config.yaml`
+
+Toggles each DFA detector independently at startup.
+Loaded via `--dfa-load rules/dfa/config.yaml`.
+
+```yaml
+DFA-Rules:
+  SQLi_comments_detect: true    # SQL comment evasion (/**/, --, #)
+  Overflow_detect: true         # Buffer overflow patterns
+  SSTI_detect: true             # Server-side template injection
+  SSI_injection_detect: true    # Server-side include injection
+  ESI_injection_detect: true    # Edge-side include injection
+```
+
+Set any key to `false` to disable that detector without recompiling.
+
+→ Full details: [docs/dfa/schema.md](docs/dfa/schema.md)
+
+---
+
+### Security header profiles — `rules/headers_http/`
+
+Plain-text files (one `Header-Name: value` per line) injected into every
+upstream response. Loaded via `--header-protection-injection`.
+
+Available profiles:
+
+| File | Description |
+|------|-------------|
+| `strict.headers` | Maximum hardening — `frame-ancestors none`, strict CSP, HSTS preload |
+| `balanced.headers` | Balanced defaults suitable for most web apps |
+| `relax.headers` | Minimal headers for APIs or legacy apps with relaxed CSP |
+| `locked_down.headers` | Zero-trust profile — denies cross-origin resource sharing |
+| `api_compat.headers` | API-compatible — omits frame/CSP headers that break JSON clients |
+
+Example (`strict.headers`):
+
+```
+X-Frame-Options: DENY
+X-Content-Type-Options: nosniff
+Referrer-Policy: no-referrer
+Content-Security-Policy: default-src 'self'; object-src 'none'; frame-ancestors 'none'
+Strict-Transport-Security: max-age=63072000; includeSubDomains; preload
+Permissions-Policy: camera=(), microphone=(), geolocation=()
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: same-origin
+```
+
+Usage:
+
+```sh
+krakenwaf ... --header-protection-injection rules/headers_http/strict.headers
+```
+
+---
+
+## CI/CD
+
+### Security pipeline (`.github/workflows/security.yml`)
+
+Runs on every push/PR and weekly (Monday 06:00 UTC):
+
+| Job | Tool | Type |
+|-----|------|------|
+| `clippy` | cargo clippy | SAST — deny warnings |
+| `semgrep` | Semgrep (p/rust, p/owasp-top-ten, p/secrets) | SAST → SARIF to Security tab |
+| `cargo-audit` | RustSec advisory database | SCA |
+| `cargo-deny` | licenses + bans + advisories (`deny.toml`) | SCA |
+| `osv-scan` | [osv.dev](https://osv.dev) OSV Scanner | SCA → SARIF to Security tab |
+
+### Monthly artifacts (`.github/workflows/artifacts.yml`)
+
+Runs automatically on the **1st of each month at 02:00 UTC** (also triggerable manually via Actions → Run workflow).
+
+Produces 4 downloadable artifacts per run (retained 90 days):
+
+```
+Actions → Monthly Release Artifacts → [run] → Artifacts
+
+  📦 security-reports-<run_id>/
+       semgrep.sarif / .json          ← SAST
+       cargo-audit.txt / .json        ← SCA RustSec
+       cargo-deny.txt  / .json        ← SCA licenses + bans
+       osv-scanner.sarif / .json / .txt ← SCA osv.dev
+
+  📦 krakenwaf-v*-x86_64-unknown-linux-gnu.tar.gz
+  📦 krakenwaf-v*-aarch64-unknown-linux-gnu.tar.gz
+  📦 krakenwaf-v*-x86_64-pc-windows-msvc.tar.gz
+```
+
+---
+
 ## Notes
 
 - Every public function is documented with Rust doc comments so `cargo doc` can render API documentation.
