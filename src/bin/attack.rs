@@ -3,12 +3,15 @@
 //!
 //! Usage
 //! -----
-//!   cargo run --bin attack                          # target http://127.0.0.1:8080
-//!   cargo run --bin attack -- --target http://...  # custom WAF address
+//!   cargo run --bin attack                                     # target http://127.0.0.1:8080
 //!   cargo run --bin attack -- --target http://... --verbose
+//!   cargo run --bin attack -- --concurrency 50                 # 50 requests in-flight at once
 
 use reqwest::StatusCode;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Semaphore;
+use tokio::task::JoinSet;
 
 // ─── Payload lists ────────────────────────────────────────────────────────────
 
@@ -145,48 +148,51 @@ enum Outcome {
     Error(String),
 }
 
-struct Result {
+struct SweepResult {
     label:   String,
     outcome: Outcome,
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
+// ─── CLI ──────────────────────────────────────────────────────────────────────
 
-fn parse_args() -> (String, bool) {
+struct Config {
+    target:      String,
+    verbose:     bool,
+    concurrency: usize,
+}
+
+fn parse_args() -> Config {
     let args: Vec<String> = std::env::args().collect();
-    let mut target = "http://127.0.0.1:8080".to_string();
-    let mut verbose = false;
+    let mut target      = "http://127.0.0.1:8080".to_string();
+    let mut verbose     = false;
+    let mut concurrency = 20usize;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--target" | "-t" => {
-                i += 1;
-                if let Some(v) = args.get(i) {
-                    target = v.clone();
-                }
-            }
-            "--verbose" | "-v" => verbose = true,
+            "--target"      | "-t" => { i += 1; if let Some(v) = args.get(i) { target = v.clone(); } }
+            "--verbose"     | "-v" => { verbose = true; }
+            "--concurrency" | "-c" => { i += 1; if let Some(v) = args.get(i) { concurrency = v.parse().unwrap_or(20); } }
             _ => {}
         }
         i += 1;
     }
-    (target, verbose)
+    Config { target, verbose, concurrency }
 }
+
+// ─── Output helpers ───────────────────────────────────────────────────────────
 
 fn outcome_icon(o: &Outcome) -> &'static str {
     match o {
-        Outcome::Blocked        => "[BLOCK]",
-        Outcome::Bypassed(_)    => "[PASS ]",
-        Outcome::Error(_)       => "[ERROR]",
+        Outcome::Blocked     => "[BLOCK]",
+        Outcome::Bypassed(_) => "[PASS ]",
+        Outcome::Error(_)    => "[ERROR]",
     }
 }
 
-fn print_result(r: &Result, verbose: bool) {
+fn print_result(r: &SweepResult, verbose: bool) {
     match &r.outcome {
         Outcome::Blocked => {
-            if verbose {
-                println!("  {} {}", outcome_icon(&r.outcome), r.label);
-            }
+            if verbose { println!("  {} {}", outcome_icon(&r.outcome), r.label); }
         }
         Outcome::Bypassed(code) => {
             println!("  {} {} (status {})", outcome_icon(&r.outcome), r.label, code);
@@ -197,14 +203,154 @@ fn print_result(r: &Result, verbose: bool) {
     }
 }
 
+fn tally(results: &[SweepResult], verbose: bool) -> (usize, usize, usize) {
+    let (mut b, mut p, mut e) = (0, 0, 0);
+    for r in results {
+        match r.outcome {
+            Outcome::Blocked     => b += 1,
+            Outcome::Bypassed(_) => p += 1,
+            Outcome::Error(_)    => e += 1,
+        }
+        print_result(r, verbose);
+    }
+    (b, p, e)
+}
+
+// ─── Concurrent sweep helpers ─────────────────────────────────────────────────
+//
+// Each sweep spawns one tokio task per payload. The Semaphore limits how many
+// requests are actually in-flight simultaneously (--concurrency). Results are
+// collected in original payload order so output is deterministic.
+
+async fn sweep_post(
+    client:      &reqwest::Client,
+    base:        &str,
+    path:        &str,
+    payloads:    &[&str],
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let url = Arc::new(format!("{base}{path}"));
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &payload) in payloads.iter().enumerate() {
+        let client  = client.clone();
+        let url     = url.clone();
+        let sem     = sem.clone();
+        let payload = payload.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let outcome = match client
+                .post(url.as_str())
+                .form(&[("payload_test", &payload)])
+                .send()
+                .await
+            {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r)  => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (idx, SweepResult { label: payload, outcome })
+        });
+    }
+
+    collect_ordered(&mut set, payloads.len()).await
+}
+
+async fn sweep_get(
+    client:      &reqwest::Client,
+    base:        &str,
+    path:        &str,
+    payloads:    &[&str],
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let url = Arc::new(format!("{base}{path}"));
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &payload) in payloads.iter().enumerate() {
+        let client  = client.clone();
+        let url     = url.clone();
+        let sem     = sem.clone();
+        let payload = payload.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let outcome = match client
+                .get(url.as_str())
+                .query(&[("payload_test", &payload)])
+                .send()
+                .await
+            {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r)  => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (idx, SweepResult { label: payload, outcome })
+        });
+    }
+
+    collect_ordered(&mut set, payloads.len()).await
+}
+
+async fn sweep_ua(
+    client:      &reqwest::Client,
+    base:        &str,
+    path:        &str,
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let url = Arc::new(format!("{base}{path}"));
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &(ua, name)) in SCANNER_UAS.iter().enumerate() {
+        let client = client.clone();
+        let url    = url.clone();
+        let sem    = sem.clone();
+        let ua     = ua.to_string();
+        let label  = format!("{name} ({ua})");
+        set.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let outcome = match client
+                .get(url.as_str())
+                .query(&[("payload_test", "hello")])
+                .header("User-Agent", &ua)
+                .send()
+                .await
+            {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r)  => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (idx, SweepResult { label, outcome })
+        });
+    }
+
+    collect_ordered(&mut set, SCANNER_UAS.len()).await
+}
+
+// Drains a JoinSet and returns results sorted by original index.
+async fn collect_ordered(
+    set: &mut JoinSet<(usize, SweepResult)>,
+    len: usize,
+) -> Vec<SweepResult> {
+    let mut indexed = Vec::with_capacity(len);
+    while let Some(res) = set.join_next().await {
+        if let Ok(item) = res {
+            indexed.push(item);
+        }
+    }
+    indexed.sort_by_key(|(i, _)| *i);
+    indexed.into_iter().map(|(_, r)| r).collect()
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() {
-    let (target, verbose) = parse_args();
+    let cfg = parse_args();
 
     let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(10))
         .build()
         .expect("failed to build HTTP client");
 
@@ -212,65 +358,54 @@ async fn main() {
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║           KrakenWAF Attack Tool                         ║");
     println!("╚══════════════════════════════════════════════════════════╝");
-    println!("  Target : {target}");
-    println!("  Verbose: {verbose}");
+    println!("  Target      : {}", cfg.target);
+    println!("  Concurrency : {} requests in-flight", cfg.concurrency);
+    println!("  Verbose     : {}", cfg.verbose);
     println!();
 
-    let mut total_blocked = 0usize;
+    let mut total_blocked  = 0usize;
     let mut total_bypassed = 0usize;
-    let mut total_errors = 0usize;
+    let mut total_errors   = 0usize;
 
-    // ── XSS via POST body ────────────────────────────────────────────────────
-    println!("━━━ XSS — POST /test_post ({} payloads) ━━━", XSS_PAYLOADS.len());
-    let results = sweep_post(&client, &target, "/test_post", XSS_PAYLOADS).await;
-    let (b, p, e) = tally(&results, verbose);
-    total_blocked  += b;
-    total_bypassed += p;
-    total_errors   += e;
-    println!("  → {b} blocked  |  {p} bypassed  |  {e} errors\n");
+    macro_rules! run_sweep {
+        ($label:expr, $fut:expr) => {{
+            println!("━━━ {} ━━━", $label);
+            let results = $fut.await;
+            let (b, p, e) = tally(&results, cfg.verbose);
+            total_blocked  += b;
+            total_bypassed += p;
+            total_errors   += e;
+            println!("  → {b} blocked  |  {p} bypassed  |  {e} errors\n");
+        }};
+    }
 
-    // ── XSS via GET query ────────────────────────────────────────────────────
-    println!("━━━ XSS — GET /test_get ({} payloads) ━━━", XSS_PAYLOADS.len());
-    let results = sweep_get(&client, &target, "/test_get", XSS_PAYLOADS).await;
-    let (b, p, e) = tally(&results, verbose);
-    total_blocked  += b;
-    total_bypassed += p;
-    total_errors   += e;
-    println!("  → {b} blocked  |  {p} bypassed  |  {e} errors\n");
+    run_sweep!(
+        format!("XSS — POST /test_post ({} payloads)", XSS_PAYLOADS.len()),
+        sweep_post(&client, &cfg.target, "/test_post", XSS_PAYLOADS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!("XSS — GET /test_get ({} payloads)", XSS_PAYLOADS.len()),
+        sweep_get(&client, &cfg.target, "/test_get", XSS_PAYLOADS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!("SQLi — GET /test_get ({} payloads)", SQLI_PAYLOADS.len()),
+        sweep_get(&client, &cfg.target, "/test_get", SQLI_PAYLOADS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!("SQLi — POST /test_post ({} payloads)", SQLI_PAYLOADS.len()),
+        sweep_post(&client, &cfg.target, "/test_post", SQLI_PAYLOADS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!("Scanner UA — GET /test_get ({} UAs)", SCANNER_UAS.len()),
+        sweep_ua(&client, &cfg.target, "/test_get", cfg.concurrency)
+    );
 
-    // ── SQLi via GET query ───────────────────────────────────────────────────
-    println!("━━━ SQLi — GET /test_get ({} payloads) ━━━", SQLI_PAYLOADS.len());
-    let results = sweep_get(&client, &target, "/test_get", SQLI_PAYLOADS).await;
-    let (b, p, e) = tally(&results, verbose);
-    total_blocked  += b;
-    total_bypassed += p;
-    total_errors   += e;
-    println!("  → {b} blocked  |  {p} bypassed  |  {e} errors\n");
-
-    // ── SQLi via POST body ───────────────────────────────────────────────────
-    println!("━━━ SQLi — POST /test_post ({} payloads) ━━━", SQLI_PAYLOADS.len());
-    let results = sweep_post(&client, &target, "/test_post", SQLI_PAYLOADS).await;
-    let (b, p, e) = tally(&results, verbose);
-    total_blocked  += b;
-    total_bypassed += p;
-    total_errors   += e;
-    println!("  → {b} blocked  |  {p} bypassed  |  {e} errors\n");
-
-    // ── Scanner User-Agents ──────────────────────────────────────────────────
-    println!("━━━ Scanner UA — GET /test_get ({} UAs) ━━━", SCANNER_UAS.len());
-    let results = sweep_ua(&client, &target, "/test_get").await;
-    let (b, p, e) = tally(&results, verbose);
-    total_blocked  += b;
-    total_bypassed += p;
-    total_errors   += e;
-    println!("  → {b} blocked  |  {p} bypassed  |  {e} errors\n");
-
-    // ── Summary ──────────────────────────────────────────────────────────────
     let grand_total = total_blocked + total_bypassed + total_errors;
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  SUMMARY                                                ║");
     println!("╠══════════════════════════════════════════════════════════╣");
     println!("║  Total requests : {grand_total:<38}║");
+    println!("║  Concurrency    : {:<38}║", cfg.concurrency);
     println!("║  Blocked        : {total_blocked:<38}║");
     println!("║  Bypassed       : {total_bypassed:<38}║");
     println!("║  Errors         : {total_errors:<38}║");
@@ -286,93 +421,4 @@ async fn main() {
     if total_bypassed > 0 {
         std::process::exit(1);
     }
-}
-
-// ─── Sweep helpers ────────────────────────────────────────────────────────────
-
-async fn sweep_post(
-    client: &reqwest::Client,
-    base:   &str,
-    path:   &str,
-    payloads: &[&str],
-) -> Vec<Result> {
-    let url = format!("{base}{path}");
-    let mut out = Vec::new();
-    for &payload in payloads {
-        let outcome = match client
-            .post(&url)
-            .form(&[("payload_test", payload)])
-            .send()
-            .await
-        {
-            Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
-            Ok(r)  => Outcome::Bypassed(r.status()),
-            Err(e) => Outcome::Error(e.to_string()),
-        };
-        out.push(Result { label: payload.to_string(), outcome });
-    }
-    out
-}
-
-async fn sweep_get(
-    client: &reqwest::Client,
-    base:   &str,
-    path:   &str,
-    payloads: &[&str],
-) -> Vec<Result> {
-    let url = format!("{base}{path}");
-    let mut out = Vec::new();
-    for &payload in payloads {
-        let outcome = match client
-            .get(&url)
-            .query(&[("payload_test", payload)])
-            .send()
-            .await
-        {
-            Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
-            Ok(r)  => Outcome::Bypassed(r.status()),
-            Err(e) => Outcome::Error(e.to_string()),
-        };
-        out.push(Result { label: payload.to_string(), outcome });
-    }
-    out
-}
-
-async fn sweep_ua(
-    client: &reqwest::Client,
-    base:   &str,
-    path:   &str,
-) -> Vec<Result> {
-    let url = format!("{base}{path}");
-    let mut out = Vec::new();
-    for &(ua, name) in SCANNER_UAS {
-        let outcome = match client
-            .get(&url)
-            .query(&[("payload_test", "hello")])
-            .header("User-Agent", ua)
-            .send()
-            .await
-        {
-            Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
-            Ok(r)  => Outcome::Bypassed(r.status()),
-            Err(e) => Outcome::Error(e.to_string()),
-        };
-        out.push(Result { label: format!("{name} ({ua})"), outcome });
-    }
-    out
-}
-
-// ─── Tally ────────────────────────────────────────────────────────────────────
-
-fn tally(results: &[Result], verbose: bool) -> (usize, usize, usize) {
-    let (mut b, mut p, mut e) = (0, 0, 0);
-    for r in results {
-        match r.outcome {
-            Outcome::Blocked     => b += 1,
-            Outcome::Bypassed(_) => p += 1,
-            Outcome::Error(_)    => e += 1,
-        }
-        print_result(r, verbose);
-    }
-    (b, p, e)
 }
