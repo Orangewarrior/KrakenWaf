@@ -458,3 +458,55 @@ async fn clean_post_passes_through() {
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+/// Sweep the same 50 XSS payloads via GET query — every one must be blocked (403).
+/// Mirrors xss_payload_sweep_post to confirm URI-phase rules cover the same vectors.
+#[tokio::test]
+async fn xss_payload_sweep_get() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in XSS_PAYLOADS {
+        let resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("request failed for XSS GET payload {payload:?}: {e}"));
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "XSS GET payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// Sweep the same 50 SQLi payloads via POST body — every one must be blocked (403).
+/// Mirrors sqli_payload_sweep_get to confirm body-phase rules cover the same vectors.
+#[tokio::test]
+async fn sqli_payload_sweep_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in SQLI_PAYLOADS {
+        let resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("request failed for SQLi POST payload {payload:?}: {e}"));
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "SQLi POST payload not blocked: {payload:?}"
+        );
+    }
+}

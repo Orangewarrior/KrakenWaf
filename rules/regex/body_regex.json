@@ -382,7 +382,7 @@
       "cwe": "CWE-89",
       "description": "Detects time-based blind, error-based, and structural SQLi probes in POST bodies.",
       "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "(?i)(?:sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|'\\s*(?:--|#)(?:\\s|$)|'\\s*/\\*|or\\s+true\\b|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]|'\\s*group\\s+by\\s+[0-9]|xp_cmdshell|drop\\s+table\\s+\\w|insert\\s+into\\s+\\w+\\s+values|exec\\s+(?:master|xp_))",
+      "rule_match": "(?i)(?:sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|union\\s+(?:all\\s+)?select\\b|'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|'\\s*(?:--|#)(?:\\s|$)|'\\s*/\\*|or\\s+true\\b|[0-9]+\\s+(?:or|and)\\s+[0-9]+=\\s*[0-9]+|\"\\s*or\\s+(?:\"[^\"]*\"\\s*=|[0-9])|(?:or|and)\\s+\\(\\s*select\\b|;\\s*(?:select|insert|update|delete|drop|exec)\\b|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]|'\\s*group\\s+by\\s+[0-9]|xp_cmdshell|drop\\s+table\\s+\\w|insert\\s+into\\s+\\w+\\s+values|exec\\s+(?:master|xp_))",
       "id": "00035"
     }
   ]

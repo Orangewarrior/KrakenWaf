@@ -362,6 +362,17 @@
       "url": "https://cwe.mitre.org/data/definitions/89.html",
       "rule_match": "(?i)(?:'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|union\\s+all\\s+select\\b|sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|'\\s*(?:--|#)(?:[^a-zA-Z0-9]|$)|'\\s*/\\*|admin'\\s*--|or\\s+true\\b|[0-9]+\\s+(?:or|and)\\s+[0-9]+=\\s*[0-9]+|\"\\s*or\\s+(?:\"[^\"]*\"\\s*=|[0-9])|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]+\\s*--|xp_cmdshell|;\\s*(?:select|insert|update|delete|drop|exec)\\b|(?:or|and)\\s+\\(\\s*select\\b)",
       "id": "00033"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "XSS vectors in URI",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects XSS script tags, event handlers, and javascript URI scheme in URI query strings.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "(?i)(?:<\\s*(?:script|iframe|frame|svg|math|object|embed|style|link|base|bgsound)\\b|onerror\\s*=|onload\\s*=|javascript\\s*:|\\bon(?:click|focus|blur|submit|mouseover|mouseenter|mousemove|toggle|start|end|animationend|keyup|keydown|keypress|input|change|reset|copy|paste|drag|drop|scroll)\\s*=)",
+      "id": "00034"
     }
   ]
 }
