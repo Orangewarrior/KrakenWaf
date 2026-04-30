@@ -1,0 +1,183 @@
+name: Monthly Release Artifacts
+
+on:
+  schedule:
+    # First day of every month at 02:00 UTC
+    - cron: "0 2 1 * *"
+  workflow_dispatch:
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. SAST + SCA reports — bundled into a single downloadable artifact
+  # ──────────────────────────────────────────────────────────────────────────
+  security-reports:
+    name: Security Reports
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: linux-cargo-reports-${{ hashFiles('Cargo.lock') }}
+
+      - name: Create reports dir
+        run: mkdir -p reports
+
+      # ── Semgrep ─────────────────────────────────────────────────────────
+      - name: Semgrep — SAST
+        run: >
+          semgrep scan
+          --config p/rust
+          --config p/security-audit
+          --config p/owasp-top-ten
+          --config p/secrets
+          --sarif --output reports/semgrep.sarif
+          --json  --output reports/semgrep.json
+        continue-on-error: true
+
+      - name: Upload Semgrep SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/semgrep.sarif
+          category: semgrep
+
+      # ── cargo-audit ─────────────────────────────────────────────────────
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: cargo-audit — SCA (RustSec)
+        run: |
+          cargo audit --json > reports/cargo-audit.json 2>&1 || true
+          cargo audit        > reports/cargo-audit.txt  2>&1 || true
+
+      # ── cargo-deny ──────────────────────────────────────────────────────
+      - name: Install cargo-deny
+        run: cargo install cargo-deny --locked
+
+      - name: cargo-deny — licenses + advisories + bans
+        run: |
+          cargo deny check advisories licenses bans sources --format json > reports/cargo-deny.json 2>&1 || true
+          cargo deny check advisories licenses bans sources               > reports/cargo-deny.txt  2>&1 || true
+
+      # ── OSV Scanner ─────────────────────────────────────────────────────
+      - name: Install OSV Scanner
+        run: |
+          curl -sSfL \
+            "https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_amd64" \
+            -o /usr/local/bin/osv-scanner
+          chmod +x /usr/local/bin/osv-scanner
+
+      - name: OSV Scanner — SCA (osv.dev)
+        run: |
+          osv-scanner --lockfile=Cargo.lock --format=sarif > reports/osv-scanner.sarif 2>&1 || true
+          osv-scanner --lockfile=Cargo.lock --format=json  > reports/osv-scanner.json  2>&1 || true
+          osv-scanner --lockfile=Cargo.lock                > reports/osv-scanner.txt   2>&1 || true
+
+      - name: Upload OSV SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: reports/osv-scanner.sarif
+          category: osv-scanner
+
+      # ── Bundle ──────────────────────────────────────────────────────────
+      - name: Bundle security reports
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | \
+            python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+          MONTH=$(date +%Y-%m)
+          NAME="krakenwaf-v${VERSION}-security-reports-${MONTH}"
+          mkdir -p "bundle/${NAME}"
+          cp reports/* "bundle/${NAME}/"
+          cd bundle && tar -czf "${NAME}.tar.gz" "${NAME}/"
+          echo "REPORT_ARCHIVE=bundle/${NAME}.tar.gz" >> $GITHUB_ENV
+          echo "REPORT_NAME=${NAME}"                  >> $GITHUB_ENV
+
+      - name: Upload security reports artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.REPORT_NAME }}
+          path: ${{ env.REPORT_ARCHIVE }}
+          retention-days: 90
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. Build release binaries
+  # ──────────────────────────────────────────────────────────────────────────
+  build:
+    name: Build — ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: ""
+            cross: true
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (aarch64)
+        if: matrix.cross == true
+        run: cargo install cross --locked
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build all binaries
+        shell: bash
+        run: |
+          RUNNER=${{ matrix.cross == true && 'cross' || 'cargo' }}
+          $RUNNER build --release --target ${{ matrix.target }} --bin krakenwaf
+          $RUNNER build --release --target ${{ matrix.target }} --bin demo_server
+          $RUNNER build --release --target ${{ matrix.target }} --bin attack
+
+      - name: Package
+        shell: bash
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version 1 | \
+            python3 -c "import sys,json; print(json.load(sys.stdin)['packages'][0]['version'])")
+          DIST="krakenwaf-v${VERSION}-${{ matrix.target }}"
+          mkdir -p "dist/${DIST}"
+          cp "target/${{ matrix.target }}/release/krakenwaf${{ matrix.ext }}"   "dist/${DIST}/"
+          cp "target/${{ matrix.target }}/release/demo_server${{ matrix.ext }}" "dist/${DIST}/"
+          cp "target/${{ matrix.target }}/release/attack${{ matrix.ext }}"      "dist/${DIST}/"
+          cp -r rules/  "dist/${DIST}/rules"
+          cp README.md  "dist/${DIST}/"
+          cd dist && tar -czf "${DIST}.tar.gz" "${DIST}/"
+          echo "DIST_NAME=${DIST}" >> $GITHUB_ENV
+
+      - name: Upload binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DIST_NAME }}
+          path: dist/${{ env.DIST_NAME }}.tar.gz
+          retention-days: 90

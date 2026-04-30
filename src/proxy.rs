@@ -36,7 +36,7 @@ pub struct ProxyClient {
 #[derive(Debug)]
 enum BodyInspectionError {
     TooLarge { limit: usize },
-    Blocked { finding: Finding, partial_body: Bytes },
+    Blocked { finding: Box<Finding>, partial_body: Bytes },
     Other(anyhow::Error),
 }
 
@@ -544,9 +544,9 @@ fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppStat
             .rev()
             .map(str::trim)
             .find(|s| {
-                s.parse::<IpAddr>()
+                !s.parse::<IpAddr>()
                     .ok()
-                    .map_or(true, |ip| !trusted_nets.iter().any(|net| net.contains(&ip)))
+                    .is_some_and(|ip| trusted_nets.iter().any(|net| net.contains(&ip)))
             })
             .unwrap_or(peer_ip)
             .to_string()

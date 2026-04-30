@@ -46,7 +46,7 @@ impl SstiRule {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SstiDfaBuilder;
 #[derive(Debug, Clone)]
 pub struct SstiDfa;

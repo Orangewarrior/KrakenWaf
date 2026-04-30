@@ -1,6 +1,6 @@
 use memchr::memchr_iter;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SsiInjectionDfaBuilder;
 #[derive(Debug, Clone)]
 pub struct SsiInjectionDfa;
