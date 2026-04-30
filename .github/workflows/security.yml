@@ -1,0 +1,171 @@
+name: Security — SAST & SCA
+
+on:
+  push:
+    branches: [main, "feat/**", "claude/**"]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly — catches new advisories even without code changes (Monday 06:00 UTC)
+    - cron: "0 6 * * 1"
+
+jobs:
+  # ──────────────────────────────────────────────────────────────────────────
+  # 1. SAST — Clippy
+  # ──────────────────────────────────────────────────────────────────────────
+  clippy:
+    name: SAST · Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Clippy — deny warnings
+        run: cargo clippy --all-targets -- -D warnings
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 2. SAST — Semgrep
+  # ──────────────────────────────────────────────────────────────────────────
+  semgrep:
+    name: SAST · Semgrep
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Semgrep scan
+        run: >
+          semgrep scan
+          --config p/rust
+          --config p/security-audit
+          --config p/owasp-top-ten
+          --config p/secrets
+          --error
+          --sarif
+          --output semgrep.sarif
+        continue-on-error: true
+
+      - name: Upload SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 3. SCA — cargo-audit (RustSec advisory database)
+  # ──────────────────────────────────────────────────────────────────────────
+  cargo-audit:
+    name: SCA · cargo-audit (RustSec)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit --locked
+
+      - name: Audit dependencies
+        run: cargo audit --deny warnings
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 4. SCA — cargo-deny (licenses + bans + advisories)
+  # ──────────────────────────────────────────────────────────────────────────
+  cargo-deny:
+    name: SCA · cargo-deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check advisories licenses bans sources
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 5. SCA — OSV Scanner (Google OSV database — https://osv.dev)
+  # ──────────────────────────────────────────────────────────────────────────
+  osv-scan:
+    name: SCA · OSV Scanner
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: OSV Scanner
+        uses: google/osv-scanner-action@v2
+        with:
+          scan-args: |-
+            --lockfile=Cargo.lock
+            --format=sarif
+            --output=osv.sarif
+        continue-on-error: true
+
+      - name: Upload SARIF to Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: osv.sarif
+          category: osv-scanner
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 6. Integration — attack sweep (demo_server + WAF + attack --concurrency 25)
+  # ──────────────────────────────────────────────────────────────────────────
+  attack-sweep:
+    name: Integration · attack sweep (concurrency=25)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-attack-${{ hashFiles('Cargo.lock') }}
+
+      - name: Build all binaries
+        run: cargo build --bin krakenwaf --bin demo_server --bin attack
+
+      - name: Start demo_server
+        run: ./target/debug/demo_server 9077 &
+
+      - name: Start KrakenWAF
+        run: |
+          mkdir -p /tmp/waf_ci
+          cd /tmp/waf_ci && $GITHUB_WORKSPACE/target/debug/krakenwaf \
+            --no-tls \
+            --allow-private-upstream \
+            --listen 0.0.0.0:8080 \
+            --upstream http://127.0.0.1:9077 \
+            --rules-dir $GITHUB_WORKSPACE/rules &
+
+      - name: Wait for WAF to be ready
+        run: |
+          for i in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8080/__krakenwaf/health && echo "" && break
+            sleep 0.5
+          done
+
+      - name: Run attack sweep — concurrency 25
+        run: |
+          ./target/debug/attack \
+            --target http://127.0.0.1:8080 \
+            --concurrency 25 \
+            --verbose
