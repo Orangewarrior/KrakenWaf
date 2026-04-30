@@ -79,7 +79,9 @@ jobs:
         run: cargo install cargo-audit --locked
 
       - name: Audit dependencies
-        run: cargo audit
+        # RUSTSEC-2025-0134: rustls-pemfile unmaintained, no patched version
+        # exists yet — ignored until upstream migrates to rustls-pki-types.
+        run: cargo audit --ignore RUSTSEC-2025-0134
 
   # ──────────────────────────────────────────────────────────────────────────
   # 4. SCA — cargo-deny (licenses + bans + advisories)

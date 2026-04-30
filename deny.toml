@@ -1,10 +1,10 @@
 [advisories]
 version = 2
 ignore = [
-    # rand 0.7.x transitive dep (pulled in by some crates) flagged as unsound
-    # via RUSTSEC-2026-0097. We do not use rand directly; updating is blocked
-    # on upstream crates. Safe to ignore until transitive deps update.
-    "RUSTSEC-2026-0097",
+    # rustls-pemfile v2.x is unmaintained (RUSTSEC-2025-0134); the upstream
+    # recommendation is to migrate to rustls-pki-types built-in PEM parsing.
+    # Tracked as a future refactor — no patched version exists yet.
+    "RUSTSEC-2025-0134",
 ]
 
 [licenses]
@@ -19,6 +19,7 @@ allow = [
     "Unicode-DFS-2016",
     "Unicode-3.0",
     "MPL-2.0",
+    "CDLA-Permissive-2.0",
     "OpenSSL",
     "Zlib",
     "CC0-1.0",
