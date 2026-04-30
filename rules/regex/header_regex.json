@@ -2,6 +2,7 @@
   "rules": [
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Scanner user agent",
       "severity": "medium",
       "cwe": "CWE-16",
@@ -12,6 +13,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF forwarding header localhost",
       "severity": "high",
       "cwe": "CWE-918",
@@ -22,6 +24,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Host header anomaly",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -32,6 +35,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "CRLF smuggling header",
       "severity": "high",
       "cwe": "CWE-444",
@@ -42,6 +46,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious content type multipart boundary",
       "severity": "low",
       "cwe": "CWE-16",
@@ -52,6 +57,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious request smuggling header combo",
       "severity": "high",
       "cwe": "CWE-444",
@@ -62,6 +68,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Proxy abuse header",
       "severity": "medium",
       "cwe": "CWE-441",
@@ -72,6 +79,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Metadata host header alias",
       "severity": "high",
       "cwe": "CWE-918",
@@ -82,6 +90,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Desync CL zero header",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -92,6 +101,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious websocket override header",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -102,6 +112,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious auth header tooling",
       "severity": "medium",
       "cwe": "CWE-287",
@@ -112,6 +123,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Request smuggling transfer coding",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -122,6 +134,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Malformed accept header fuzzing",
       "severity": "low",
       "cwe": "CWE-20",
@@ -132,6 +145,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "Suspicious origin header local",
       "severity": "medium",
       "cwe": "CWE-346",
@@ -142,6 +156,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "Suspicious referer local",
       "severity": "medium",
       "cwe": "CWE-346",
@@ -152,6 +167,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious XXE content type",
       "severity": "medium",
       "cwe": "CWE-611",
@@ -162,6 +178,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious debug headers",
       "severity": "low",
       "cwe": "CWE-489",

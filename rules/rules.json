@@ -6,6 +6,7 @@
   "uri_keywords": [
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "SQL Injection probe",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -16,6 +17,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Boolean SQL injection probe",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -26,6 +28,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Directory traversal URI probe",
       "severity": "high",
       "cwe": "CWE-22",
@@ -36,6 +39,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "phpMyAdmin exposure",
       "severity": "high",
       "cwe": "CWE-200",
@@ -43,11 +47,56 @@
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "/phpmyadmin",
       "id": "00004"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi boolean probe in URI",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects ' or 1=1 style probes in URI query strings.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "' or 1=1",
+      "id": "00005"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi string comparison probe in URI",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects ' or 'x'='x style probes in URI query strings.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "' or 'x'='x",
+      "id": "00006"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi empty string comparison probe",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects ' or ''=' style tautology probes in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "' or ''='",
+      "id": "00007"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi parenthesised OR injection",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects ') or (' style bracket injection in URI.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "') or ('",
+      "id": "00008"
     }
   ],
   "header_keywords": [
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Known scanner user agent",
       "severity": "medium",
       "cwe": "CWE-113",
@@ -58,6 +107,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Nikto scanner header",
       "severity": "medium",
       "cwe": "CWE-113",
@@ -70,6 +120,7 @@
   "body_keywords": [
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Directory traversal payload",
       "severity": "high",
       "cwe": "CWE-22",
@@ -80,6 +131,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Shell execution probe",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -90,6 +142,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "PowerShell encoded command",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -100,6 +153,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Inline XSS payload",
       "severity": "high",
       "cwe": "CWE-79",
@@ -110,6 +164,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "SQLi login bypass payload",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -117,6 +172,72 @@
       "url": "https://cwe.mitre.org/data/definitions/89.html",
       "rule_match": "' or '1'='1",
       "id": "00005"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "XSS onerror event handler",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects onerror event handler injection in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "onerror=",
+      "id": "00006"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "XSS onload event handler",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects onload event handler injection in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "onload=",
+      "id": "00007"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "XSS javascript URI scheme",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects javascript: URI scheme used for XSS in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "javascript:",
+      "id": "00008"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "XSS iframe injection",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects iframe tag injection in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "<iframe",
+      "id": "00009"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi boolean probe without quotes",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects ' or 1=1 style SQLi probes in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "' or 1=1",
+      "id": "00010"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi admin bypass",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects admin'-- style authentication bypass probes.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "admin'--",
+      "id": "00011"
     }
   ],
   "allow_paths": [

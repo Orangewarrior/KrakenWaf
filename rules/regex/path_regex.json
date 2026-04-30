@@ -2,6 +2,7 @@
   "rules": [
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Traversal dotdot raw",
       "severity": "high",
       "cwe": "CWE-22",
@@ -12,6 +13,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Traversal encoded",
       "severity": "high",
       "cwe": "CWE-22",
@@ -22,6 +24,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Traversal sensitive unix files",
       "severity": "high",
       "cwe": "CWE-22",
@@ -32,6 +35,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Traversal sensitive windows files",
       "severity": "high",
       "cwe": "CWE-22",
@@ -42,6 +46,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "LFI php wrappers",
       "severity": "high",
       "cwe": "CWE-98",
@@ -52,6 +57,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "RFI external URL include",
       "severity": "high",
       "cwe": "CWE-98",
@@ -62,6 +68,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF localhost targets",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -72,6 +79,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF private ipv4",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -82,6 +90,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "SSRF cloud metadata aliases",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -92,6 +101,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Command injection separators URI",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -102,6 +112,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Command substitution URI",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -112,6 +123,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Protocol smuggling characters",
       "severity": "medium",
       "cwe": "CWE-444",
@@ -122,6 +134,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "HTTP parameter pollution",
       "severity": "medium",
       "cwe": "CWE-235",
@@ -132,6 +145,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Open redirect style next parameter",
       "severity": "medium",
       "cwe": "CWE-601",
@@ -142,6 +156,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious Java deserialization path",
       "severity": "high",
       "cwe": "CWE-502",
@@ -152,6 +167,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Tomcat manager exposure",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -162,6 +178,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Source code leak extensions",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -172,6 +189,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Git and VCS exposure",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -182,6 +200,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "PHP info and env exposure",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -192,6 +211,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Log4Shell style lookup",
       "severity": "critical",
       "cwe": "CWE-94",
@@ -202,6 +222,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Path traversal encoded slash",
       "severity": "high",
       "cwe": "CWE-22",
@@ -212,6 +233,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "UNC path include",
       "severity": "high",
       "cwe": "CWE-98",
@@ -222,6 +244,7 @@
     },
     {
       "enable": 0,
+      "http_action": "Request",
       "title": "File scheme SSRF",
       "severity": "high",
       "cwe": "CWE-918",
@@ -232,6 +255,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "FastCGI and uwsgi abuse",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -242,6 +266,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Encoded null byte in path",
       "severity": "medium",
       "cwe": "CWE-158",
@@ -252,6 +277,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "AWS instance metadata v1",
       "severity": "critical",
       "cwe": "CWE-918",
@@ -262,6 +288,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Kubernetes serviceaccount token",
       "severity": "high",
       "cwe": "CWE-918",
@@ -272,6 +299,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Docker socket abuse",
       "severity": "high",
       "cwe": "CWE-918",
@@ -282,6 +310,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "PHP filter exfiltration",
       "severity": "high",
       "cwe": "CWE-98",
@@ -292,6 +321,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Sensitive admin APIs",
       "severity": "medium",
       "cwe": "CWE-285",
@@ -302,6 +332,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "GraphQL introspection abuse",
       "severity": "medium",
       "cwe": "CWE-200",
@@ -312,6 +343,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Suspicious callback protocols",
       "severity": "medium",
       "cwe": "CWE-601",
@@ -319,6 +351,28 @@
       "url": "https://cwe.mitre.org/data/definitions/601.html",
       "rule_match": "(?i)(?:[?&](?:url|next|redirect|return|dest)=\\s*(?:javascript:|data:|vbscript:))",
       "id": "00032"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi boolean and union probes URI",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects boolean-based, UNION-based, time-based, and structural SQLi probes in URI query strings.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "(?i)(?:'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|union\\s+all\\s+select\\b|sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|'\\s*(?:--|#)(?:[^a-zA-Z0-9]|$)|'\\s*/\\*|admin'\\s*--|or\\s+true\\b|[0-9]+\\s+(?:or|and)\\s+[0-9]+=\\s*[0-9]+|\"\\s*or\\s+(?:\"[^\"]*\"\\s*=|[0-9])|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]+\\s*--|xp_cmdshell|;\\s*(?:select|insert|update|delete|drop|exec)\\b|(?:or|and)\\s+\\(\\s*select\\b)",
+      "id": "00033"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "XSS vectors in URI",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects XSS script tags, event handlers, and javascript URI scheme in URI query strings.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "(?i)(?:<\\s*(?:script|iframe|frame|svg|math|object|embed|style|link|base|bgsound)\\b|onerror\\s*=|onload\\s*=|javascript\\s*:|\\bon(?:click|focus|blur|submit|mouseover|mouseenter|mousemove|toggle|start|end|animationend|keyup|keydown|keypress|input|change|reset|copy|paste|drag|drop|scroll)\\s*=)",
+      "id": "00034"
     }
   ]
 }

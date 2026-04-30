@@ -91,6 +91,11 @@ pub struct Cli {
     #[arg(long = "allow-paths")]
     pub allow_paths_file: Option<String>,
 
+    /// Disable TLS and listen on plain HTTP. Useful when TLS termination is handled
+    /// by an upstream load balancer, or for integration testing. When set, --sni-map
+    /// is ignored.
+    #[arg(long = "no-tls", default_value_t = false)]
+    pub no_tls: bool,
 }
 
 impl Cli {

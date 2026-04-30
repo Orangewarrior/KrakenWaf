@@ -3,7 +3,7 @@ use crate::{
     cli::WafMode,
     error::KrakenError,
     logging::{write_critical, SecurityEvent},
-    waf::{Decision, Finding, InspectionContext},
+    waf::{Decision, Finding, InspectionContext, ResponseContext},
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
@@ -197,6 +197,7 @@ impl ProxyClient {
         // request URI (RFC 7230 §5.3.2) such as `http://attacker.tld/x` would otherwise
         // *replace* the upstream base entirely (SSRF / upstream hijack).
         let target = build_upstream_target(&self.upstream, &uri);
+        let method_str = method.as_str().to_string();
         let mut builder = self.client.request(method, target);
 
         let mut forwarded_count: usize = 0;
@@ -248,6 +249,43 @@ impl ProxyClient {
             }
         }
         let bytes = body_buf.freeze();
+
+        // Inspect the upstream response (rules with http_action: Response).
+        let resp_headers = flatten_headers(
+            response_builder
+                .headers_ref()
+                .unwrap_or(&http::HeaderMap::new())
+        );
+        let resp_ctx = ResponseContext { status: status.as_u16(), headers: resp_headers, body: bytes.clone() };
+        if let Decision::Block(finding) = state.waf.inspect_response(&resp_ctx) {
+            let event = crate::logging::SecurityEvent::from_finding(
+                &finding,
+                &InspectionContext {
+                    client_ip: String::new(),
+                    method: method_str,
+                    uri: uri.to_string(),
+                    path: uri.path().to_string(),
+                    headers: String::new(),
+                    body_limit: 0,
+                },
+                finding.request_payload.clone(),
+            );
+            state.metrics.inc_blocked();
+            tracing::info!(
+                target: "krakenwaf",
+                rule_id=%event.rule_id,
+                title=%event.title,
+                severity=%event.severity,
+                engine=%event.engine,
+                uri=%event.uri,
+                rule=%event.rule_match,
+                "response blocked"
+            );
+            write_critical(&state.logging, &event);
+            state.store.enqueue(event);
+            anyhow::bail!("upstream response blocked by WAF response rule");
+        }
+
         let mut built = response_builder
             .body(Full::new(bytes))
             .map_err(|err| anyhow::anyhow!("failed to assemble upstream response: {err}"))?;

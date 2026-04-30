@@ -263,7 +263,8 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--sni-map` | `./rules/tls/sni_map.csv` | Path to the TLS SNI CSV file mapping hostnames to certificate and key files |
 | `--mode` | `block` | Enforcement mode: `block` returns HTTP 403 on detections; `silent` logs and counts detections without blocking — useful for tuning rules in production |
 | `--allow-paths` | — | Path to a YAML file listing URI prefixes that bypass WAF inspection entirely — see [docs/allowpaths.md](docs/allowpaths.md) |
-| `--blocklist-ip` | `false` | Enable IP and CIDR blocklist enforcement from `rules/blocklist_ip.txt` |
+| `--blocklist-ip` | `false` | Enable IP and CIDR blocklist enforcement from `rules/addr/blocklist.txt` — see [docs/blockaddrs_allowaddrs.md](docs/blockaddrs_allowaddrs.md) |
+| `--no-tls` | `false` | Disable TLS and listen on plain HTTP — useful when TLS termination is handled upstream or for integration testing |
 | `--allow-private-upstream` | `false` | Allow RFC1918/loopback upstream targets — see [docs/deployment.md](docs/deployment.md) |
 | `--enable-libinjection-sqli` | `false` | Enable libinjection-based SQL injection detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-libinjection-xss` | `false` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
@@ -348,11 +349,15 @@ KrakenWaf/
 ├── rules/
 │   ├── Vectorscan/
 │   │   └── strings2block.json
+│   ├── addr/
+│   │   ├── blocklist.txt        ← blocked IPs/CIDRs (replaces blocklist_ip.txt)
+│   │   └── allowlist.txt        ← IPs allowed to reach /metrics and /health
 │   ├── regex/
 │   │   ├── body_regex.json
 │   │   ├── header_regex.json
 │   │   └── path_regex.json
-│   ├── blocklist_ip.txt
+│   ├── user_agents/
+│   │   └── scanners.txt         ← scanner/crawler UA blocklist (OWASP CRS)
 │   ├── rules.json
 │   └── tls/
 │       └── sni_map.csv

@@ -1,0 +1,8 @@
+# IP Blocklist — one IPv4/IPv6 address or CIDR per line.
+# Lines starting with # are comments.
+# Examples:
+# 198.51.100.1
+# 198.51.100.0/24
+# 2001:db8::1
+10.10.10.1
+192.0.2.100

@@ -2,6 +2,7 @@
   "rules": [
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "SQLi UNION SELECT extraction",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -12,6 +13,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "SQLi boolean authentication bypass",
       "severity": "critical",
       "cwe": "CWE-89",
@@ -22,6 +24,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "SQLi time-based sleep probe",
       "severity": "high",
       "cwe": "CWE-89",
@@ -32,6 +35,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "SQLi information schema enumeration",
       "severity": "high",
       "cwe": "CWE-89",
@@ -42,6 +46,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "XSS script tag literal",
       "severity": "high",
       "cwe": "CWE-79",
@@ -52,6 +57,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "XSS onerror handler literal",
       "severity": "high",
       "cwe": "CWE-79",
@@ -62,6 +68,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Traversal passwd probe",
       "severity": "high",
       "cwe": "CWE-22",
@@ -72,6 +79,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Command injection shell execution",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -82,6 +90,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Windows command execution",
       "severity": "critical",
       "cwe": "CWE-78",
@@ -92,6 +101,7 @@
     },
     {
       "enable": 1,
+      "http_action": "Request",
       "title": "Remote payload downloader",
       "severity": "high",
       "cwe": "CWE-494",

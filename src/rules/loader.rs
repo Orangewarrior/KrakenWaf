@@ -1,5 +1,5 @@
 
-use super::{CompiledDetectionRule, DetectionRule, RuleSet, Severity};
+use super::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity};
 use anyhow::{Context, Result};
 use regex::RegexBuilder;
 use serde::Deserialize;
@@ -35,6 +35,8 @@ struct RuleJson {
     id: String,
     #[serde(default = "default_rule_enabled")]
     enable: u8,
+    #[serde(default)]
+    http_action: HttpAction,
     title: String,
     severity: Severity,
     cwe: String,
@@ -52,7 +54,9 @@ pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
     let main = load_main_rules_json(&root.join("rules.json"))?;
 
     Ok(RuleSet {
-        blocked_ips: load_simple_lines(&root.join("blocklist_ip.txt"))?,
+        blocked_ips: load_addr_file(root, "addr/blocklist.txt")?,
+        allowed_ips: load_addr_file(root, "addr/allowlist.txt")?,
+        scanner_agents: load_scanner_agents(root, "user_agents/scanners.txt")?,
         blocked_ip_prefixes: main.blocked_ip_prefixes,
         uri_keywords: json_rules_to_detection_rules(main.uri_keywords, "rules.json:uri_keywords"),
         header_keywords: json_rules_to_detection_rules(main.header_keywords, "rules.json:header_keywords"),
@@ -64,6 +68,45 @@ pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
         header_regex: load_regex_rules_json(&root.join("regex/header_regex.json"), "regex/header_regex.json")?,
         vectorscan_keywords: load_vectorscan_rules_json(&root.join("Vectorscan/strings2block.json"), "Vectorscan/strings2block.json")?,
     })
+}
+
+/// Load an address file (one IPv4/IPv6/CIDR per line) with canonicalization and
+/// anti path-traversal checks so operators cannot point --rules-dir at a crafted tree.
+fn load_addr_file(root: &Path, relative: &str) -> Result<Vec<String>> {
+    let path = safe_join(root, relative)?;
+    load_simple_lines(&path)
+}
+
+/// Load scanner user-agent patterns (one substring per line).
+fn load_scanner_agents(root: &Path, relative: &str) -> Result<Vec<String>> {
+    let path = safe_join(root, relative)?;
+    load_simple_lines(&path)
+}
+
+/// Resolve `root/relative` and verify the result stays inside `root`.
+/// Prevents path traversal attacks such as `../../etc/passwd` via rule file names.
+fn safe_join(root: &Path, relative: &str) -> Result<std::path::PathBuf> {
+    // Reject obvious traversal attempts before canonicalizing, to give a clear error.
+    if relative.contains("..") {
+        anyhow::bail!("path traversal rejected in rule path: {}", relative);
+    }
+    let joined = root.join(relative);
+    // If the file doesn't exist we still return the path; callers use `exists()`.
+    if joined.exists() {
+        let canonical = joined.canonicalize()
+            .with_context(|| format!("cannot canonicalize rule path {}", joined.display()))?;
+        let root_canonical = root.canonicalize()
+            .with_context(|| format!("cannot canonicalize rules root {}", root.display()))?;
+        if !canonical.starts_with(&root_canonical) {
+            anyhow::bail!(
+                "rule file {} resolved outside rules root {} — possible symlink attack",
+                canonical.display(), root_canonical.display()
+            );
+        }
+        Ok(canonical)
+    } else {
+        Ok(joined)
+    }
 }
 
 fn load_main_rules_json(path: &Path) -> Result<MainRulesJson> {
@@ -175,6 +218,7 @@ fn json_rules_to_detection_rules(values: Vec<RuleJson>, source: &str) -> Vec<Det
                 rule_match,
                 source: source.to_string(),
                 line: idx + 1,
+                http_action: value.http_action,
             })
         })
         .collect()
@@ -232,6 +276,7 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
                     rule_match: rule.rule_match,
                     source: source.to_string(),
                     line,
+                    http_action: rule.http_action,
                 },
                 compiled,
             })
