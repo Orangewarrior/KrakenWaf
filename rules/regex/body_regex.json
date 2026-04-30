@@ -362,6 +362,28 @@
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:transfer-encoding\\s*:\\s*chunked|content-length\\s*:\\s*\\d+.*transfer-encoding)",
       "id": "00033"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "XSS DOM event handler body",
+      "severity": "high",
+      "cwe": "CWE-79",
+      "description": "Detects common DOM event handler attribute injection in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/79.html",
+      "rule_match": "(?i)\\bon(?:click|focus|blur|submit|mouseover|mouseenter|mousemove|toggle|start|end|animationend|transitionend|keyup|keydown|keypress|input|change|reset|select|copy|cut|paste|drag|drop|scroll|wheel|pointerdown|pointerup)\\s*=",
+      "id": "00034"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi time-based and error-based probes body",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects time-based blind, error-based, and structural SQLi probes in POST bodies.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "(?i)(?:sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|'\\s*(?:--|#)(?:\\s|$)|'\\s*/\\*|or\\s+true\\b|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]|'\\s*group\\s+by\\s+[0-9]|xp_cmdshell|drop\\s+table\\s+\\w|insert\\s+into\\s+\\w+\\s+values|exec\\s+(?:master|xp_))",
+      "id": "00035"
     }
   ]
 }

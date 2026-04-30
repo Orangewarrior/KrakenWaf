@@ -351,6 +351,17 @@
       "url": "https://cwe.mitre.org/data/definitions/601.html",
       "rule_match": "(?i)(?:[?&](?:url|next|redirect|return|dest)=\\s*(?:javascript:|data:|vbscript:))",
       "id": "00032"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "SQLi boolean and union probes URI",
+      "severity": "critical",
+      "cwe": "CWE-89",
+      "description": "Detects boolean-based, UNION-based, time-based, and structural SQLi probes in URI query strings.",
+      "url": "https://cwe.mitre.org/data/definitions/89.html",
+      "rule_match": "(?i)(?:'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|union\\s+all\\s+select\\b|sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|'\\s*(?:--|#)(?:[^a-zA-Z0-9]|$)|'\\s*/\\*|admin'\\s*--|or\\s+true\\b|[0-9]+\\s+(?:or|and)\\s+[0-9]+=\\s*[0-9]+|\"\\s*or\\s+(?:\"[^\"]*\"\\s*=|[0-9])|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]+\\s*--|xp_cmdshell|;\\s*(?:select|insert|update|delete|drop|exec)\\b|(?:or|and)\\s+\\(\\s*select\\b)",
+      "id": "00033"
     }
   ]
 }
