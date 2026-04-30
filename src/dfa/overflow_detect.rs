@@ -3,8 +3,12 @@ pub struct OverflowDfaBuilder { threshold: usize }
 #[derive(Debug, Clone)]
 pub struct OverflowDfa { threshold: usize }
 
+impl Default for OverflowDfaBuilder {
+    fn default() -> Self { Self { threshold: 10 } }
+}
+
 impl OverflowDfaBuilder {
-    pub fn new() -> Self { Self { threshold: 10 } }
+    pub fn new() -> Self { Self::default() }
     pub fn threshold(mut self, threshold: usize) -> Self { self.threshold = threshold; self }
     pub fn build(self) -> OverflowDfa { OverflowDfa { threshold: self.threshold } }
 }

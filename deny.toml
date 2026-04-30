@@ -1,6 +1,11 @@
 [advisories]
 version = 2
-ignore = []
+ignore = [
+    # rand 0.7.x transitive dep (pulled in by some crates) flagged as unsound
+    # via RUSTSEC-2026-0097. We do not use rand directly; updating is blocked
+    # on upstream crates. Safe to ignore until transitive deps update.
+    "RUSTSEC-2026-0097",
+]
 
 [licenses]
 version = 2

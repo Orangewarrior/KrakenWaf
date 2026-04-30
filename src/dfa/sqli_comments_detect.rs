@@ -3,8 +3,12 @@ pub struct SqliCommentsDfaBuilder { threshold: usize }
 #[derive(Debug, Clone)]
 pub struct SqliCommentsDfa { threshold: usize }
 
+impl Default for SqliCommentsDfaBuilder {
+    fn default() -> Self { Self { threshold: 2 } }
+}
+
 impl SqliCommentsDfaBuilder {
-    pub fn new() -> Self { Self { threshold: 2 } }
+    pub fn new() -> Self { Self::default() }
     pub fn threshold(mut self, threshold: usize) -> Self { self.threshold = threshold; self }
     pub fn build(self) -> SqliCommentsDfa { SqliCommentsDfa { threshold: self.threshold } }
 }

@@ -147,6 +147,7 @@ impl DfaManager {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finding(title: &str, severity: Severity, cwe: &str, description: &str, reference_url: &str, rule_match: String, rule_line_match: &str, input: &str) -> Finding {
     Finding {
         rule_id: "00000".to_string(),

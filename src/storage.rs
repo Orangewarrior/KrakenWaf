@@ -96,24 +96,19 @@ impl SqliteStore {
 
         tokio::spawn(async move {
             let mut buffer = Vec::with_capacity(128);
-            loop {
-                match rx.recv().await {
-                    Some(first) => {
-                        buffer.push(first);
-                        while buffer.len() < 128 {
-                            match rx.try_recv() {
-                                Ok(item) => buffer.push(item),
-                                Err(_) => break,
-                            }
-                        }
-
-                        if let Err(err) = batch_insert(&db_clone, &buffer).await {
-                            warn!(target: "krakenwaf", "sqlite batch insert failed: {err:#}");
-                        }
-                        buffer.clear();
+            while let Some(first) = rx.recv().await {
+                buffer.push(first);
+                while buffer.len() < 128 {
+                    match rx.try_recv() {
+                        Ok(item) => buffer.push(item),
+                        Err(_) => break,
                     }
-                    None => break,
                 }
+
+                if let Err(err) = batch_insert(&db_clone, &buffer).await {
+                    warn!(target: "krakenwaf", "sqlite batch insert failed: {err:#}");
+                }
+                buffer.clear();
             }
         });
 

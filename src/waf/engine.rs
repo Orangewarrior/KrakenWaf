@@ -89,7 +89,7 @@ pub struct ResponseContext {
 #[derive(Debug, Clone)]
 pub enum Decision {
     Allow,
-    Block(Finding),
+    Block(Box<Finding>),
 }
 
 /// Normalized structured detection finding.
@@ -166,6 +166,7 @@ pub struct WafEngine {
 }
 
 impl WafEngine {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         rules: Arc<RuleSet>,
         rate_limit_per_minute: u32,
@@ -220,7 +221,7 @@ impl WafEngine {
 
         if !self.rate_limiter.check(&ctx.client_ip).await {
             self.metrics.inc_rate_limit_hits();
-            return Decision::Block(self.simple_finding(
+            return Decision::Block(Box::new(self.simple_finding(
                 "Rate limit exceeded",
                 Severity::High,
                 "CWE-770",
@@ -229,13 +230,13 @@ impl WafEngine {
                 "rate_limiter",
                 "window_exceeded",
                 format!("{} {}", ctx.method, ctx.uri),
-            ));
+            )));
         }
 
         if self.blocklist_ip_enabled {
             if let Some(client) = canonical_ip(&ctx.client_ip) {
                 if rules.blocked_ips.iter().filter_map(|ip| canonical_ip(ip)).any(|blocked| blocked == client) {
-                    return Decision::Block(self.simple_finding(
+                    return Decision::Block(Box::new(self.simple_finding(
                         "Blocked source IP",
                         Severity::High,
                         "CWE-693",
@@ -244,11 +245,11 @@ impl WafEngine {
                         "addr/blocklist.txt",
                         "exact_match",
                         format!("{} {}", ctx.method, ctx.uri),
-                    ));
+                    )));
                 }
 
                 if matchers.blocked_ip_nets.iter().any(|net| net.contains(&client)) {
-                    return Decision::Block(self.simple_finding(
+                    return Decision::Block(Box::new(self.simple_finding(
                         "Blocked IP range",
                         Severity::High,
                         "CWE-693",
@@ -257,7 +258,7 @@ impl WafEngine {
                         "addr/blocklist.txt",
                         "cidr_match",
                         format!("{} {}", ctx.method, ctx.uri),
-                    ));
+                    )));
                 }
             }
         }
@@ -269,7 +270,7 @@ impl WafEngine {
                 {
                     if let Some(matcher) = &matchers.scanner_vectorscan {
                         if let Some(finding) = vectorscan_match(matcher, &ua, &ua) {
-                            return Decision::Block(finding);
+                            return Decision::Block(Box::new(finding));
                         }
                     }
                 }
@@ -277,13 +278,13 @@ impl WafEngine {
             #[cfg(not(feature = "vectorscan-engine"))]
             {
                 if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua) {
-                    return Decision::Block(finding);
+                    return Decision::Block(Box::new(finding));
                 }
             }
             #[cfg(feature = "vectorscan-engine")]
             if matchers.scanner_vectorscan.is_none() || !self.vectorscan_enabled {
                 if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua) {
-                    return Decision::Block(finding);
+                    return Decision::Block(Box::new(finding));
                 }
             }
         }
@@ -314,7 +315,7 @@ impl WafEngine {
         {
             let dfa_lower = normalized_text.to_ascii_lowercase();
             if let Some(finding) = self.dfa_manager.inspect(&dfa_lower) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
         }
 
@@ -325,7 +326,7 @@ impl WafEngine {
                 self.libinjection_sqli_enabled,
                 self.libinjection_xss_enabled,
             ) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
         }
 
@@ -334,7 +335,7 @@ impl WafEngine {
             {
                 if let Some(matcher) = &matchers.req_vectorscan {
                     if let Some(finding) = vectorscan_match(matcher, normalized_text.as_ref(), original_text.as_ref()) {
-                        return Decision::Block(finding);
+                        return Decision::Block(Box::new(finding));
                     }
                 }
             }
@@ -342,23 +343,23 @@ impl WafEngine {
 
         for view in inspection_views(normalized_text.as_ref()) {
             if let Some(finding) = keyword_match(matchers.req_uri.as_ref(), view, original_text.as_ref()) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
             if let Some(finding) = keyword_match(matchers.req_headers.as_ref(), view, original_text.as_ref()) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
             if let Some(finding) = keyword_match(matchers.req_body.as_ref(), view, original_text.as_ref()) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
 
             if let Some(finding) = regex_match_phase(&rules.path_regex, view, original_text.as_ref(), &HttpAction::Request) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
             if let Some(finding) = regex_match_phase(&rules.header_regex, view, original_text.as_ref(), &HttpAction::Request) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
             if let Some(finding) = regex_match_phase(&rules.body_regex, view, original_text.as_ref(), &HttpAction::Request) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
         }
 
@@ -386,11 +387,11 @@ impl WafEngine {
             {
                 if let Some(matcher) = &matchers.resp_vectorscan {
                     if let Some(finding) = vectorscan_match(matcher, header_normalized_text.as_ref(), header_original.as_ref()) {
-                        return Decision::Block(finding);
+                        return Decision::Block(Box::new(finding));
                     }
                     if !body_normalized_text.is_empty() {
                         if let Some(finding) = vectorscan_match(matcher, body_normalized_text.as_ref(), body_original.as_ref()) {
-                            return Decision::Block(finding);
+                            return Decision::Block(Box::new(finding));
                         }
                     }
                 }
@@ -399,25 +400,26 @@ impl WafEngine {
 
         for view in inspection_views(header_normalized_text.as_ref()) {
             if let Some(finding) = keyword_match(matchers.resp_headers.as_ref(), view, header_original.as_ref()) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
             if let Some(finding) = regex_match_phase(&rules.header_regex, view, header_original.as_ref(), &HttpAction::Response) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
         }
 
         for view in inspection_views(body_normalized_text.as_ref()) {
             if let Some(finding) = keyword_match(matchers.resp_body.as_ref(), view, body_original.as_ref()) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
             if let Some(finding) = regex_match_phase(&rules.body_regex, view, body_original.as_ref(), &HttpAction::Response) {
-                return Decision::Block(finding);
+                return Decision::Block(Box::new(finding));
             }
         }
 
         Decision::Allow
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn simple_finding(
         &self,
         title: &str,
@@ -558,12 +560,12 @@ fn normalize_request_bytes(payload: &[u8]) -> Cow<'_, [u8]> {
     }
 }
 
-fn inspection_views<'a>(normalized: &'a str) -> Vec<&'a str> {
+fn inspection_views(normalized: &str) -> Vec<&str> {
     let mut views = Vec::with_capacity(8);
     if !normalized.is_empty() {
         views.push(normalized);
     }
-    for part in normalized.split(|c| matches!(c, '&' | ';' | '?' | '\n' | '\r' | '\0')) {
+    for part in normalized.split(['&', ';', '?', '\n', '\r', '\0']) {
         let trimmed = part.trim();
         if !trimmed.is_empty() && trimmed != normalized {
             views.push(trimmed);
@@ -632,7 +634,7 @@ fn parse_ip_net(value: &str) -> Option<IpNet> {
 }
 
 /// Extract a header value by name from a flat `name: value\n...` header string.
-fn extract_header_value<'a>(headers: &'a str, name: &str) -> Option<String> {
+fn extract_header_value(headers: &str, name: &str) -> Option<String> {
     headers.lines().find_map(|line| {
         let (k, v) = line.split_once(':')?;
         if k.trim().eq_ignore_ascii_case(name) {
