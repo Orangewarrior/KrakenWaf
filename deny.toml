@@ -5,6 +5,11 @@ ignore = [
     # recommendation is to migrate to rustls-pki-types built-in PEM parsing.
     # Tracked as a future refactor — no patched version exists yet.
     "RUSTSEC-2025-0134",
+    # Marvin Attack timing side-channel in the rsa crate (RUSTSEC-2023-0071).
+    # Pulled transitively through sqlx-mysql, which sqlx bundles unconditionally
+    # even when sea-orm is configured with sqlx-sqlite only. We perform zero RSA
+    # operations, so this path is never exercised. No fixed version available.
+    "RUSTSEC-2023-0071",
 ]
 
 [licenses]
