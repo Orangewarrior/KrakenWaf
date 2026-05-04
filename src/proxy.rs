@@ -128,16 +128,14 @@ impl ProxyClient {
                 return block_content_response(state, StatusCode::PAYLOAD_TOO_LARGE, "KrakenWaf blocked the request body");
             }
             Err(BodyInspectionError::Blocked { finding, partial_body }) => {
-                if skip_inspection {
-                    partial_body
-                } else {
+                if !skip_inspection {
                     let event = build_event(&context, &finding, Some(&partial_body));
                     if let Some(response) = self.log_and_enforce(state, event).await {
                         return response;
                     }
-                    // Silent mode: forward whatever body we accumulated before detection.
-                    partial_body
                 }
+                // Silent mode or allowlisted path: forward whatever body was accumulated.
+                partial_body
             }
             Err(BodyInspectionError::Other(err)) => {
                 warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
@@ -193,7 +191,7 @@ impl ProxyClient {
             "request detected"
         );
         write_critical(&state.logging, &event);
-        state.store.enqueue(event.clone());
+        state.store.enqueue(event);
 
         if state.mode == WafMode::Silent {
             return None;
@@ -498,8 +496,7 @@ fn apply_response_policy(state: &AppState, response: &mut Response<Full<Bytes>>)
             .headers()
             .get(CONNECTION)
             .and_then(|v| v.to_str().ok())
-            .map(|v| v.to_ascii_lowercase().contains("upgrade"))
-            .unwrap_or(false);
+            .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
     state.response_header_policy.apply(response.headers_mut(), is_websocket_upgrade);
 }
 

@@ -62,7 +62,7 @@ fn load_sni_entries(path: &Path) -> Result<Vec<SniEntry>> {
             server_name: parts[0].to_string(),
             cert_path: PathBuf::from(parts[1]),
             key_path: PathBuf::from(parts[2]),
-            is_default: parts.get(3).map(|v| v.eq_ignore_ascii_case("true") || *v == "1").unwrap_or(false),
+            is_default: parts.get(3).is_some_and(|v| v.eq_ignore_ascii_case("true") || *v == "1"),
         });
     }
     Ok(out)

@@ -138,8 +138,7 @@ pub fn normalize_url_path(path: &str) -> String {
 
     for component in Path::new(to_parse).components() {
         match component {
-            Component::RootDir => {}
-            Component::CurDir => {}
+            Component::RootDir | Component::CurDir => {}
             Component::ParentDir => {
                 let _ = out.pop();
             }
