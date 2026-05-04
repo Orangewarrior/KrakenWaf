@@ -1,3 +1,46 @@
+## [2.11.0] - 2026-05-04
+
+### Added
+
+#### `X-Request-Id` correlation ID
+- UUID v4 generated once per request at the proxy entry point (compact 32-char lowercase hex, no hyphens — fits `VARCHAR(32)` exactly).
+- Propagated through the full request lifecycle:
+  - `InspectionContext.request_id` — carried through all WAF inspection phases.
+  - `SecurityEvent.request_id` — included in the JSON event log and `critical.log`.
+  - `x-request-id` header forwarded to the upstream on every proxied request.
+  - `x-request-id` header added to every response (blocked or forwarded) so clients can include it in support tickets.
+  - Tracing spans for `request detected` and `response blocked` events now include `request_id`.
+- SQLite `vulnerabilities` table gains `request_id VARCHAR(32) NOT NULL DEFAULT ''` (schema v3).
+  - New index `idx_vulnerabilities_request_id` for O(log n) lookup by correlation ID.
+  - Existing databases upgraded automatically via a non-destructive `ALTER TABLE ADD COLUMN` migration; historical rows receive an empty string.
+  - Example query: `SELECT * FROM vulnerabilities WHERE request_id = 'a3f2...';`
+
+#### `--max-body-bytes` — hard cap on request body size
+- New optional CLI flag (default **100 MiB**).
+- Acts as an absolute ceiling: `effective_limit = min(per_route_rule_limit, --max-body-bytes)`. No per-route rule can exceed this cap regardless of its configuration.
+- Requests whose bodies exceed the effective limit are rejected with **HTTP 413 Payload Too Large**.
+
+### Changed
+
+#### `serde_yaml` → `serde_yml`
+- Replaced `serde_yaml 0.9` (backed by `unsafe-libyaml` C bindings) with `serde_yml 0.0.12`, a pure-Rust fork with an identical API.
+- Call sites in `src/allowpaths.rs` and `src/dfa/mod.rs` updated; no behaviour change.
+
+#### `rustls-pemfile` removed — PEM parsing via `rustls-pki-types`
+- `rustls-pemfile` (RUSTSEC-2025-0134 — unmaintained) removed from the dependency tree.
+- `src/tls.rs` now uses the `PemObject` trait from `rustls-pki-types` directly:
+  - `CertificateDer::pem_file_iter()` — iterates all certificates in a PEM file.
+  - `PrivateKeyDer::from_pem_file()` — auto-detects PKCS#8, RSA PRIVATE KEY, and EC PRIVATE KEY formats, removing the previous two-pass open-file fallback.
+- `RUSTSEC-2025-0134` advisory ignore removed from `deny.toml` and the `cargo audit` CI step.
+
+### Security
+
+- Eliminated `unsafe-libyaml` C dependency (YAML parsing is now fully safe Rust).
+- Removed unmaintained `rustls-pemfile` crate (RUSTSEC-2025-0134).
+- Request body size now bounded by an operator-configurable hard cap (`--max-body-bytes`), preventing memory exhaustion from unbounded body accumulation.
+
+---
+
 ## [2.10.0] - 2026-04-29
 
 ### Added
