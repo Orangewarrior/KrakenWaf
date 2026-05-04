@@ -75,6 +75,10 @@ pub struct InspectionContext {
     pub path: String,
     pub headers: String,
     pub body_limit: usize,
+    /// Compact UUID v4 (32 lowercase hex chars, no hyphens) generated once per
+    /// request and threaded through all log events, SQLite rows, and upstream
+    /// headers so that a WAF alert can be correlated with upstream access logs.
+    pub request_id: String,
 }
 
 /// Context used when inspecting the upstream HTTP response.

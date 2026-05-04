@@ -13,6 +13,7 @@ use hyper::body::Incoming;
 use reqwest::{redirect::Policy, Client};
 use tracing::{error, info, warn};
 use url::{Host, Url};
+use uuid::Uuid;
 
 /// Bytes carried between adjacent body chunks when streaming-inspecting the body.
 /// Sized to be larger than any realistic detection pattern so attackers cannot
@@ -69,13 +70,28 @@ impl ProxyClient {
         Ok(Self { client, upstream, internal_header_name })
     }
 
-    pub async fn handle(&self, state: &AppState, mut req: Request<Incoming>, client_ip: String) -> Response<Full<Bytes>> {
+    pub async fn handle(&self, state: &AppState, req: Request<Incoming>, client_ip: String) -> Response<Full<Bytes>> {
+        // Generate a compact UUID v4 (32 lowercase hex chars, no hyphens) once per
+        // request. Threaded through all log events, SQLite rows, and the upstream
+        // X-Request-Id header so a WAF alert can be correlated with upstream access logs.
+        let request_id = Uuid::new_v4().simple().to_string();
+        let mut resp = self.dispatch(state, req, client_ip, &request_id).await;
+        // Stamp every response (blocked or forwarded) with the correlation ID so the
+        // client can include it in bug reports or support tickets.
+        if let Ok(val) = http::header::HeaderValue::from_str(&request_id) {
+            resp.headers_mut().insert(http::header::HeaderName::from_static("x-request-id"), val);
+        }
+        resp
+    }
+
+    async fn dispatch(&self, state: &AppState, mut req: Request<Incoming>, client_ip: String, request_id: &str) -> Response<Full<Bytes>> {
         let method = req.method().clone();
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
         let uri = req.uri().clone();
         let path = crate::rules::normalize_url_path(uri.path());
         let headers_flat = flatten_headers(req.headers());
-        let body_limit = state.waf.body_limit_for_path(&path);
+        // A-2: per-route rule limit is further bounded by the operator-configured hard cap.
+        let body_limit = state.waf.body_limit_for_path(&path).min(state.cli.max_body_bytes);
 
         let context = InspectionContext {
             client_ip: effective_ip.clone(),
@@ -84,6 +100,7 @@ impl ProxyClient {
             path: path.clone(),
             headers: headers_flat.clone(),
             body_limit,
+            request_id: request_id.to_string(),
         };
 
         // Check allow-paths: if the URI is explicitly allowed, skip WAF inspection entirely.
@@ -141,7 +158,7 @@ impl ProxyClient {
             }
         }
 
-        match self.forward_request(state, method, uri, req.headers(), body_bytes).await {
+        match self.forward_request(state, method, uri, req.headers(), body_bytes, request_id).await {
             Ok(response) => response,
             Err(err) => {
                 error!(target: "krakenwaf", "upstream proxy failure: {err:#}");
@@ -159,6 +176,7 @@ impl ProxyClient {
 
         info!(
             target: "krakenwaf",
+            request_id=%event.request_id,
             rule_id=%event.rule_id,
             title=%event.title,
             severity=%event.severity,
@@ -191,6 +209,7 @@ impl ProxyClient {
         uri: Uri,
         headers: &HeaderMap,
         body: Bytes,
+        request_id: &str,
     ) -> Result<Response<Full<Bytes>>> {
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
@@ -217,6 +236,7 @@ impl ProxyClient {
         }
 
         builder = builder.header("x-forwarded-proto", "https");
+        builder = builder.header("x-request-id", request_id);
         if let Some(header_name) = &self.internal_header_name {
             builder = builder.header(header_name, "1");
         }
@@ -267,12 +287,14 @@ impl ProxyClient {
                     path: uri.path().to_string(),
                     headers: String::new(),
                     body_limit: 0,
+                    request_id: request_id.to_string(),
                 },
                 finding.request_payload.clone(),
             );
             state.metrics.inc_blocked();
             tracing::info!(
                 target: "krakenwaf",
+                request_id=%event.request_id,
                 rule_id=%event.rule_id,
                 title=%event.title,
                 severity=%event.severity,

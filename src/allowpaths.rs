@@ -33,7 +33,7 @@ impl AllowPathConfig {
             allow: Vec<AllowPathEntry>,
         }
 
-        let root: Root = serde_yaml::from_str(content)
+        let root: Root = serde_yml::from_str(content)
             .with_context(|| format!("failed to parse allow-paths YAML {}", path.display()))?;
 
         let mut entries = root.allow;

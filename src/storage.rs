@@ -37,6 +37,7 @@ pub struct Model {
     pub fullpath_evidence: String,
     pub engine: String,
     pub request_payload: String,
+    pub request_id: String,
 }
 
 #[derive(Copy, Clone, Debug, EnumIter)]
@@ -127,15 +128,23 @@ async fn init_schema(db: &DatabaseConnection) -> Result<()> {
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA foreign_keys=ON;".to_owned())).await?;
 
     let current_version = query_user_version(db).await?;
+
     if !table_exists(db, "vulnerabilities").await? {
         create_latest_schema(db).await?;
-        set_user_version(db, 2).await?;
+        set_user_version(db, 3).await?;
         return Ok(());
     }
 
-    if current_version < 2 || !schema_is_latest(db).await? {
+    // v1 → v2: adds client_ip, http_method, request_uri, fullpath_evidence, engine columns.
+    if current_version < 2 || !column_exists(db, "vulnerabilities", "engine").await? {
         migrate_to_v2(db).await?;
         set_user_version(db, 2).await?;
+    }
+
+    // v2 → v3: adds request_id VARCHAR(32) for per-request correlation ID support.
+    if current_version < 3 || !column_exists(db, "vulnerabilities", "request_id").await? {
+        migrate_to_v3(db).await?;
+        set_user_version(db, 3).await?;
     }
 
     Ok(())
@@ -163,22 +172,21 @@ async fn table_exists(db: &DatabaseConnection, name: &str) -> Result<bool> {
     Ok(row.is_some())
 }
 
-async fn schema_is_latest(db: &DatabaseConnection) -> Result<bool> {
-    let required = [
-        "id", "title", "severity", "cwe", "description", "reference_url", "occurred_at",
-        "rule_match", "rule_line_match", "client_ip", "http_method", "request_uri",
-        "fullpath_evidence", "engine", "request_payload",
-    ];
+async fn column_exists(db: &DatabaseConnection, table: &str, column: &str) -> Result<bool> {
     let rows = db
-        .query_all(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA table_info(vulnerabilities);".to_owned()))
+        .query_all(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            format!("PRAGMA table_info({table});"),
+        ))
         .await?;
-    let mut seen = std::collections::BTreeSet::new();
     for row in rows {
         if let Ok(name) = row.try_get::<String>("", "name") {
-            seen.insert(name);
+            if name == column {
+                return Ok(true);
+            }
         }
     }
-    Ok(required.iter().all(|name| seen.contains(*name)))
+    Ok(false)
 }
 
 async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
@@ -200,7 +208,8 @@ async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
             request_uri TEXT NOT NULL,
             fullpath_evidence TEXT NOT NULL,
             engine VARCHAR(32) NOT NULL,
-            request_payload TEXT NOT NULL
+            request_payload TEXT NOT NULL,
+            request_id VARCHAR(32) NOT NULL DEFAULT ''
         );
         "#.to_owned(),
     )).await?;
@@ -208,9 +217,9 @@ async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity);".to_owned())).await?;
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_engine ON vulnerabilities(engine);".to_owned())).await?;
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_title ON vulnerabilities(title);".to_owned())).await?;
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_request_id ON vulnerabilities(request_id);".to_owned())).await?;
     Ok(())
 }
-
 
 async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "BEGIN IMMEDIATE;".to_owned())).await?;
@@ -223,18 +232,11 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
             INSERT INTO vulnerabilities (
                 id, title, severity, cwe, description, reference_url, occurred_at,
                 rule_match, rule_line_match, client_ip, http_method, request_uri,
-                fullpath_evidence, engine, request_payload
+                fullpath_evidence, engine, request_payload, request_id
             )
             SELECT
-                id,
-                title,
-                severity,
-                cwe,
-                description,
-                reference_url,
-                occurred_at,
-                rule_match,
-                rule_line_match,
+                id, title, severity, cwe, description, reference_url, occurred_at,
+                rule_match, rule_line_match,
                 '' AS client_ip,
                 '' AS http_method,
                 '' AS request_uri,
@@ -245,7 +247,8 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
                     WHEN rule_match LIKE 'libinjection::%' THEN 'libinjection'
                     ELSE 'keyword'
                 END AS engine,
-                request_payload
+                request_payload,
+                '' AS request_id
             FROM vulnerabilities_legacy;
             "#.to_owned(),
         )).await?;
@@ -263,6 +266,24 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
             Err(err).context("failed to migrate vulnerabilities table to schema v2")
         }
     }
+}
+
+async fn migrate_to_v3(db: &DatabaseConnection) -> Result<()> {
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "ALTER TABLE vulnerabilities ADD COLUMN request_id VARCHAR(32) NOT NULL DEFAULT '';".to_owned(),
+    ))
+    .await
+    .context("failed to add request_id column (schema v3)")?;
+
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_request_id ON vulnerabilities(request_id);".to_owned(),
+    ))
+    .await
+    .context("failed to create request_id index (schema v3)")?;
+
+    Ok(())
 }
 
 async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Result<()> {
@@ -286,6 +307,7 @@ async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Resu
         fullpath_evidence: Set(event.fullpath_evidence.clone()),
         engine: Set(event.engine.clone()),
         request_payload: Set(event.request_payload.clone()),
+        request_id: Set(event.request_id.clone()),
     }).collect::<Vec<_>>();
 
     Entity::insert_many(models).exec(db).await?;

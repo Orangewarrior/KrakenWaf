@@ -187,7 +187,7 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
         dfa_rules: Option<BTreeMap<String, BoolOrInt>>,
     }
 
-    if let Ok(strict) = serde_yaml::from_str::<StrictCfg>(content) {
+    if let Ok(strict) = serde_yml::from_str::<StrictCfg>(content) {
         if let Some(map) = strict.dfa_rules {
             let int_map: BTreeMap<String, i64> = map.into_iter().map(|(k, v)| (k, v.into())).collect();
             return Ok(from_map(&int_map));

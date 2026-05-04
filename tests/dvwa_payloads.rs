@@ -32,6 +32,7 @@ async fn blocks_common_dvwa_get_sqli_probe() {
         path: "/vulnerabilities/sqli/".into(),
         headers: "host: localhost\nuser-agent: curl/8.0".into(),
         body_limit: 1024 * 1024,
+        request_id: String::new(),
     };
 
     assert!(matches!(engine.inspect_early(&ctx).await, Decision::Block(_)));
