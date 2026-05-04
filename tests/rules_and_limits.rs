@@ -7,6 +7,7 @@ fn loads_external_rule_tree() {
     let tmp = tempfile::tempdir().unwrap();
     fs::create_dir_all(tmp.path().join("regex")).unwrap();
     fs::create_dir_all(tmp.path().join("Vectorscan")).unwrap();
+    fs::create_dir_all(tmp.path().join("addr")).unwrap();
     fs::write(
         tmp.path().join("rules.json"),
         r#"{
@@ -24,8 +25,7 @@ fn loads_external_rule_tree() {
             "body_limits": {"/upload": 2048}
         }"#,
     ).unwrap();
-    fs::write(tmp.path().join("blocklist_ip.txt"), "203.0.113.10
-").unwrap();
+    fs::write(tmp.path().join("addr/blocklist.txt"), "203.0.113.10\n").unwrap();
     fs::write(
         tmp.path().join("regex/path_regex.json"),
         r#"{"rules":[{"title":"Admin path","severity":"high","cwe":"CWE-306","description":"Admin path hit","url":"https://cwe.mitre.org/data/definitions/306.html","rule_match":"(?i)/admin"}]}"#,
