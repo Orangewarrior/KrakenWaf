@@ -1,3 +1,71 @@
+## [2.11.1] - 2026-05-05
+
+### Fixed
+
+#### `serde_yml` → `serde_yaml 0.9` (RUSTSEC-2025-0068)
+- `serde_yml 0.0.12` was archived upstream after a soundness bug was discovered in its `Serializer` (segfault via `Serializer.emitter`). Replaced with `serde_yaml 0.9.34`, which carries no active advisory (`RUSTSEC-2018-0005` is patched for all versions `>= 0.8.4`). API is identical; no behaviour change.
+
+#### Removed stale advisory ignores
+- `RUSTSEC-2023-0071` (Marvin Attack / `rsa` crate) is no longer present in the dependency tree — `sqlx-mysql` was dropped when `sea-orm` resolved to `sqlx-sqlite` only. Removed the `--ignore` flag from `cargo audit` in CI and the `ignore` entry from `deny.toml`, leaving both files with zero exceptions.
+
+#### Clippy bug fixes
+- `proxy.rs`: removed redundant `event.clone()` before move into `store.enqueue()`.
+- `proxy.rs`: hoisted duplicate `partial_body` expression out of both branches of the `Blocked` match arm.
+- `proxy.rs`: replaced `.map(...).unwrap_or(false)` with `.is_some_and(...)` on the `Connection: upgrade` header check.
+- `tls.rs`: replaced `.map(...).unwrap_or(false)` with `.is_some_and(...)` for the `is_default` SNI field.
+- `engine.rs`: annotated the `u32 → u8` cast in `url_decode_once` as provably safe (hex digit pair is always 0–255).
+- `engine.rs`: made the wildcard `IpAddr` match arm explicit (`IpAddr::V4(_)`) to future-proof against new variants.
+- `rules/mod.rs`: combined identical `Component::RootDir` and `Component::CurDir` match arms.
+- `ffi/libinjection/mod.rs`: replaced `c as u8` (sign-loss from `i8`) with `c.cast_unsigned()`.
+
+#### Test path fix
+- `tests/rules_and_limits.rs`: the `loads_external_rule_tree` test was writing the IP blocklist to the old path `blocklist_ip.txt` at the root, but the loader has read from `addr/blocklist.txt` since v2.10.0. Updated the test fixture path to match.
+
+---
+
+## [2.11.0] - 2026-05-04
+
+### Added
+
+#### `X-Request-Id` correlation ID
+- UUID v4 generated once per request at the proxy entry point (compact 32-char lowercase hex, no hyphens — fits `VARCHAR(32)` exactly).
+- Propagated through the full request lifecycle:
+  - `InspectionContext.request_id` — carried through all WAF inspection phases.
+  - `SecurityEvent.request_id` — included in the JSON event log and `critical.log`.
+  - `x-request-id` header forwarded to the upstream on every proxied request.
+  - `x-request-id` header added to every response (blocked or forwarded) so clients can include it in support tickets.
+  - Tracing spans for `request detected` and `response blocked` events now include `request_id`.
+- SQLite `vulnerabilities` table gains `request_id VARCHAR(32) NOT NULL DEFAULT ''` (schema v3).
+  - New index `idx_vulnerabilities_request_id` for O(log n) lookup by correlation ID.
+  - Existing databases upgraded automatically via a non-destructive `ALTER TABLE ADD COLUMN` migration; historical rows receive an empty string.
+  - Example query: `SELECT * FROM vulnerabilities WHERE request_id = 'a3f2...';`
+
+#### `--max-body-bytes` — hard cap on request body size
+- New optional CLI flag (default **100 MiB**).
+- Acts as an absolute ceiling: `effective_limit = min(per_route_rule_limit, --max-body-bytes)`. No per-route rule can exceed this cap regardless of its configuration.
+- Requests whose bodies exceed the effective limit are rejected with **HTTP 413 Payload Too Large**.
+
+### Changed
+
+#### `serde_yaml` → `serde_yml`
+- Replaced `serde_yaml 0.9` (backed by `unsafe-libyaml` C bindings) with `serde_yml 0.0.12`, a pure-Rust fork with an identical API.
+- Call sites in `src/allowpaths.rs` and `src/dfa/mod.rs` updated; no behaviour change.
+
+#### `rustls-pemfile` removed — PEM parsing via `rustls-pki-types`
+- `rustls-pemfile` (RUSTSEC-2025-0134 — unmaintained) removed from the dependency tree.
+- `src/tls.rs` now uses the `PemObject` trait from `rustls-pki-types` directly:
+  - `CertificateDer::pem_file_iter()` — iterates all certificates in a PEM file.
+  - `PrivateKeyDer::from_pem_file()` — auto-detects PKCS#8, RSA PRIVATE KEY, and EC PRIVATE KEY formats, removing the previous two-pass open-file fallback.
+- `RUSTSEC-2025-0134` advisory ignore removed from `deny.toml` and the `cargo audit` CI step.
+
+### Security
+
+- Eliminated `unsafe-libyaml` C dependency (YAML parsing is now fully safe Rust).
+- Removed unmaintained `rustls-pemfile` crate (RUSTSEC-2025-0134).
+- Request body size now bounded by an operator-configurable hard cap (`--max-body-bytes`), preventing memory exhaustion from unbounded body accumulation.
+
+---
+
 ## [2.10.0] - 2026-04-29
 
 ### Added

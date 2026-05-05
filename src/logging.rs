@@ -16,6 +16,7 @@ pub struct LoggingHandles {
 #[derive(Debug, Clone, Serialize)]
 pub struct SecurityEvent {
     pub timestamp: String,
+    pub request_id: String,
     pub client_ip: String,
     pub method: String,
     pub uri: String,
@@ -37,6 +38,7 @@ impl SecurityEvent {
     pub fn from_finding(finding: &Finding, ctx: &InspectionContext, request_payload: String) -> Self {
         Self {
             timestamp: finding.timestamp.clone(),
+            request_id: ctx.request_id.clone(),
             client_ip: sanitize_for_log(&ctx.client_ip),
             method: sanitize_for_log(&ctx.method),
             uri: sanitize_for_log(&ctx.uri),
@@ -113,8 +115,9 @@ pub fn write_critical(handles: &LoggingHandles, event: &SecurityEvent) {
     // Values are quoted so a payload containing ` injected=field` cannot forge
     // additional key=value pairs. sanitize_for_log() also escapes inner `"`.
     let line = format!(
-        "[{}] severity=\"{}\" engine=\"{}\" rule_id=\"{}\" title=\"{}\" ip=\"{}\" method=\"{}\" uri=\"{}\" fullpath_evidence=\"{}\" rule=\"{}\" source=\"{}\" cwe=\"{}\" reference_url=\"{}\"\n",
+        "[{}] request_id=\"{}\" severity=\"{}\" engine=\"{}\" rule_id=\"{}\" title=\"{}\" ip=\"{}\" method=\"{}\" uri=\"{}\" fullpath_evidence=\"{}\" rule=\"{}\" source=\"{}\" cwe=\"{}\" reference_url=\"{}\"\n",
         event.timestamp,
+        event.request_id,
         event.severity,
         event.engine,
         event.rule_id,

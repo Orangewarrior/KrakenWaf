@@ -66,6 +66,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 100 * 1024 * 1024)]
     pub max_upstream_response_bytes: usize,
 
+    /// Hard ceiling on the request body size the WAF will inspect (bytes).
+    /// Per-route limits configured in rules are further bounded by this value —
+    /// no route can exceed it regardless of its rule configuration.
+    /// Requests whose bodies exceed this limit are rejected with HTTP 413.
+    /// Default: 100 MiB.
+    #[arg(long, default_value_t = 100 * 1024 * 1024)]
+    pub max_body_bytes: usize,
+
     #[arg(long, default_value_t = 30)]
     pub connection_timeout_secs: u64,
 

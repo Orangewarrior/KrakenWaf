@@ -14,6 +14,8 @@ fn url_decode_once(input: &[u8]) -> (Vec<u8>, bool) {
                     (input[i + 1] as char).to_digit(16),
                     (input[i + 2] as char).to_digit(16),
                 ) {
+                    // h and l are each 0–15, so h*16+l is 0–255; cast is safe.
+                    #[allow(clippy::cast_possible_truncation)]
                     out.push((h * 16 + l) as u8);
                     i += 3;
                     changed = true;
@@ -75,6 +77,10 @@ pub struct InspectionContext {
     pub path: String,
     pub headers: String,
     pub body_limit: usize,
+    /// Compact UUID v4 (32 lowercase hex chars, no hyphens) generated once per
+    /// request and threaded through all log events, SQLite rows, and upstream
+    /// headers so that a WAF alert can be correlated with upstream access logs.
+    pub request_id: String,
 }
 
 /// Context used when inspecting the upstream HTTP response.
@@ -591,7 +597,7 @@ fn canonical_ip(input: &str) -> Option<IpAddr> {
     if let Ok(ip) = trimmed.parse::<IpAddr>() {
         return Some(match ip {
             IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
-            other => other,
+            other @ IpAddr::V4(_) => other,
         });
     }
     let parts = trimmed.split('.').collect::<Vec<_>>();
