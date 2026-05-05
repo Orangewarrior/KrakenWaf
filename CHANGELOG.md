@@ -1,3 +1,28 @@
+## [2.11.1] - 2026-05-05
+
+### Fixed
+
+#### `serde_yml` → `serde_yaml 0.9` (RUSTSEC-2025-0068)
+- `serde_yml 0.0.12` was archived upstream after a soundness bug was discovered in its `Serializer` (segfault via `Serializer.emitter`). Replaced with `serde_yaml 0.9.34`, which carries no active advisory (`RUSTSEC-2018-0005` is patched for all versions `>= 0.8.4`). API is identical; no behaviour change.
+
+#### Removed stale advisory ignores
+- `RUSTSEC-2023-0071` (Marvin Attack / `rsa` crate) is no longer present in the dependency tree — `sqlx-mysql` was dropped when `sea-orm` resolved to `sqlx-sqlite` only. Removed the `--ignore` flag from `cargo audit` in CI and the `ignore` entry from `deny.toml`, leaving both files with zero exceptions.
+
+#### Clippy bug fixes
+- `proxy.rs`: removed redundant `event.clone()` before move into `store.enqueue()`.
+- `proxy.rs`: hoisted duplicate `partial_body` expression out of both branches of the `Blocked` match arm.
+- `proxy.rs`: replaced `.map(...).unwrap_or(false)` with `.is_some_and(...)` on the `Connection: upgrade` header check.
+- `tls.rs`: replaced `.map(...).unwrap_or(false)` with `.is_some_and(...)` for the `is_default` SNI field.
+- `engine.rs`: annotated the `u32 → u8` cast in `url_decode_once` as provably safe (hex digit pair is always 0–255).
+- `engine.rs`: made the wildcard `IpAddr` match arm explicit (`IpAddr::V4(_)`) to future-proof against new variants.
+- `rules/mod.rs`: combined identical `Component::RootDir` and `Component::CurDir` match arms.
+- `ffi/libinjection/mod.rs`: replaced `c as u8` (sign-loss from `i8`) with `c.cast_unsigned()`.
+
+#### Test path fix
+- `tests/rules_and_limits.rs`: the `loads_external_rule_tree` test was writing the IP blocklist to the old path `blocklist_ip.txt` at the root, but the loader has read from `addr/blocklist.txt` since v2.10.0. Updated the test fixture path to match.
+
+---
+
 ## [2.11.0] - 2026-05-04
 
 ### Added
