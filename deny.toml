@@ -1,12 +1,5 @@
 [advisories]
 version = 2
-ignore = [
-    # Marvin Attack timing side-channel in the rsa crate (RUSTSEC-2023-0071).
-    # Pulled transitively through sqlx-mysql, which sqlx bundles unconditionally
-    # even when sea-orm is configured with sqlx-sqlite only. We perform zero RSA
-    # operations, so this path is never exercised. No fixed version available.
-    "RUSTSEC-2023-0071",
-]
 
 [licenses]
 version = 2
