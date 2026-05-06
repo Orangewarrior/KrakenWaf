@@ -46,6 +46,7 @@ KrakenWaf supports multiple detection layers:
 - esi injection detect
 - CRLF injection detect
 - Request smuggling detect
+- NoSQL injection detect
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
