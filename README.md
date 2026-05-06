@@ -377,49 +377,68 @@ Deploy it in minutes and protect your apps with modern Rust-based security.
 KrakenWaf creates the `vulnerabilities` table automatically in `logs/db/vulns_alert.db`:
 
 ```sql
-SQLite version 3.50.2 2025-06-28 14:00:48
-Enter ".help" for usage hints.
-sqlite> .schema
 CREATE TABLE vulnerabilities (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            title VARCHAR(256) NOT NULL,
-            severity VARCHAR(32) NOT NULL,
-            cwe VARCHAR(128) NOT NULL,
-            description TEXT NOT NULL,
-            reference_url TEXT NOT NULL,
-            occurred_at TIMESTAMP NOT NULL,
-            rule_match TEXT NOT NULL,
-            rule_line_match VARCHAR(256) NOT NULL,
-            client_ip VARCHAR(64) NOT NULL,
-            http_method VARCHAR(16) NOT NULL,
-            request_uri TEXT NOT NULL,
-            fullpath_evidence TEXT NOT NULL,
-            engine VARCHAR(32) NOT NULL,
-            request_payload TEXT NOT NULL
-        );
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title VARCHAR(256) NOT NULL,
+    severity VARCHAR(32) NOT NULL,
+    cwe VARCHAR(128) NOT NULL,
+    description TEXT NOT NULL,
+    reference_url TEXT NOT NULL,
+    occurred_at TIMESTAMP NOT NULL,
+    rule_match TEXT NOT NULL,
+    rule_line_match VARCHAR(256) NOT NULL,
+    client_ip VARCHAR(64) NOT NULL,
+    http_method VARCHAR(16) NOT NULL,
+    request_uri TEXT NOT NULL,
+    fullpath_evidence TEXT NOT NULL,
+    engine VARCHAR(32) NOT NULL,
+    request_payload TEXT NOT NULL,
+    request_id VARCHAR(32) NOT NULL DEFAULT ''
+);
+
+CREATE INDEX idx_vulnerabilities_occurred_at
+    ON vulnerabilities(occurred_at DESC);
+CREATE INDEX idx_vulnerabilities_severity
+    ON vulnerabilities(severity);
+CREATE INDEX idx_vulnerabilities_engine
+    ON vulnerabilities(engine);
+CREATE INDEX idx_vulnerabilities_title
+    ON vulnerabilities(title);
+CREATE INDEX idx_vulnerabilities_request_id
+    ON vulnerabilities(request_id);
 ```
 
 ## Directory layout
 
 ```text
 KrakenWaf/
+├── alert/
+│   └── blockalert.html
 ├── Cargo.toml
+├── Cargo.lock
+├── CHANGELOG.md
+├── deny.toml
+├── LICENSE
+├── README.md
 ├── certs/
+│   ├── cert.pem
+│   └── key.pem
 ├── docs/
 │   ├── attack_tool.md           ← demo_server + attack binary guide
 │   ├── allowpaths.md
 │   ├── blockaddrs_allowaddrs.md
+│   ├── dfa/
+│   │   └── schema.md
 │   ├── deployment.md
 │   ├── http_action.md
+│   ├── img/
 │   ├── integration_tests.md
 │   ├── libinjection.md
-│   ├── scanner_agents.md
-│   └── dfa/
-│       └── schema.md
-├── logs/
-│   ├── db/
-│   ├── json/
-│   └── raw/
+│   ├── real-ip-header-and-trusted-proxy-cidrs.md
+│   └── scanner_agents.md
+├── ffi/
+│   └── libinjection/
+│       └── vendor/
 ├── rules/
 │   ├── Vectorscan/
 │   │   └── strings2block.json
@@ -446,12 +465,37 @@ KrakenWaf/
 │   └── tls/
 │       └── sni_map.csv
 ├── src/
+│   ├── allowpaths.rs
+│   ├── app.rs
+│   ├── banner.rs
 │   ├── bin/
 │   │   ├── demo_server.rs       ← intentionally vulnerable demo backend
 │   │   └── attack.rs            ← standalone payload-sweep attack tool
-│   └── ...
+│   ├── cli.rs
+│   ├── dfa/
+│   │   ├── crlf_injection_detect.rs
+│   │   ├── esi_injection_detect.rs
+│   │   ├── mod.rs
+│   │   ├── overflow_detect.rs
+│   │   ├── request_smuggling_detect.rs
+│   │   ├── sqli_comments_detect.rs
+│   │   ├── ssi_injection_detect.rs
+│   │   └── ssti_detect.rs
+│   ├── ffi/
+│   ├── rules/
+│   ├── waf/
+│   ├── lib.rs
+│   ├── main.rs
+│   ├── metrics.rs
+│   ├── proxy.rs
+│   ├── response_headers.rs
+│   ├── server.rs
+│   ├── storage.rs
+│   └── tls.rs
 └── tests/
+    ├── dvwa_payloads.rs
     ├── malformed_payloads.rs
+    ├── rules_and_limits.rs
     └── server_real_test.rs      ← end-to-end integration tests
 ```
 
@@ -484,8 +528,27 @@ KrakenWaf/
       "url": "https://cwe.mitre.org/data/definitions/89.html",
       "rule_match": "' or '1'='1"
     },
-
-etc...
+    {
+      "enable": 1,
+      "title": "Directory traversal probe",
+      "severity": "high",
+      "cwe": "CWE-22",
+      "description": "Detects traversal sequences in request targets.",
+      "url": "https://cwe.mitre.org/data/definitions/22.html",
+      "rule_match": "../"
+    },
+    {
+      "enable": 1,
+      "title": "Remote file inclusion probe",
+      "severity": "high",
+      "cwe": "CWE-98",
+      "description": "Detects remote include attempts in URI parameters.",
+      "url": "https://cwe.mitre.org/data/definitions/98.html",
+      "rule_match": "http://"
+    },
+    ...
+  ]
+}
 
 ```
 
@@ -532,26 +595,9 @@ etc...
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:nc\\s+-e|bash\\s+-i\\s*>&|/dev/tcp/\\d{1,3}(?:\\.\\d{1,3}){3}/\\d+|python(?:3)?\\s+-c\\s+[\"\\'].*socket)"
     },
-    {
-      "enable": 1,
-      "title": "LFI file disclosure body",
-      "severity": "high",
-      "cwe": "CWE-22",
-      "description": "Detects direct references to sensitive files in body content.",
-      "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|boot\\.ini|win\\.ini|\\\\windows\\\\system32)"
-    },
-    {
-      "enable": 1,
-      "title": "Traversal body encoded",
-      "severity": "high",
-      "cwe": "CWE-22",
-      "description": "Detects traversal sequences in body payloads.",
-      "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\|%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f)"
-    },
-...
-etc
+    ...
+  ]
+}
 ```
 
 The same schema is used for:
