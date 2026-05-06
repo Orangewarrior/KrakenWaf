@@ -323,6 +323,15 @@ impl WafEngine {
             if let Some(finding) = self.dfa_manager.inspect(&dfa_lower) {
                 return Decision::Block(Box::new(finding));
             }
+
+            if normalized_bytes.as_ref() != payload {
+                let original_lower = original_text.to_ascii_lowercase();
+                if original_lower != dfa_lower {
+                    if let Some(finding) = self.dfa_manager.inspect(&original_lower) {
+                        return Decision::Block(Box::new(finding));
+                    }
+                }
+            }
         }
 
         if self.libinjection_sqli_enabled || self.libinjection_xss_enabled {

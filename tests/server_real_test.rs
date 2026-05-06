@@ -566,6 +566,36 @@ async fn clean_post_passes_through() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
+/// A normal browser-style request to /login.php must not be blocked by the CRLF DFA.
+#[tokio::test]
+async fn dfa_crlf_does_not_block_clean_login_request() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/login.php", waf_base(port)))
+        .header("Connection", "keep-alive")
+        .header("Upgrade-Insecure-Requests", "1")
+        .header("User-Agent", "Mozilla/5.0")
+        .header(
+            "Accept",
+            "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        )
+        .header("Sec-Fetch-Site", "none")
+        .header("Sec-Fetch-Mode", "navigate")
+        .header("Accept-Encoding", "gzip, deflate, br")
+        .header("Accept-Language", "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7")
+        .header("Cookie", "PHPSESSID=abc123")
+        .send()
+        .await
+        .unwrap();
+
+    assert_ne!(resp.status(), StatusCode::FORBIDDEN);
+}
+
 /// Sweep the same 50 XSS payloads via GET query — every one must be blocked (403).
 /// Mirrors xss_payload_sweep_post to confirm URI-phase rules cover the same vectors.
 #[tokio::test]
