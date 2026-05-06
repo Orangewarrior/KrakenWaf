@@ -663,9 +663,12 @@ DFA-Rules:
   ESI_injection_detect: true    # Edge-side include injection
   CRLF_injection_detect: true   # CRLF injection / HTTP response splitting
   Request_Smuggling_detect: true # HTTP request smuggling
+  NOSQL_injection_detect: true  # NoSQL injection marker correlation
 ```
 
 Set any key to `false` to disable that detector without recompiling.
+
+`NOSQL_injection_detect` blocks when the same URI/body inspection payload contains at least one NoSQL operator/selector marker such as `$gt`, `$where`, `$or`, `$and`, `selector`, `this.password.match`, `&&` or `||`, and at least one suspicious value/control marker such as `true`, `admin`, `pass`, `user`, `null`, `sleep(`, `dropDatabase(`, `%00`, `{}`, `.insert`, `==1`, `== 1`, `]=1`, `] = 1`, or `==` followed by a digit from `1` to `9`.
 
 → Full details: [docs/dfa/schema.md](docs/dfa/schema.md)
 

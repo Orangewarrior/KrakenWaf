@@ -5,6 +5,7 @@ use tracing::warn;
 
 mod crlf_injection_detect;
 mod esi_injection_detect;
+mod nosql_injection_detect;
 mod overflow_detect;
 mod request_smuggling_detect;
 mod sqli_comments_detect;
@@ -17,6 +18,7 @@ use chrono::Utc;
 
 pub use crlf_injection_detect::CrlfInjectionDfaBuilder;
 pub use esi_injection_detect::EsiInjectionDfaBuilder;
+pub use nosql_injection_detect::NoSqlInjectionDfaBuilder;
 pub use overflow_detect::OverflowDfaBuilder;
 pub use request_smuggling_detect::RequestSmugglingDfaBuilder;
 pub use sqli_comments_detect::SqliCommentsDfaBuilder;
@@ -32,6 +34,7 @@ pub struct DfaConfig {
     pub esi_injection_detect: bool,
     pub crlf_injection_detect: bool,
     pub request_smuggling_detect: bool,
+    pub nosql_injection_detect: bool,
 }
 
 impl DfaConfig {
@@ -46,11 +49,20 @@ impl DfaConfig {
 #[derive(Debug, Default)]
 pub struct DfaManagerBuilder {
     config: DfaConfig,
+    vectorscan_enabled: bool,
 }
 
 impl DfaManagerBuilder {
     pub fn new(config: DfaConfig) -> Self {
-        Self { config }
+        Self {
+            config,
+            vectorscan_enabled: false,
+        }
+    }
+
+    pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
+        self.vectorscan_enabled = enabled;
+        self
     }
 
     pub fn build(self) -> DfaManager {
@@ -83,6 +95,11 @@ impl DfaManagerBuilder {
                 .config
                 .request_smuggling_detect
                 .then(|| RequestSmugglingDfaBuilder::new().build()),
+            nosql_injection: self.config.nosql_injection_detect.then(|| {
+                NoSqlInjectionDfaBuilder::new()
+                    .vectorscan_enabled(self.vectorscan_enabled)
+                    .build()
+            }),
         }
     }
 }
@@ -96,6 +113,7 @@ pub struct DfaManager {
     esi: Option<esi_injection_detect::EsiInjectionDfa>,
     crlf: Option<crlf_injection_detect::CrlfInjectionDfa>,
     request_smuggling: Option<request_smuggling_detect::RequestSmugglingDfa>,
+    nosql_injection: Option<nosql_injection_detect::NoSqlInjectionDfa>,
 }
 
 impl DfaManager {
@@ -232,6 +250,25 @@ impl DfaManager {
             }
         }
 
+        if let Some(detector) = &self.nosql_injection {
+            if let Some(matched) = detector.detect(input) {
+                return Some(finding(
+                    "DFA NoSQL injection detection",
+                    Severity::High,
+                    "CWE-943",
+                    "Detected a NoSQL injection payload with at least one operator or selector marker and at least one suspicious value or control-flow marker.",
+                    "https://owasp.org/www-community/attacks/Testing_for_NoSQL_injection",
+                    format!(
+                        "dfa::nosql_injection_detect:list_A={} list_B={}",
+                        matched.list_a(),
+                        matched.list_b()
+                    ),
+                    "dfa/nosql_injection_detect.rs:generated",
+                    input,
+                ));
+            }
+        }
+
         None
     }
 }
@@ -346,6 +383,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> DfaConfig {
         esi_injection_detect: enabled("ESI_injection_detect"),
         crlf_injection_detect: enabled("CRLF_injection_detect"),
         request_smuggling_detect: enabled("Request_Smuggling_detect"),
+        nosql_injection_detect: enabled("NOSQL_injection_detect"),
     }
 }
 
@@ -375,5 +413,17 @@ DFA-Rules:
         )
         .expect("parse request smuggling key");
         assert!(cfg.request_smuggling_detect);
+    }
+
+    #[test]
+    fn parses_nosql_injection_detect_config_key() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  NOSQL_injection_detect: true
+"#,
+        )
+        .expect("parse NoSQL injection key");
+        assert!(cfg.nosql_injection_detect);
     }
 }

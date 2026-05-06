@@ -214,6 +214,24 @@ const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
     "POST / HTTP/1.1%0d%0aContent-Length: 3%0d%0a%0d%0aabc",
 ];
 
+const NOSQL_INJECTION_PAYLOADS: &[&str] = &[
+    r#"{"user":{"$gt":""},"pass":"admin"}"#,
+    r#"{"password":{"$ne":null},"$where":"this.password.match(/admin/)"}"#,
+    r#"selector[$where]=this.password.match(/admin/)"#,
+    r#"{"$or":[{"user":"admin"},{"pass":"root"}]}"#,
+    r#"{"$and":[{"user":"admin"},{"pass":{"$exists":true}}]}"#,
+    r#"{"$where":"sleep(5000) || true"}"#,
+    r#"{"$nin":["admin","root"],"user":"undefined"}"#,
+    r#"{"$in":["admin","user"],"success":true}"#,
+    r#"{"$comment":"login admin pass"}"#,
+    r#"db.stores.mapReduce(function(){return true},function(){})"#,
+    r#"db.injection.insert({user:"admin",pass:null})"#,
+    r#"{"$remove":"logins","admin":true}"#,
+    r#"{"$save":{"user":"root"},"Date":"new%20Date()"}"#,
+    r#"{"$where":"this.age==7 && user==admin"}"#,
+    r#"{"$or":[{}], "token":"%00"}"#,
+];
+
 const SCANNER_UAS: &[(&str, &str)] = &[
     ("nikto/2.1.6", "Nikto"),
     ("sqlmap/1.7", "sqlmap"),
@@ -691,6 +709,32 @@ async fn main() {
             &cfg.target,
             "/test_post",
             REQUEST_SMUGGLING_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "NoSQL injection DFA — GET /test_get ({} payloads)",
+            NOSQL_INJECTION_PAYLOADS.len()
+        ),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            NOSQL_INJECTION_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "NoSQL injection DFA — POST /test_post ({} payloads)",
+            NOSQL_INJECTION_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            NOSQL_INJECTION_PAYLOADS,
             cfg.concurrency
         )
     );

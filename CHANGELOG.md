@@ -1,3 +1,21 @@
+## [2.12.3] - 2026-05-06
+
+### Added
+
+#### NoSQL injection DFA coverage
+- Added `src/dfa/nosql_injection_detect.rs` to detect NoSQL injection by requiring at least one marker from list A (`$gt`, `$where`, `$or`, `$and`, `selector`, `this.password.match`, `&&`, `||`, and related operators) and at least one marker from list B (`true`, `admin`, `pass`, `user`, `null`, `sleep(`, `%00`, `{}`, `.insert`, `dropDatabase(`, equality probes, and related values).
+- Added support for `==[1-9]` and `== [1-9]` as list B matches.
+- The DFA can be enabled with `NOSQL_injection_detect: true` in `rules/dfa/config.yaml`.
+- When the `vectorscan-engine` feature is compiled and `--enable-vectorscan` is set, the NoSQL detector uses Vectorscan for literal list matching and keeps the numeric equality DFA check for the digit pattern.
+- Extended `src/bin/attack.rs` with 15 NoSQL injection payloads and GET/POST sweeps.
+
+### Tests
+
+- Added real end-to-end GET/POST NoSQL injection blocking tests against the protected WAF subprocess in `tests/server_real_test.rs`.
+- Added NoSQL DFA unit tests for list correlation and numeric equality probes.
+
+---
+
 ## [2.12.2] - 2026-05-05
 
 ### Added

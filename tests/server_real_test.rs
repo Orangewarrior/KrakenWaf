@@ -417,6 +417,25 @@ const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
     "POST / HTTP/1.1%0d%0aContent-Length: 3%0d%0a%0d%0aabc",
 ];
 
+/// NoSQL injection payloads covered by the DFA anomaly detector.
+const NOSQL_INJECTION_PAYLOADS: &[&str] = &[
+    r#"{"user":{"$gt":""},"pass":"admin"}"#,
+    r#"{"password":{"$ne":null},"$where":"this.password.match(/admin/)"}"#,
+    r#"selector[$where]=this.password.match(/admin/)"#,
+    r#"{"$or":[{"user":"admin"},{"pass":"root"}]}"#,
+    r#"{"$and":[{"user":"admin"},{"pass":{"$exists":true}}]}"#,
+    r#"{"$where":"sleep(5000) || true"}"#,
+    r#"{"$nin":["admin","root"],"user":"undefined"}"#,
+    r#"{"$in":["admin","user"],"success":true}"#,
+    r#"{"$comment":"login admin pass"}"#,
+    r#"db.stores.mapReduce(function(){return true},function(){})"#,
+    r#"db.injection.insert({user:"admin",pass:null})"#,
+    r#"{"$remove":"logins","admin":true}"#,
+    r#"{"$save":{"user":"root"},"Date":"new%20Date()"}"#,
+    r#"{"$where":"this.age==7 && user==admin"}"#,
+    r#"{"$or":[{}], "token":"%00"}"#,
+];
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 /// Sweep 50 XSS payloads via POST body — every one must be blocked (HTTP 403).
@@ -918,4 +937,42 @@ async fn dfa_request_smuggling_header_signals_are_blocked() {
         StatusCode::FORBIDDEN,
         "Request smuggling short Content-Length header not blocked"
     );
+}
+
+/// DFA NoSQL injection detection must block payloads in URI and POST body.
+#[tokio::test]
+async fn dfa_nosql_injection_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in NOSQL_INJECTION_PAYLOADS {
+        let get_resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for NoSQL payload {payload:?}: {e}"));
+
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "NoSQL GET payload not blocked: {payload:?}"
+        );
+
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST request failed for NoSQL payload {payload:?}: {e}"));
+
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "NoSQL POST payload not blocked: {payload:?}"
+        );
+    }
 }

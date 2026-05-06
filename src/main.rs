@@ -48,7 +48,11 @@ async fn main() -> Result<()> {
         Some(path) => DfaConfig::from_file(&PathBuf::from(path))?,
         None => DfaConfig::default(),
     };
-    let dfa_manager = Arc::new(DfaManagerBuilder::new(dfa_config).build());
+    let dfa_manager = Arc::new(
+        DfaManagerBuilder::new(dfa_config)
+            .vectorscan_enabled(cli.enable_vectorscan)
+            .build(),
+    );
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
     let waf = Arc::new(waf::WafEngine::new(
         rules,
