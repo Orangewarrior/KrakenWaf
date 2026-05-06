@@ -11,6 +11,10 @@ pub enum SstiRule {
     StarCurly,
     AtCurly,
     AtParen,
+    PercentBlock,
+    FreeMarkerDirective,
+    VelocitySet,
+    DoubleSquare,
 }
 
 impl SstiRule {
@@ -27,6 +31,10 @@ impl SstiRule {
             Self::StarCurly => 9,
             Self::AtCurly => 10,
             Self::AtParen => 11,
+            Self::PercentBlock => 12,
+            Self::FreeMarkerDirective => 13,
+            Self::VelocitySet => 14,
+            Self::DoubleSquare => 15,
         }
     }
     pub fn pattern(self) -> &'static str {
@@ -42,6 +50,10 @@ impl SstiRule {
             Self::StarCurly => "*{ ... }",
             Self::AtCurly => "@{ ... }",
             Self::AtParen => "@( ... )",
+            Self::PercentBlock => "{% ... %}",
+            Self::FreeMarkerDirective => "<# ... >",
+            Self::VelocitySet => "#set( ... )",
+            Self::DoubleSquare => "[[ ... ]]",
         }
     }
 }
@@ -52,23 +64,61 @@ pub struct SstiDfaBuilder;
 pub struct SstiDfa;
 
 impl SstiDfaBuilder {
-    pub fn new() -> Self { Self }
-    pub fn build(self) -> SstiDfa { SstiDfa }
+    pub fn new() -> Self {
+        Self
+    }
+    pub fn build(self) -> SstiDfa {
+        SstiDfa
+    }
 }
 
 impl SstiDfa {
     pub fn detect(&self, input: &str) -> Option<SstiRule> {
-        if find_bounded(input, "{{=", "}}", 256) { return Some(SstiRule::DoubleCurlyEquals); }
-        if find_bounded(input, "{{", "}}", 256) { return Some(SstiRule::DoubleCurly); }
-        if find_bounded(input, "${", "}", 256) { return Some(SstiRule::DollarCurly); }
-        if find_bounded(input, "#{", "}", 256) { return Some(SstiRule::HashCurly); }
-        if find_bounded(input, "<%=", "%>", 256) { return Some(SstiRule::ErbOutput); }
-        if find_bounded(input, "<%", "%>", 256) { return Some(SstiRule::ErbBlock); }
-        if find_bounded(input, "{=", "}", 256) { return Some(SstiRule::CurlyEquals); }
-        if detect_line_equals(input) { return Some(SstiRule::LineEquals); }
-        if find_bounded(input, "*{", "}", 256) { return Some(SstiRule::StarCurly); }
-        if find_bounded(input, "@{", "}", 256) { return Some(SstiRule::AtCurly); }
-        if find_bounded(input, "@(", ")", 256) { return Some(SstiRule::AtParen); }
+        if find_bounded(input, "{{=", "}}", 256) {
+            return Some(SstiRule::DoubleCurlyEquals);
+        }
+        if find_bounded(input, "{{", "}}", 256) {
+            return Some(SstiRule::DoubleCurly);
+        }
+        if find_bounded(input, "${", "}", 256) {
+            return Some(SstiRule::DollarCurly);
+        }
+        if find_bounded(input, "#{", "}", 256) {
+            return Some(SstiRule::HashCurly);
+        }
+        if find_bounded(input, "<%=", "%>", 256) {
+            return Some(SstiRule::ErbOutput);
+        }
+        if find_bounded(input, "<%", "%>", 256) {
+            return Some(SstiRule::ErbBlock);
+        }
+        if find_bounded(input, "{=", "}", 256) {
+            return Some(SstiRule::CurlyEquals);
+        }
+        if detect_line_equals(input) {
+            return Some(SstiRule::LineEquals);
+        }
+        if find_bounded(input, "*{", "}", 256) {
+            return Some(SstiRule::StarCurly);
+        }
+        if find_bounded(input, "@{", "}", 256) {
+            return Some(SstiRule::AtCurly);
+        }
+        if find_bounded(input, "@(", ")", 256) {
+            return Some(SstiRule::AtParen);
+        }
+        if find_bounded(input, "{%", "%}", 512) {
+            return Some(SstiRule::PercentBlock);
+        }
+        if find_bounded(input, "<#", ">", 512) {
+            return Some(SstiRule::FreeMarkerDirective);
+        }
+        if find_bounded(input, "#set(", ")", 512) {
+            return Some(SstiRule::VelocitySet);
+        }
+        if find_bounded(input, "[[", "]]", 512) {
+            return Some(SstiRule::DoubleSquare);
+        }
         None
     }
 }
@@ -99,4 +149,32 @@ fn detect_line_equals(input: &str) -> bool {
         let trimmed = line.trim();
         trimmed.starts_with('=') && trimmed.len() > 1 && trimmed.len() <= 257
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SstiDfaBuilder, SstiRule};
+
+    #[test]
+    fn detects_common_ssti_families() {
+        let dfa = SstiDfaBuilder::new().build();
+
+        assert!(matches!(dfa.detect("{{7*7}}"), Some(SstiRule::DoubleCurly)));
+        assert!(matches!(
+            dfa.detect("{% debug %}"),
+            Some(SstiRule::PercentBlock)
+        ));
+        assert!(matches!(
+            dfa.detect("<#assign x=7>"),
+            Some(SstiRule::FreeMarkerDirective)
+        ));
+        assert!(matches!(
+            dfa.detect("#set($x = 7 * 7)"),
+            Some(SstiRule::VelocitySet)
+        ));
+        assert!(matches!(
+            dfa.detect("[[user.name]]"),
+            Some(SstiRule::DoubleSquare)
+        ));
+    }
 }

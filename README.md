@@ -1,4 +1,4 @@
-# KrakenWaf v2.10.0
+# KrakenWaf v2.12.2
 
 ## 🚀 Overview
 
@@ -44,6 +44,8 @@ KrakenWaf supports multiple detection layers:
 - SSTI detect
 - Ssi injection detect
 - esi injection detect
+- CRLF injection detect
+- Request smuggling detect
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -613,6 +615,8 @@ DFA-Rules:
   SSTI_detect: true             # Server-side template injection
   SSI_injection_detect: true    # Server-side include injection
   ESI_injection_detect: true    # Edge-side include injection
+  CRLF_injection_detect: true   # CRLF injection / HTTP response splitting
+  Request_Smuggling_detect: true # HTTP request smuggling
 ```
 
 Set any key to `false` to disable that detector without recompiling.

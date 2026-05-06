@@ -1,3 +1,50 @@
+## [2.12.2] - 2026-05-05
+
+### Added
+
+#### DFA attack sweeps in real WAF tests
+- Added end-to-end DFA sweeps in `tests/server_real_test.rs` with `--dfa-load rules/dfa/config.yaml` enabled.
+- Added GET and POST coverage for Overflow, SSTI, SSI injection, and ESI injection payloads so URI and request body inspection are both validated through the real KrakenWAF subprocess.
+- Extended `src/bin/attack.rs` to send the same DFA-focused payload families in GET and POST attack sweeps.
+
+#### Overflow DFA shellcode detection
+- `src/dfa/overflow_detect.rs` now detects common shellcode opcode clusters in addition to repeated-character and structured overflow patterns.
+- Added detection for x86-32, x86-64, and ARM/Thumb payloads, including NOP sleds (`\x90`, ARM `00 00 a0 e1`, Thumb `c0 46`) and common Linux shellcode sequences such as `int 0x80`, `syscall`, `execve`, and embedded `/bin/sh`.
+- Added parsing for common byte encodings in payload text: `\xNN`, `%NN`, `0xNN`, and `\u00NN`.
+- `DfaManager` now emits a dedicated high-severity `DFA shellcode opcode detection` finding for these matches.
+
+#### SSTI DFA coverage
+- `src/dfa/ssti_detect.rs` now detects additional SSTI families: `{% ... %}`, FreeMarker `<# ... >`, Velocity `#set(...)`, and `[[ ... ]]` expressions.
+
+#### SSI and ESI DFA coverage
+- `src/dfa/ssi_injection_detect.rs` now detects SSI directives with spacing and case variants, including `<!-- #exec ... -->` and `<!--# set ... -->`.
+- `src/dfa/esi_injection_detect.rs` now detects additional ESI directives including `vars`, `remove`, `choose`, `when`, `otherwise`, `try`, `attempt`, `except`, `comment`, and `assign`, with case and spacing variants.
+
+#### CRLF injection DFA coverage
+- Added `src/dfa/crlf_injection_detect.rs` to detect CRLF injection and HTTP response-splitting payloads.
+- The DFA can be enabled with `CRLF_injection_detect: true` in `rules/dfa/config.yaml`.
+- Added coverage for raw CR/LF, URL-encoded, double/triple-encoded, `%u000d/%u000a`, `\u000d/\u000a`, Unicode newline bypasses, and injected HTTP header/status/body patterns from the payload-box CRLF injection list.
+
+#### Request smuggling DFA coverage
+- Added `src/dfa/request_smuggling_detect.rs` to detect request smuggling indicators in headers, URI, and body content.
+- The DFA can be enabled with `Request_Smuggling_detect: true` in `rules/dfa/config.yaml`.
+- Added detection for `Transfer-Encoding: chunked`, `X-Session-Hijack: true`, `Content-Length` values `<= 4`, and injected `Transfer-Encoding: chunked` patterns in request bodies or URI parameters.
+
+### Fixed
+
+- Closed the real-test Overflow bypass for repeated format-string specifiers such as `%n%n%n...`.
+- Closed the real-test SSI bypass for spaced directives such as `<!--# set var="x" value="owned" -->`.
+- Closed the real-test ESI bypass for `<esi:vars>$(HTTP_COOKIE)</esi:vars>`.
+
+### Tests
+
+- Added unit tests for Overflow shellcode detection, SSTI families, SSI spacing/case variants, and ESI directive variants.
+- Added real GET/POST CRLF injection sweeps using representative payloads from `payload-box/crlf-injection-payload-list`.
+- Added real GET/POST request smuggling sweeps with 10 payloads covering transfer-encoding, short content-length, and session-hijack markers.
+- Verified DFA payload sweeps block in both GET query strings and POST form bodies.
+
+---
+
 ## [2.11.1] - 2026-05-05
 
 ### Fixed

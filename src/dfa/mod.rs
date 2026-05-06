@@ -3,8 +3,10 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
 use tracing::warn;
 
+mod crlf_injection_detect;
 mod esi_injection_detect;
 mod overflow_detect;
+mod request_smuggling_detect;
 mod sqli_comments_detect;
 mod ssi_injection_detect;
 mod ssti_detect;
@@ -13,8 +15,10 @@ use crate::rules::Severity;
 use crate::waf::Finding;
 use chrono::Utc;
 
+pub use crlf_injection_detect::CrlfInjectionDfaBuilder;
 pub use esi_injection_detect::EsiInjectionDfaBuilder;
 pub use overflow_detect::OverflowDfaBuilder;
+pub use request_smuggling_detect::RequestSmugglingDfaBuilder;
 pub use sqli_comments_detect::SqliCommentsDfaBuilder;
 pub use ssi_injection_detect::SsiInjectionDfaBuilder;
 pub use ssti_detect::SstiDfaBuilder;
@@ -26,6 +30,8 @@ pub struct DfaConfig {
     pub ssti_detect: bool,
     pub ssi_injection_detect: bool,
     pub esi_injection_detect: bool,
+    pub crlf_injection_detect: bool,
+    pub request_smuggling_detect: bool,
 }
 
 impl DfaConfig {
@@ -43,15 +49,40 @@ pub struct DfaManagerBuilder {
 }
 
 impl DfaManagerBuilder {
-    pub fn new(config: DfaConfig) -> Self { Self { config } }
+    pub fn new(config: DfaConfig) -> Self {
+        Self { config }
+    }
 
     pub fn build(self) -> DfaManager {
         DfaManager {
-            sqli_comments: self.config.sqli_comments_detect.then(|| SqliCommentsDfaBuilder::new().threshold(2).build()),
-            overflow: self.config.overflow_detect.then(|| OverflowDfaBuilder::new().threshold(10).build()),
-            ssti: self.config.ssti_detect.then(|| SstiDfaBuilder::new().build()),
-            ssi: self.config.ssi_injection_detect.then(|| SsiInjectionDfaBuilder::new().build()),
-            esi: self.config.esi_injection_detect.then(|| EsiInjectionDfaBuilder::new().build()),
+            sqli_comments: self
+                .config
+                .sqli_comments_detect
+                .then(|| SqliCommentsDfaBuilder::new().threshold(2).build()),
+            overflow: self
+                .config
+                .overflow_detect
+                .then(|| OverflowDfaBuilder::new().threshold(10).build()),
+            ssti: self
+                .config
+                .ssti_detect
+                .then(|| SstiDfaBuilder::new().build()),
+            ssi: self
+                .config
+                .ssi_injection_detect
+                .then(|| SsiInjectionDfaBuilder::new().build()),
+            esi: self
+                .config
+                .esi_injection_detect
+                .then(|| EsiInjectionDfaBuilder::new().build()),
+            crlf: self
+                .config
+                .crlf_injection_detect
+                .then(|| CrlfInjectionDfaBuilder::new().build()),
+            request_smuggling: self
+                .config
+                .request_smuggling_detect
+                .then(|| RequestSmugglingDfaBuilder::new().build()),
         }
     }
 }
@@ -63,6 +94,8 @@ pub struct DfaManager {
     ssti: Option<ssti_detect::SstiDfa>,
     ssi: Option<ssi_injection_detect::SsiInjectionDfa>,
     esi: Option<esi_injection_detect::EsiInjectionDfa>,
+    crlf: Option<crlf_injection_detect::CrlfInjectionDfa>,
+    request_smuggling: Option<request_smuggling_detect::RequestSmugglingDfa>,
 }
 
 impl DfaManager {
@@ -84,6 +117,29 @@ impl DfaManager {
         }
 
         if let Some(detector) = &self.overflow {
+            if let Some(shellcode) = detector.detect_shellcode(input) {
+                return Some(finding(
+                    "DFA shellcode opcode detection",
+                    Severity::High,
+                    "CWE-94",
+                    &format!(
+                        "Detected {} shellcode-like opcode sequence using the overflow DFA module. Pattern: {}. Score: {}.",
+                        shellcode.arch().as_str(),
+                        shellcode.pattern(),
+                        shellcode.score()
+                    ),
+                    "https://owasp.org/www-community/attacks/Buffer_overflow_attack",
+                    format!(
+                        "dfa::overflow_detect:shellcode:{}:{} score={}",
+                        shellcode.arch().as_str(),
+                        shellcode.pattern(),
+                        shellcode.score()
+                    ),
+                    "dfa/overflow_detect.rs:generated",
+                    input,
+                ));
+            }
+
             if let Some((ch, total)) = detector.detect_run(input) {
                 return Some(finding(
                     "DFA repeated-character overflow detection",
@@ -104,7 +160,10 @@ impl DfaManager {
                     "DFA SSTI detection",
                     Severity::High,
                     "CWE-1336",
-                    &format!("Detected SSTI payload pattern {} using a dedicated DFA module.", rule.id()),
+                    &format!(
+                        "Detected SSTI payload pattern {} using a dedicated DFA module.",
+                        rule.id()
+                    ),
                     "https://owasp.org/www-project-web-security-testing-guide/",
                     format!("dfa::ssti_detect:{}:{}", rule.id(), rule.pattern()),
                     "dfa/ssti_detect.rs:generated",
@@ -143,12 +202,51 @@ impl DfaManager {
             }
         }
 
+        if let Some(detector) = &self.crlf {
+            if let Some(matched) = detector.detect(input) {
+                return Some(finding(
+                    "DFA CRLF injection detection",
+                    Severity::High,
+                    "CWE-93",
+                    "Detected a CRLF injection or HTTP response-splitting payload pattern in attacker-controlled input.",
+                    "https://owasp.org/www-community/vulnerabilities/CRLF_Injection",
+                    format!("dfa::crlf_injection_detect:{}", matched.pattern()),
+                    "dfa/crlf_injection_detect.rs:generated",
+                    input,
+                ));
+            }
+        }
+
+        if let Some(detector) = &self.request_smuggling {
+            if let Some(matched) = detector.detect(input) {
+                return Some(finding(
+                    "DFA request smuggling detection",
+                    Severity::High,
+                    "CWE-444",
+                    "Detected an HTTP request smuggling payload pattern in attacker-controlled input.",
+                    "https://portswigger.net/web-security/request-smuggling",
+                    format!("dfa::request_smuggling_detect:{}", matched.pattern()),
+                    "dfa/request_smuggling_detect.rs:generated",
+                    input,
+                ));
+            }
+        }
+
         None
     }
 }
 
 #[allow(clippy::too_many_arguments)]
-fn finding(title: &str, severity: Severity, cwe: &str, description: &str, reference_url: &str, rule_match: String, rule_line_match: &str, input: &str) -> Finding {
+fn finding(
+    title: &str,
+    severity: Severity,
+    cwe: &str,
+    description: &str,
+    reference_url: &str,
+    rule_match: String,
+    rule_line_match: &str,
+    input: &str,
+) -> Finding {
     Finding {
         rule_id: "00000".to_string(),
         title: title.to_string(),
@@ -189,7 +287,8 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
 
     if let Ok(strict) = serde_yaml::from_str::<StrictCfg>(content) {
         if let Some(map) = strict.dfa_rules {
-            let int_map: BTreeMap<String, i64> = map.into_iter().map(|(k, v)| (k, v.into())).collect();
+            let int_map: BTreeMap<String, i64> =
+                map.into_iter().map(|(k, v)| (k, v.into())).collect();
             return Ok(from_map(&int_map));
         }
     }
@@ -198,7 +297,12 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
     let mut saw_candidate = false;
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') || trimmed == "---" || trimmed.eq_ignore_ascii_case("DFA-Rules") || trimmed.eq_ignore_ascii_case("DFA-Rules:") {
+        if trimmed.is_empty()
+            || trimmed.starts_with('#')
+            || trimmed == "---"
+            || trimmed.eq_ignore_ascii_case("DFA-Rules")
+            || trimmed.eq_ignore_ascii_case("DFA-Rules:")
+        {
             continue;
         }
         let normalized = trimmed.replace('=', ":");
@@ -240,5 +344,36 @@ fn from_map(map: &BTreeMap<String, i64>) -> DfaConfig {
         ssti_detect: enabled("SSTI_detect"),
         ssi_injection_detect: enabled("SSI_injection_detect"),
         esi_injection_detect: enabled("ESI_injection_detect"),
+        crlf_injection_detect: enabled("CRLF_injection_detect"),
+        request_smuggling_detect: enabled("Request_Smuggling_detect"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_lenient_yaml;
+
+    #[test]
+    fn parses_crlf_injection_detect_config_key() {
+        let crlf = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  CRLF_injection_detect: true
+"#,
+        )
+        .expect("parse CRLF key");
+        assert!(crlf.crlf_injection_detect);
+    }
+
+    #[test]
+    fn parses_request_smuggling_detect_config_key() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  Request_Smuggling_detect: true
+"#,
+        )
+        .expect("parse request smuggling key");
+        assert!(cfg.request_smuggling_detect);
     }
 }
