@@ -12,6 +12,7 @@ Enabled modules:
 - `CRLF_injection_detect`: detects CRLF injection and HTTP response-splitting payloads such as `%0d%0aSet-Cookie:...`, `%0d%0aHTTP/1.1 200 OK`, double-encoded CRLF, `%u000d%u000a`, `\u000d\u000a`, and UTF-8 CR/LF bypass variants.
 - `Request_Smuggling_detect`: detects request smuggling indicators such as `Transfer-Encoding: chunked`, `X-Session-Hijack: true`, `Content-Length` values `<= 4`, and injected `Transfer-Encoding: chunked` patterns in URI or body content.
 - `NOSQL_injection_detect`: detects NoSQL injection when URI or body content contains at least one marker from list A and one marker from list B.
+- `XXE_attack_detect`: detects XML external entity attacks when URI or body content contains at least one marker from list A and one marker from list B.
 
 `NOSQL_injection_detect` list A markers:
 
@@ -22,6 +23,16 @@ Enabled modules:
 `==1`, `== 1`, `]=1`, `] = 1`, `true`, `sleep(`, `logins`, `admin`, `pass`, `user`, `undefined`, `Date`, `null`, `root`, `new%`, `%00`, `{}`, `success`, `.insert`, `while(true)`, `dropDatabase(`.
 
 The detector also treats `==[1-9]` and `== [1-9]` as list B matches. When KrakenWAF is compiled with the Vectorscan feature and started with `--enable-vectorscan`, the NoSQL DFA uses Vectorscan for the literal list checks and keeps the DFA numeric equality check for the digit pattern.
+
+`XXE_attack_detect` list A markers:
+
+`ENTITY`, `xi:include`.
+
+`XXE_attack_detect` list B markers:
+
+`xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, `file`.
+
+When KrakenWAF is compiled with the Vectorscan feature and started with `--enable-vectorscan`, the XXE detector uses Vectorscan for the literal list checks. If the normalized request contains UTF-16LE/BE payload bytes represented as NUL-interleaved text after URL decoding, the XXE detector decodes that view before matching so encoded external entity payloads are still blocked.
 
 All DFA modules are implemented as safe Rust state scanners without `unsafe`, following a generated-DFA style layout appropriate for future re2rust migration.
 

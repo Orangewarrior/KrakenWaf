@@ -11,6 +11,7 @@ mod request_smuggling_detect;
 mod sqli_comments_detect;
 mod ssi_injection_detect;
 mod ssti_detect;
+mod xxe_attack_detect;
 
 use crate::rules::Severity;
 use crate::waf::Finding;
@@ -24,6 +25,7 @@ pub use request_smuggling_detect::RequestSmugglingDfaBuilder;
 pub use sqli_comments_detect::SqliCommentsDfaBuilder;
 pub use ssi_injection_detect::SsiInjectionDfaBuilder;
 pub use ssti_detect::SstiDfaBuilder;
+pub use xxe_attack_detect::XxeAttackDfaBuilder;
 
 #[derive(Debug, Clone, Default)]
 pub struct DfaConfig {
@@ -35,6 +37,7 @@ pub struct DfaConfig {
     pub crlf_injection_detect: bool,
     pub request_smuggling_detect: bool,
     pub nosql_injection_detect: bool,
+    pub xxe_attack_detect: bool,
 }
 
 impl DfaConfig {
@@ -100,6 +103,11 @@ impl DfaManagerBuilder {
                     .vectorscan_enabled(self.vectorscan_enabled)
                     .build()
             }),
+            xxe_attack: self.config.xxe_attack_detect.then(|| {
+                XxeAttackDfaBuilder::new()
+                    .vectorscan_enabled(self.vectorscan_enabled)
+                    .build()
+            }),
         }
     }
 }
@@ -114,6 +122,7 @@ pub struct DfaManager {
     crlf: Option<crlf_injection_detect::CrlfInjectionDfa>,
     request_smuggling: Option<request_smuggling_detect::RequestSmugglingDfa>,
     nosql_injection: Option<nosql_injection_detect::NoSqlInjectionDfa>,
+    xxe_attack: Option<xxe_attack_detect::XxeAttackDfa>,
 }
 
 impl DfaManager {
@@ -269,6 +278,26 @@ impl DfaManager {
             }
         }
 
+        if let Some(detector) = &self.xxe_attack {
+            if let Some(matched) = detector.detect(input) {
+                return Some(finding(
+                    "DFA XXE attack detection",
+                    Severity::High,
+                    "CWE-611",
+                    "Detected an XXE payload with at least one XML entity/include marker and at least one suspicious external entity, SOAP, file, exfiltration, or DOCTYPE marker.",
+                    "https://owasp.org/www-community/vulnerabilities/XML_External_Entity_(XXE)_Processing",
+                    format!(
+                        "dfa::xxe_attack_detect:list_A={} list_B={} decoded_utf16={}",
+                        matched.list_a(),
+                        matched.list_b(),
+                        matched.decoded_utf16()
+                    ),
+                    "dfa/xxe_attack_detect.rs:generated",
+                    input,
+                ));
+            }
+        }
+
         None
     }
 }
@@ -384,6 +413,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> DfaConfig {
         crlf_injection_detect: enabled("CRLF_injection_detect"),
         request_smuggling_detect: enabled("Request_Smuggling_detect"),
         nosql_injection_detect: enabled("NOSQL_injection_detect"),
+        xxe_attack_detect: enabled("XXE_attack_detect"),
     }
 }
 
@@ -425,5 +455,17 @@ DFA-Rules:
         )
         .expect("parse NoSQL injection key");
         assert!(cfg.nosql_injection_detect);
+    }
+
+    #[test]
+    fn parses_xxe_attack_detect_config_key() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  XXE_attack_detect: true
+"#,
+        )
+        .expect("parse XXE attack key");
+        assert!(cfg.xxe_attack_detect);
     }
 }

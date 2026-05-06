@@ -47,6 +47,7 @@ KrakenWaf supports multiple detection layers:
 - CRLF injection detect
 - Request smuggling detect
 - NoSQL injection detect
+- XXE attacks detect
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -665,11 +666,14 @@ DFA-Rules:
   CRLF_injection_detect: true   # CRLF injection / HTTP response splitting
   Request_Smuggling_detect: true # HTTP request smuggling
   NOSQL_injection_detect: true  # NoSQL injection marker correlation
+  XXE_attack_detect: true       # XML external entity attack marker correlation
 ```
 
 Set any key to `false` to disable that detector without recompiling.
 
 `NOSQL_injection_detect` blocks when the same URI/body inspection payload contains at least one NoSQL operator/selector marker such as `$gt`, `$where`, `$or`, `$and`, `selector`, `this.password.match`, `&&` or `||`, and at least one suspicious value/control marker such as `true`, `admin`, `pass`, `user`, `null`, `sleep(`, `dropDatabase(`, `%00`, `{}`, `.insert`, `==1`, `== 1`, `]=1`, `] = 1`, or `==` followed by a digit from `1` to `9`.
+
+`XXE_attack_detect` blocks when the same URI/body inspection payload contains at least one XML entity/include marker (`ENTITY` or `xi:include`) and at least one XXE context marker such as `xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, or `file`. UTF-16LE/BE payloads that arrive after URL decoding as NUL-interleaved text are decoded before XXE matching.
 
 → Full details: [docs/dfa/schema.md](docs/dfa/schema.md)
 

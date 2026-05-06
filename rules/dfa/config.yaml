@@ -7,3 +7,4 @@ DFA-Rules:
   CRLF_injection_detect: true
   Request_Smuggling_detect: true
   NOSQL_injection_detect: true
+  XXE_attack_detect: true

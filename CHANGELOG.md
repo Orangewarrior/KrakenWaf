@@ -1,3 +1,21 @@
+## [2.12.4] - 2026-05-06
+
+### Added
+
+#### XXE attack DFA coverage
+- Added `src/dfa/xxe_attack_detect.rs` to detect XXE attacks by requiring at least one marker from list A (`ENTITY`, `xi:include`) and at least one marker from list B (`xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, `file`).
+- Added UTF-16LE/BE recovery for NUL-interleaved request text produced after URL decoding encoded XML payload bytes.
+- The DFA can be enabled with `XXE_attack_detect: true` in `rules/dfa/config.yaml`.
+- When the `vectorscan-engine` feature is compiled and `--enable-vectorscan` is set, the XXE detector uses Vectorscan for literal list matching.
+- Extended `src/bin/attack.rs` with 15 XXE attack payloads and GET/POST sweeps, including a UTF-16LE percent-encoded payload.
+
+### Tests
+
+- Added real end-to-end GET/POST XXE blocking tests against the protected WAF subprocess in `tests/server_real_test.rs`.
+- Added XXE DFA unit tests for list correlation and UTF-16LE encoded payload recovery.
+
+---
+
 ## [2.12.3] - 2026-05-06
 
 ### Added
