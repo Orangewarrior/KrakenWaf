@@ -7,7 +7,10 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
-use http::{header::{HOST, CONNECTION, UPGRADE}, HeaderMap, HeaderName, Method, Request, Response, StatusCode, Uri};
+use http::{
+    header::{CONNECTION, HOST, UPGRADE},
+    HeaderMap, HeaderName, Method, Request, Response, StatusCode, Uri,
+};
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use reqwest::{redirect::Policy, Client};
@@ -36,15 +39,22 @@ pub struct ProxyClient {
 
 #[derive(Debug)]
 enum BodyInspectionError {
-    TooLarge { limit: usize },
-    Blocked { finding: Box<Finding>, partial_body: Bytes },
+    TooLarge {
+        limit: usize,
+    },
+    Blocked {
+        finding: Box<Finding>,
+        partial_body: Bytes,
+    },
     Other(anyhow::Error),
 }
 
 impl std::fmt::Display for BodyInspectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TooLarge { limit } => write!(f, "request body exceeded route limit of {} bytes", limit),
+            Self::TooLarge { limit } => {
+                write!(f, "request body exceeded route limit of {} bytes", limit)
+            }
             Self::Blocked { .. } => write!(f, "request blocked during streaming inspection"),
             Self::Other(err) => write!(f, "{err}"),
         }
@@ -54,8 +64,14 @@ impl std::fmt::Display for BodyInspectionError {
 impl std::error::Error for BodyInspectionError {}
 
 impl ProxyClient {
-    pub fn new(upstream: &str, timeout_secs: u64, allow_private_upstream: bool, internal_header_name: Option<String>) -> Result<Self> {
-        let upstream = Url::parse(upstream).with_context(|| format!("invalid upstream URL: {upstream}"))?;
+    pub fn new(
+        upstream: &str,
+        timeout_secs: u64,
+        allow_private_upstream: bool,
+        internal_header_name: Option<String>,
+    ) -> Result<Self> {
+        let upstream =
+            Url::parse(upstream).with_context(|| format!("invalid upstream URL: {upstream}"))?;
         validate_upstream(&upstream, allow_private_upstream)?;
 
         let client = Client::builder()
@@ -64,13 +80,27 @@ impl ProxyClient {
             .timeout(std::time::Duration::from_secs(timeout_secs))
             .build()?;
 
-        let internal_header_name = internal_header_name
-            .and_then(|value| if value.trim().is_empty() { None } else { value.parse().ok() });
+        let internal_header_name = internal_header_name.and_then(|value| {
+            if value.trim().is_empty() {
+                None
+            } else {
+                value.parse().ok()
+            }
+        });
 
-        Ok(Self { client, upstream, internal_header_name })
+        Ok(Self {
+            client,
+            upstream,
+            internal_header_name,
+        })
     }
 
-    pub async fn handle(&self, state: &AppState, req: Request<Incoming>, client_ip: String) -> Response<Full<Bytes>> {
+    pub async fn handle(
+        &self,
+        state: &AppState,
+        req: Request<Incoming>,
+        client_ip: String,
+    ) -> Response<Full<Bytes>> {
         // Generate a compact UUID v4 (32 lowercase hex chars, no hyphens) once per
         // request. Threaded through all log events, SQLite rows, and the upstream
         // X-Request-Id header so a WAF alert can be correlated with upstream access logs.
@@ -79,19 +109,29 @@ impl ProxyClient {
         // Stamp every response (blocked or forwarded) with the correlation ID so the
         // client can include it in bug reports or support tickets.
         if let Ok(val) = http::header::HeaderValue::from_str(&request_id) {
-            resp.headers_mut().insert(http::header::HeaderName::from_static("x-request-id"), val);
+            resp.headers_mut()
+                .insert(http::header::HeaderName::from_static("x-request-id"), val);
         }
         resp
     }
 
-    async fn dispatch(&self, state: &AppState, mut req: Request<Incoming>, client_ip: String, request_id: &str) -> Response<Full<Bytes>> {
+    async fn dispatch(
+        &self,
+        state: &AppState,
+        mut req: Request<Incoming>,
+        client_ip: String,
+        request_id: &str,
+    ) -> Response<Full<Bytes>> {
         let method = req.method().clone();
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
         let uri = req.uri().clone();
         let path = crate::rules::normalize_url_path(uri.path());
         let headers_flat = flatten_headers(req.headers());
         // A-2: per-route rule limit is further bounded by the operator-configured hard cap.
-        let body_limit = state.waf.body_limit_for_path(&path).min(state.cli.max_body_bytes);
+        let body_limit = state
+            .waf
+            .body_limit_for_path(&path)
+            .min(state.cli.max_body_bytes);
 
         let context = InspectionContext {
             client_ip: effective_ip.clone(),
@@ -125,9 +165,16 @@ impl ProxyClient {
         let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut()).await {
             Ok(bytes) => bytes,
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
-                return block_content_response(state, StatusCode::PAYLOAD_TOO_LARGE, "KrakenWaf blocked the request body");
+                return block_content_response(
+                    state,
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "KrakenWaf blocked the request body",
+                );
             }
-            Err(BodyInspectionError::Blocked { finding, partial_body }) => {
+            Err(BodyInspectionError::Blocked {
+                finding,
+                partial_body,
+            }) => {
                 if !skip_inspection {
                     let event = build_event(&context, &finding, Some(&partial_body));
                     if let Some(response) = self.log_and_enforce(state, event).await {
@@ -139,13 +186,20 @@ impl ProxyClient {
             }
             Err(BodyInspectionError::Other(err)) => {
                 warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
-                return block_content_response(state, StatusCode::BAD_REQUEST, "KrakenWaf could not inspect the request body");
+                return block_content_response(
+                    state,
+                    StatusCode::BAD_REQUEST,
+                    "KrakenWaf could not inspect the request body",
+                );
             }
         };
 
         if !skip_inspection {
             let full_request = format_full_request_bytes(&context, Some(&body_bytes));
-            match state.waf.inspect_complete_payload_with_context(&full_request, Some(&context.method)) {
+            match state
+                .waf
+                .inspect_complete_payload_with_context(&full_request, Some(&context.method))
+            {
                 Decision::Allow => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, Some(&body_bytes));
@@ -156,11 +210,15 @@ impl ProxyClient {
             }
         }
 
-        match self.forward_request(state, method, uri, req.headers(), body_bytes, request_id).await {
+        match self
+            .forward_request(state, method, uri, req.headers(), body_bytes, request_id)
+            .await
+        {
             Ok(response) => response,
             Err(err) => {
                 error!(target: "krakenwaf", "upstream proxy failure: {err:#}");
-                let mut response = plain_response(StatusCode::BAD_GATEWAY, "KrakenWaf upstream failure");
+                let mut response =
+                    plain_response(StatusCode::BAD_GATEWAY, "KrakenWaf upstream failure");
                 apply_response_policy(state, &mut response);
                 response
             }
@@ -169,7 +227,11 @@ impl ProxyClient {
 
     /// Log the detection event and, in `Block` mode, return a 403 response.
     /// Returns `None` in `Silent` mode so the caller can continue forwarding the request.
-    async fn log_and_enforce(&self, state: &AppState, event: SecurityEvent) -> Option<Response<Full<Bytes>>> {
+    async fn log_and_enforce(
+        &self,
+        state: &AppState,
+        event: SecurityEvent,
+    ) -> Option<Response<Full<Bytes>>> {
         state.metrics.inc_blocked();
 
         info!(
@@ -197,7 +259,11 @@ impl ProxyClient {
             return None;
         }
 
-        Some(block_content_response(state, StatusCode::FORBIDDEN, "Blocked by KrakenWaf"))
+        Some(block_content_response(
+            state,
+            StatusCode::FORBIDDEN,
+            "Blocked by KrakenWaf",
+        ))
     }
 
     async fn forward_request(
@@ -225,7 +291,9 @@ impl ProxyClient {
             }
             forwarded_count += 1;
             forwarded_bytes += name.as_str().len() + value.as_bytes().len();
-            if forwarded_count > MAX_FORWARDED_HEADERS || forwarded_bytes > MAX_FORWARDED_HEADER_BYTES {
+            if forwarded_count > MAX_FORWARDED_HEADERS
+                || forwarded_bytes > MAX_FORWARDED_HEADER_BYTES
+            {
                 anyhow::bail!(
                     "request rejected: forwarded headers exceed limits (count<={MAX_FORWARDED_HEADERS}, bytes<={MAX_FORWARDED_HEADER_BYTES})"
                 );
@@ -245,7 +313,8 @@ impl ProxyClient {
             .await
             .map_err(|err| KrakenError::Upstream(err.to_string()))?;
 
-        let status = StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let status =
+            StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let mut response_builder = Response::builder().status(status);
         for (name, value) in response.headers().iter() {
             if !is_hop_by_hop(name) {
@@ -257,7 +326,11 @@ impl ProxyClient {
         let max_response = state.cli.max_upstream_response_bytes;
         let mut body_buf = BytesMut::new();
         let mut response = response;
-        while let Some(chunk) = response.chunk().await.map_err(|err| KrakenError::Upstream(err.to_string()))? {
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .map_err(|err| KrakenError::Upstream(err.to_string()))?
+        {
             body_buf.extend_from_slice(&chunk);
             if body_buf.len() > max_response {
                 anyhow::bail!(
@@ -272,15 +345,19 @@ impl ProxyClient {
         let resp_headers = flatten_headers(
             response_builder
                 .headers_ref()
-                .unwrap_or(&http::HeaderMap::new())
+                .unwrap_or(&http::HeaderMap::new()),
         );
-        let resp_ctx = ResponseContext { status: status.as_u16(), headers: resp_headers, body: bytes.clone() };
+        let resp_ctx = ResponseContext {
+            status: status.as_u16(),
+            headers: resp_headers,
+            body: bytes.clone(),
+        };
         if let Decision::Block(finding) = state.waf.inspect_response(&resp_ctx) {
             let event = crate::logging::SecurityEvent::from_finding(
                 &finding,
                 &InspectionContext {
                     client_ip: String::new(),
-                    method: method_str,
+                    method: method_str.clone(),
                     uri: uri.to_string(),
                     path: uri.path().to_string(),
                     headers: String::new(),
@@ -289,21 +366,9 @@ impl ProxyClient {
                 },
                 finding.request_payload.clone(),
             );
-            state.metrics.inc_blocked();
-            tracing::info!(
-                target: "krakenwaf",
-                request_id=%event.request_id,
-                rule_id=%event.rule_id,
-                title=%event.title,
-                severity=%event.severity,
-                engine=%event.engine,
-                uri=%event.uri,
-                rule=%event.rule_match,
-                "response blocked"
-            );
-            write_critical(&state.logging, &event);
-            state.store.enqueue(event);
-            anyhow::bail!("upstream response blocked by WAF response rule");
+            if let Some(response) = self.log_and_enforce(state, event).await {
+                return Ok(response);
+            }
         }
 
         let mut built = response_builder
@@ -326,7 +391,9 @@ async fn consume_and_inspect_body(
         let frame = frame.map_err(|err| BodyInspectionError::Other(err.into()))?;
         if let Some(chunk) = frame.data_ref() {
             if acc.len() + chunk.len() > ctx.body_limit {
-                return Err(BodyInspectionError::TooLarge { limit: ctx.body_limit });
+                return Err(BodyInspectionError::TooLarge {
+                    limit: ctx.body_limit,
+                });
             }
 
             let mut inspection_buf = BytesMut::with_capacity(overlap.len() + chunk.len());
@@ -334,16 +401,24 @@ async fn consume_and_inspect_body(
             inspection_buf.extend_from_slice(chunk);
 
             let request_window = format_full_request_window_bytes(ctx, &inspection_buf);
-            match state.waf.inspect_complete_payload_with_context(&request_window, Some(&ctx.method)) {
+            match state
+                .waf
+                .inspect_complete_payload_with_context(&request_window, Some(&ctx.method))
+            {
                 Decision::Allow => {
                     acc.extend_from_slice(chunk);
-                    overlap = inspection_buf[inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..].to_vec();
+                    overlap = inspection_buf
+                        [inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..]
+                        .to_vec();
                 }
                 Decision::Block(finding) => {
                     let mut partial = BytesMut::with_capacity(acc.len() + chunk.len());
                     partial.extend_from_slice(&acc);
                     partial.extend_from_slice(chunk);
-                    return Err(BodyInspectionError::Blocked { finding, partial_body: partial.freeze() });
+                    return Err(BodyInspectionError::Blocked {
+                        finding,
+                        partial_body: partial.freeze(),
+                    });
                 }
             }
         }
@@ -358,9 +433,8 @@ fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>)
 }
 
 pub(crate) fn format_request_prefix_bytes(ctx: &InspectionContext) -> Vec<u8> {
-    let mut out = Vec::with_capacity(
-        ctx.method.len() + 1 + ctx.uri.len() + 10 + ctx.headers.len() + 4
-    );
+    let mut out =
+        Vec::with_capacity(ctx.method.len() + 1 + ctx.uri.len() + 10 + ctx.headers.len() + 4);
     out.extend_from_slice(ctx.method.as_bytes());
     out.push(b' ');
     out.extend_from_slice(ctx.uri.as_bytes());
@@ -389,7 +463,11 @@ fn format_full_request_bytes(ctx: &InspectionContext, body: Option<&Bytes>) -> V
     out
 }
 
-fn format_full_request(ctx: &InspectionContext, body: Option<&Bytes>, matched_payload: &str) -> String {
+fn format_full_request(
+    ctx: &InspectionContext,
+    body: Option<&Bytes>,
+    matched_payload: &str,
+) -> String {
     let mut out = String::new();
     out.push_str(&ctx.method);
     out.push(' ');
@@ -422,7 +500,8 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
     if let Some(host) = upstream.host() {
         match host {
             Host::Ipv4(ip) => {
-                if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() {
+                if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
+                {
                     anyhow::bail!("private or local upstreams require --allow-private-upstream");
                 }
             }
@@ -488,7 +567,6 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
     )
 }
 
-
 fn apply_response_policy(state: &AppState, response: &mut Response<Full<Bytes>>) {
     let is_websocket_upgrade = response.status() == StatusCode::SWITCHING_PROTOCOLS
         || response.headers().contains_key(UPGRADE)
@@ -497,10 +575,16 @@ fn apply_response_policy(state: &AppState, response: &mut Response<Full<Bytes>>)
             .get(CONNECTION)
             .and_then(|v| v.to_str().ok())
             .is_some_and(|v| v.to_ascii_lowercase().contains("upgrade"));
-    state.response_header_policy.apply(response.headers_mut(), is_websocket_upgrade);
+    state
+        .response_header_policy
+        .apply(response.headers_mut(), is_websocket_upgrade);
 }
 
-fn block_content_response(state: &AppState, status: StatusCode, fallback_message: &str) -> Response<Full<Bytes>> {
+fn block_content_response(
+    state: &AppState,
+    status: StatusCode,
+    fallback_message: &str,
+) -> Response<Full<Bytes>> {
     let mut response = if let Some(body) = &state.block_response_body {
         Response::builder()
             .status(status)
@@ -524,7 +608,6 @@ pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>
         .unwrap()
 }
 
-
 fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Option<String> {
     headers
         .iter()
@@ -539,7 +622,9 @@ fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppStat
         Ok(ip) => ip,
         Err(_) => return peer_ip.to_string(),
     };
-    let trusted_nets: Vec<ipnet::IpNet> = state.cli.trusted_proxy_cidrs
+    let trusted_nets: Vec<ipnet::IpNet> = state
+        .cli
+        .trusted_proxy_cidrs
         .iter()
         .filter_map(|cidr| cidr.parse().ok())
         .collect();

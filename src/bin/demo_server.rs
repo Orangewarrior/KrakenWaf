@@ -29,7 +29,8 @@ struct Payload {
 }
 
 async fn index() -> Html<&'static str> {
-    Html(r#"<!DOCTYPE html>
+    Html(
+        r#"<!DOCTYPE html>
 <html><head><title>KrakenWAF Demo Backend</title></head><body>
 <h1>KrakenWAF Demo Backend</h1>
 <p>This server is intentionally vulnerable. Place KrakenWAF in front of it.</p>
@@ -43,7 +44,12 @@ async fn index() -> Html<&'static str> {
   <input name="payload_test" placeholder="enter payload" size="60"/>
   <input type="submit" value="Send POST"/>
 </form>
-</body></html>"#)
+<h2>Score engine probes</h2>
+<p>GET chain: kwaf-score-get-a kwaf-score-get-b kwaf-score-get-c</p>
+<p>POST chain: kwaf-score-post-a kwaf-score-post-b kwaf-score-post-c kwaf-score-post-d</p>
+<p>Response chain: kwaf-score-response-a kwaf-score-response-b kwaf-score-response-c</p>
+</body></html>"#,
+    )
 }
 
 async fn test_get(Query(p): Query<Payload>) -> Html<String> {

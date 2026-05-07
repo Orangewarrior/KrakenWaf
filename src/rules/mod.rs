@@ -1,10 +1,13 @@
-
 mod loader;
 
 use anyhow::Result;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, fmt, path::{Component, Path}};
+use std::{
+    collections::HashMap,
+    fmt,
+    path::{Component, Path},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
@@ -68,6 +71,7 @@ pub struct DetectionRule {
     pub id: String,
     pub title: String,
     pub severity: Severity,
+    pub score: u32,
     pub cwe: String,
     pub description: String,
     pub reference_url: String,

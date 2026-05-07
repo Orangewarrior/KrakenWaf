@@ -9,7 +9,8 @@
       "description": "Detects common offensive scanners in headers.",
       "url": "https://owasp.org/www-community/attacks/Web_Application_Firewall",
       "rule_match": "(?i)(?:sqlmap|acunetix|nikto|nessus|nuclei|masscan|zgrab|wpscan|dirbuster)",
-      "id": "00001"
+      "id": "00001",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -20,7 +21,8 @@
       "description": "Detects localhost/internal targets in forwarding headers.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:x-forwarded-(?:for|host|server|proto):\\s*(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|172\\.(?:1[6-9]|2\\d|3[0-1])\\.|192\\.168\\.))",
-      "id": "00002"
+      "id": "00002",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -31,7 +33,8 @@
       "description": "Detects malformed or duplicate host headers flattened into evidence.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?im)(^host:\\s*$|host:\\s*[^\\s]+\\s+host:|host:\\s*(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0)\\s*$)",
-      "id": "00003"
+      "id": "00003",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -42,7 +45,8 @@
       "description": "Detects CRLF/header injection in flattened headers.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:%0d%0a|\\r\\n)(?:host:|content-length:|transfer-encoding:|x-forwarded-)",
-      "id": "00004"
+      "id": "00004",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -53,7 +57,8 @@
       "description": "Detects malformed multipart boundaries and content types often used in fuzzing.",
       "url": "https://owasp.org/www-community/attacks/Web_Application_Firewall",
       "rule_match": "(?i)(?:content-type:\\s*multipart/form-data;\\s*boundary=\\s*$|content-type:\\s*application/x-www-form-urlencoded\\s*;\\s*charset=\\s*utf-7)",
-      "id": "00005"
+      "id": "00005",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -64,7 +69,8 @@
       "description": "Detects header combinations associated with request smuggling.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:transfer-encoding:\\s*chunked.*content-length:|content-length:.*transfer-encoding:\\s*chunked)",
-      "id": "00006"
+      "id": "00006",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -75,7 +81,8 @@
       "description": "Detects suspicious proxy override headers.",
       "url": "https://cwe.mitre.org/data/definitions/441.html",
       "rule_match": "(?i)(?:x-original-url:|x-rewrite-url:|x-http-method-override:|x-method-override:|x-forwarded-uri:)",
-      "id": "00007"
+      "id": "00007",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -86,7 +93,8 @@
       "description": "Detects cloud metadata hostnames in host-like headers.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:host:.*(?:metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.169\\.254)|x-forwarded-host:.*(?:metadata\\.google\\.internal|169\\.254\\.169\\.254))",
-      "id": "00008"
+      "id": "00008",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -97,7 +105,8 @@
       "description": "Detects suspicious zero-length CL with upgrade semantics.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:content-length:\\s*0.*(?:connection:\\s*keep-alive|upgrade:))",
-      "id": "00009"
+      "id": "00009",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -108,7 +117,8 @@
       "description": "Detects forged websocket upgrade hints in odd contexts.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:upgrade:\\s*websocket.*x-http-method-override:|sec-websocket-key:.*content-length:)",
-      "id": "00010"
+      "id": "00010",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -119,7 +129,8 @@
       "description": "Detects common offensive auth or bearer token fuzz markers.",
       "url": "https://cwe.mitre.org/data/definitions/287.html",
       "rule_match": "(?i)(?:authorization:\\s*(?:basic\\s+YWRtaW46|bearer\\s+(?:null|undefined|test|fuzz)))",
-      "id": "00011"
+      "id": "00011",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -130,7 +141,8 @@
       "description": "Detects obsolete or stacked transfer codings.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:transfer-encoding:\\s*(?:chunked\\s*,|gzip\\s*,\\s*chunked|chunked\\s*,\\s*gzip))",
-      "id": "00012"
+      "id": "00012",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -141,7 +153,8 @@
       "description": "Detects malformed Accept headers used in fuzzing.",
       "url": "https://cwe.mitre.org/data/definitions/20.html",
       "rule_match": "(?i)(?:accept:\\s*\\*/\\*;q=0(?:\\.0+)?\\s*,\\s*\\*/\\*)",
-      "id": "00013"
+      "id": "00013",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -152,7 +165,8 @@
       "description": "Detects localhost/private origins in Origin headers.",
       "url": "https://cwe.mitre.org/data/definitions/346.html",
       "rule_match": "(?i)(?:origin:\\s*https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|192\\.168\\.))",
-      "id": "00014"
+      "id": "00014",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -163,7 +177,8 @@
       "description": "Detects localhost/private referers in Referer headers.",
       "url": "https://cwe.mitre.org/data/definitions/346.html",
       "rule_match": "(?i)(?:referer:\\s*https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|10\\.|192\\.168\\.))",
-      "id": "00015"
+      "id": "00015",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -174,7 +189,8 @@
       "description": "Detects XML content types often paired with XXE.",
       "url": "https://cwe.mitre.org/data/definitions/611.html",
       "rule_match": "(?i)(?:content-type:\\s*(?:text/xml|application/xml|application/soap\\+xml))",
-      "id": "00016"
+      "id": "00016",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -185,7 +201,8 @@
       "description": "Detects debug headers or verbose tooling fingerprints.",
       "url": "https://cwe.mitre.org/data/definitions/489.html",
       "rule_match": "(?i)(?:x-debug:|x-php-ob-level:|x-originating-ip:|x-runtime:)",
-      "id": "00017"
+      "id": "00017",
+      "score": 1000
     }
   ]
 }

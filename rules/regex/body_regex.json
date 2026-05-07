@@ -9,7 +9,8 @@
       "description": "Detects shell metacharacters combined with common execution primitives in request bodies.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd))",
-      "id": "00001"
+      "id": "00001",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -20,7 +21,8 @@
       "description": "Detects command substitution in body payloads.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:\\$\\((?:id|whoami|uname|curl|wget|bash|sh)|`(?:id|whoami|uname|curl|wget|bash|sh))",
-      "id": "00002"
+      "id": "00002",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -31,7 +33,8 @@
       "description": "Detects common downloader command chains in body content.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:wget\\s+https?://|curl\\s+-[fsSLoO].*https?://|powershell(?:\\.exe)?\\s+-enc|certutil(?:\\.exe)?\\s+-urlcache\\s+-split\\s+-f)",
-      "id": "00003"
+      "id": "00003",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -42,7 +45,8 @@
       "description": "Detects reverse shell primitives in body content.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:nc\\s+-e|bash\\s+-i\\s*>&|/dev/tcp/\\d{1,3}(?:\\.\\d{1,3}){3}/\\d+|python(?:3)?\\s+-c\\s+[\"\\'].*socket)",
-      "id": "00004"
+      "id": "00004",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -53,7 +57,8 @@
       "description": "Detects direct references to sensitive files in body content.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|boot\\.ini|win\\.ini|\\\\windows\\\\system32)",
-      "id": "00005"
+      "id": "00005",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -64,7 +69,8 @@
       "description": "Detects traversal sequences in body payloads.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\|%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f)",
-      "id": "00006"
+      "id": "00006",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -75,7 +81,8 @@
       "description": "Detects dangerous PHP wrapper usage in body payloads.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
       "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)",
-      "id": "00007"
+      "id": "00007",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -86,7 +93,8 @@
       "description": "Detects remote include style body parameters.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
       "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)",
-      "id": "00008"
+      "id": "00008",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -97,7 +105,8 @@
       "description": "Detects localhost SSRF targets in body content.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))",
-      "id": "00009"
+      "id": "00009",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -108,7 +117,8 @@
       "description": "Detects internal/private IPv4 SSRF targets in body.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))",
-      "id": "00010"
+      "id": "00010",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -119,7 +129,8 @@
       "description": "Detects cloud metadata endpoints in body content.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:metadata\\.google\\.internal|100\\.100\\.100\\.200|latest/meta-data|169\\.254\\.170\\.2)",
-      "id": "00011"
+      "id": "00011",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -130,7 +141,8 @@
       "description": "Detects dangerous URL schemes in body content.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)",
-      "id": "00012"
+      "id": "00012",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -141,7 +153,8 @@
       "description": "Detects unusual callback protocols in body payloads.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:ldap://|ldaps://|rmi://|dns://|smtp://|imap://|pop3://|tftp://)",
-      "id": "00013"
+      "id": "00013",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -152,7 +165,8 @@
       "description": "Detects serialized object markers and gadget hints.",
       "url": "https://cwe.mitre.org/data/definitions/502.html",
       "rule_match": "(?i)(?:O:\\d+:\"[A-Za-z_\\\\]+\"|rO0AB|__reduce__|java\\.lang\\.Runtime|TemplatesImpl|ysoserial)",
-      "id": "00014"
+      "id": "00014",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -163,7 +177,8 @@
       "description": "Detects obvious SSTI expressions in body payloads.",
       "url": "https://cwe.mitre.org/data/definitions/94.html",
       "rule_match": "(?i)(?:\\{\\{\\s*7\\s*\\*\\s*7\\s*\\}\\}|\\$\\{(?:7\\*7|jndi:)|<%=|\\{\\%.*\\%\\}|\\#set\\()",
-      "id": "00015"
+      "id": "00015",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -174,7 +189,8 @@
       "description": "Detects CRLF/header smuggling primitives in body content.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:%0d%0a|\\r\\n)(?:host:|content-length:|transfer-encoding:|x-forwarded-)",
-      "id": "00016"
+      "id": "00016",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -185,7 +201,8 @@
       "description": "Detects open redirect/SSRF parameter values in bodies.",
       "url": "https://cwe.mitre.org/data/definitions/601.html",
       "rule_match": "(?i)(?:\\b(?:url|uri|next|redirect|dest|continue|return|endpoint)=\\s*(?:https?://|//|file://|gopher://))",
-      "id": "00017"
+      "id": "00017",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -196,7 +213,8 @@
       "description": "Detects Zip Slip style relative extraction paths in bodies.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:\\.\\./.*\\.(?:jsp|php|aspx|war|jar)|\\.{2}(?:/|\\\\).*(?:web\\.xml|application\\.properties))",
-      "id": "00018"
+      "id": "00018",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -207,7 +225,8 @@
       "description": "Detects common scanner strings in body content.",
       "url": "https://owasp.org/www-community/attacks/Web_Application_Firewall",
       "rule_match": "(?i)(?:sqlmap|acunetix|nikto|nessus|nuclei|masscan|zgrab)",
-      "id": "00019"
+      "id": "00019",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -218,7 +237,8 @@
       "description": "Detects classic XXE primitives in body content.",
       "url": "https://cwe.mitre.org/data/definitions/611.html",
       "rule_match": "(?i)(?:<!DOCTYPE\\s+[^>]+\\s+\\[|<!ENTITY\\s+[^>]+SYSTEM\\s+[\"\\'](?:file|http|https|ftp)://)",
-      "id": "00020"
+      "id": "00020",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -229,7 +249,8 @@
       "description": "Detects JNDI lookup expressions in body content.",
       "url": "https://cwe.mitre.org/data/definitions/94.html",
       "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)",
-      "id": "00021"
+      "id": "00021",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -240,7 +261,8 @@
       "description": "Detects cmd.exe or powershell execution markers.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:cmd(?:\\.exe)?\\s+/c|powershell(?:\\.exe)?\\s+-enc|powershell(?:\\.exe)?\\s+-nop)",
-      "id": "00022"
+      "id": "00022",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -251,7 +273,8 @@
       "description": "Detects direct Unix shell invocation markers.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:/bin/(?:sh|bash)\\s+-c|sh\\s+-c|bash\\s+-c)",
-      "id": "00023"
+      "id": "00023",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -262,7 +285,8 @@
       "description": "Detects access to container or orchestrator secrets.",
       "url": "https://cwe.mitre.org/data/definitions/250.html",
       "rule_match": "(?i)(?:docker\\.sock|/var/run/secrets/kubernetes\\.io/serviceaccount|/run/secrets/)",
-      "id": "00024"
+      "id": "00024",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -273,7 +297,8 @@
       "description": "Detects executable upload extensions in multipart names.",
       "url": "https://cwe.mitre.org/data/definitions/434.html",
       "rule_match": "(?i)(?:filename\\s*=\\s*\"[^\"]+\\.(?:php\\d*|phtml|phar|jsp|jspx|asp|aspx|cfm|cgi|pl|sh|war|jar)\")",
-      "id": "00025"
+      "id": "00025",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -284,7 +309,8 @@
       "description": "Detects archive member traversal paths.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:filename\\s*=\\s*\"(?:\\.\\./|\\.\\.\\\\))",
-      "id": "00026"
+      "id": "00026",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -295,7 +321,8 @@
       "description": "Detects package manager driven remote installs.",
       "url": "https://cwe.mitre.org/data/definitions/494.html",
       "rule_match": "(?i)(?:apt(?:-get)?\\s+install\\s+|yum\\s+install\\s+|dnf\\s+install\\s+|pip(?:3)?\\s+install\\s+https?://)",
-      "id": "00027"
+      "id": "00027",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -306,7 +333,8 @@
       "description": "Detects OCI metadata endpoints in body content.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:opc/v2/instance/|openstack/latest/meta_data\\.json|computeMetadata/v1/)",
-      "id": "00028"
+      "id": "00028",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -317,7 +345,8 @@
       "description": "Detects GraphQL introspection probes in body content.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)(?:__schema|__type|IntrospectionQuery)",
-      "id": "00029"
+      "id": "00029",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -328,7 +357,8 @@
       "description": "Detects SSI directives in body content.",
       "url": "https://cwe.mitre.org/data/definitions/97.html",
       "rule_match": "(?i)(?:<!--#(?:exec|include|echo|printenv)\\s+)",
-      "id": "00030"
+      "id": "00030",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -339,7 +369,8 @@
       "description": "Detects localhost callback parameters in body.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:\\b(?:callback|webhook|feed|proxy|fetch|target|host)=\\s*(?:https?://)?(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0))",
-      "id": "00031"
+      "id": "00031",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -350,7 +381,8 @@
       "description": "Detects unix socket SSRF notations in body content.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:unix:(?://)?/|http\\+unix://|curl\\s+--unix-socket)",
-      "id": "00032"
+      "id": "00032",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -361,7 +393,8 @@
       "description": "Detects HTTP/2 or transfer encoding smuggling hints in body.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:transfer-encoding\\s*:\\s*chunked|content-length\\s*:\\s*\\d+.*transfer-encoding)",
-      "id": "00033"
+      "id": "00033",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -372,7 +405,8 @@
       "description": "Detects common DOM event handler attribute injection in POST bodies.",
       "url": "https://cwe.mitre.org/data/definitions/79.html",
       "rule_match": "(?i)\\bon(?:click|focus|blur|submit|mouseover|mouseenter|mousemove|toggle|start|end|animationend|transitionend|keyup|keydown|keypress|input|change|reset|select|copy|cut|paste|drag|drop|scroll|wheel|pointerdown|pointerup)\\s*=",
-      "id": "00034"
+      "id": "00034",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -383,7 +417,140 @@
       "description": "Detects time-based blind, error-based, and structural SQLi probes in POST bodies.",
       "url": "https://cwe.mitre.org/data/definitions/89.html",
       "rule_match": "(?i)(?:sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|union\\s+(?:all\\s+)?select\\b|'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|'\\s*(?:--|#)(?:\\s|$)|'\\s*/\\*|or\\s+true\\b|[0-9]+\\s+(?:or|and)\\s+[0-9]+=\\s*[0-9]+|\"\\s*or\\s+(?:\"[^\"]*\"\\s*=|[0-9])|(?:or|and)\\s+\\(\\s*select\\b|;\\s*(?:select|insert|update|delete|drop|exec)\\b|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]|'\\s*group\\s+by\\s+[0-9]|xp_cmdshell|drop\\s+table\\s+\\w|insert\\s+into\\s+\\w+\\s+values|exec\\s+(?:master|xp_))",
-      "id": "00035"
+      "id": "00035",
+      "score": 1000
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 1",
+      "severity": "low",
+      "score": 150,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-a",
+      "id": "score-body-low-001"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 2",
+      "severity": "low",
+      "score": 150,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-b",
+      "id": "score-body-low-002"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 3",
+      "severity": "low",
+      "score": 150,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-c",
+      "id": "score-body-low-003"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 4",
+      "severity": "low",
+      "score": 150,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-d",
+      "id": "score-body-low-004"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 5",
+      "severity": "low",
+      "score": 250,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-e",
+      "id": "score-body-low-005"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 6",
+      "severity": "low",
+      "score": 350,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-f",
+      "id": "score-body-low-006"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 7",
+      "severity": "low",
+      "score": 599,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-near",
+      "id": "score-body-low-007"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine request test 8",
+      "severity": "high",
+      "score": 600,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-post-high",
+      "id": "score-body-high-001"
+    },
+    {
+      "enable": 1,
+      "http_action": "Response",
+      "title": "Score engine response test 9",
+      "severity": "low",
+      "score": 200,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on response payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-response-a",
+      "id": "score-body-response-low-001"
+    },
+    {
+      "enable": 1,
+      "http_action": "Response",
+      "title": "Score engine response test 10",
+      "severity": "low",
+      "score": 200,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on response payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-response-b",
+      "id": "score-body-response-low-002"
+    },
+    {
+      "enable": 1,
+      "http_action": "Response",
+      "title": "Score engine response test 11",
+      "severity": "low",
+      "score": 200,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on response payloads.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-response-c",
+      "id": "score-body-response-low-003"
     }
   ]
 }

@@ -1,3 +1,22 @@
+## [2.12.5] - 2026-05-07
+
+### Added
+
+- Added `score` to regex and Vectorscan JSON rules. Existing bundled rules now default to `1000`.
+- Implemented score-ranked blocking for regex and Vectorscan request/response inspection: matches with `score >= 600` block immediately, while lower scores accumulate per rule list until they reach `600`.
+- Added score-engine laboratory rules and attack-tool GET, POST, and response sweeps for expected allow/block behavior.
+- Documented score-ranked rule behavior in `docs/score_rank.md`.
+
+### Fixed
+
+- Fixed response-rule enforcement returning `502 Bad Gateway` after a response match. Response blocks now use the normal WAF enforcement path and return the configured block response, including `403 Forbidden` in block mode.
+
+### Changed
+
+- Bumped the crate and README version to `2.12.5`.
+
+---
+
 ## [2.12.4] - 2026-05-06
 
 ### Added

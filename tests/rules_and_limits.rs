@@ -1,4 +1,3 @@
-
 use krakenwaf::rules::{RuleSet, Severity};
 use std::fs;
 
@@ -52,4 +51,6 @@ fn loads_external_rule_tree() {
     assert_eq!(rules.body_limit_for_path("/upload/file"), 2048);
     assert!(!rules.is_allowlisted("/health/../../admin"));
     assert_eq!(rules.vectorscan_keywords[0].rule_match, "cmd.exe");
+    assert_eq!(rules.path_regex[0].meta.score, 1000);
+    assert_eq!(rules.vectorscan_keywords[0].score, 1000);
 }

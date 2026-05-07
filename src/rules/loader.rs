@@ -1,4 +1,3 @@
-
 use super::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity};
 use anyhow::{Context, Result};
 use regex::RegexBuilder;
@@ -39,15 +38,20 @@ struct RuleJson {
     http_action: HttpAction,
     title: String,
     severity: Severity,
+    #[serde(default = "default_rule_score")]
+    score: u32,
     cwe: String,
     description: String,
     url: String,
     rule_match: String,
 }
 
-
 fn default_rule_enabled() -> u8 {
     1
+}
+
+fn default_rule_score() -> u32 {
+    1000
 }
 
 pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
@@ -59,14 +63,32 @@ pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
         scanner_agents: load_scanner_agents(root, "user_agents/scanners.txt")?,
         blocked_ip_prefixes: main.blocked_ip_prefixes,
         uri_keywords: json_rules_to_detection_rules(main.uri_keywords, "rules.json:uri_keywords"),
-        header_keywords: json_rules_to_detection_rules(main.header_keywords, "rules.json:header_keywords"),
-        body_keywords: json_rules_to_detection_rules(main.body_keywords, "rules.json:body_keywords"),
+        header_keywords: json_rules_to_detection_rules(
+            main.header_keywords,
+            "rules.json:header_keywords",
+        ),
+        body_keywords: json_rules_to_detection_rules(
+            main.body_keywords,
+            "rules.json:body_keywords",
+        ),
         allow_paths: main.allow_paths,
         body_limits: main.body_limits,
-        path_regex: load_regex_rules_json(&root.join("regex/path_regex.json"), "regex/path_regex.json")?,
-        body_regex: load_regex_rules_json(&root.join("regex/body_regex.json"), "regex/body_regex.json")?,
-        header_regex: load_regex_rules_json(&root.join("regex/header_regex.json"), "regex/header_regex.json")?,
-        vectorscan_keywords: load_vectorscan_rules_json(&root.join("Vectorscan/strings2block.json"), "Vectorscan/strings2block.json")?,
+        path_regex: load_regex_rules_json(
+            &root.join("regex/path_regex.json"),
+            "regex/path_regex.json",
+        )?,
+        body_regex: load_regex_rules_json(
+            &root.join("regex/body_regex.json"),
+            "regex/body_regex.json",
+        )?,
+        header_regex: load_regex_rules_json(
+            &root.join("regex/header_regex.json"),
+            "regex/header_regex.json",
+        )?,
+        vectorscan_keywords: load_vectorscan_rules_json(
+            &root.join("Vectorscan/strings2block.json"),
+            "Vectorscan/strings2block.json",
+        )?,
     })
 }
 
@@ -93,14 +115,17 @@ fn safe_join(root: &Path, relative: &str) -> Result<std::path::PathBuf> {
     let joined = root.join(relative);
     // If the file doesn't exist we still return the path; callers use `exists()`.
     if joined.exists() {
-        let canonical = joined.canonicalize()
+        let canonical = joined
+            .canonicalize()
             .with_context(|| format!("cannot canonicalize rule path {}", joined.display()))?;
-        let root_canonical = root.canonicalize()
+        let root_canonical = root
+            .canonicalize()
             .with_context(|| format!("cannot canonicalize rules root {}", root.display()))?;
         if !canonical.starts_with(&root_canonical) {
             anyhow::bail!(
                 "rule file {} resolved outside rules root {} — possible symlink attack",
-                canonical.display(), root_canonical.display()
+                canonical.display(),
+                root_canonical.display()
             );
         }
         Ok(canonical)
@@ -113,7 +138,8 @@ fn load_main_rules_json(path: &Path) -> Result<MainRulesJson> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read JSON rules file {}", path.display()))?;
     validate_json_mapping(&content, path)?;
-    let parsed = parse_json_with_rule_escape_repair::<MainRulesJson>(&content, path, "JSON rules file")?;
+    let parsed =
+        parse_json_with_rule_escape_repair::<MainRulesJson>(&content, path, "JSON rules file")?;
     Ok(parsed)
 }
 
@@ -209,9 +235,14 @@ fn json_rules_to_detection_rules(values: Vec<RuleJson>, source: &str) -> Vec<Det
             }
             let rule_match = value.rule_match.trim().to_string();
             (!rule_match.is_empty()).then(|| DetectionRule {
-                id: if value.id.is_empty() { format!("{:05}", idx + 1) } else { value.id },
+                id: if value.id.is_empty() {
+                    format!("{:05}", idx + 1)
+                } else {
+                    value.id
+                },
                 title: value.title,
                 severity: value.severity,
+                score: value.score,
                 cwe: value.cwe,
                 description: value.description,
                 reference_url: value.url,
@@ -245,7 +276,8 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read regex rule file {}", path.display()))?;
     validate_json_mapping(&content, path)?;
-    let parsed = parse_json_with_rule_escape_repair::<RegexBundle>(&content, path, "regex rule file")?;
+    let parsed =
+        parse_json_with_rule_escape_repair::<RegexBundle>(&content, path, "regex rule file")?;
 
     parsed
         .rules
@@ -259,17 +291,27 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
         })
         .map(|(idx, rule)| {
             let line = idx + 1;
-            let id = if rule.id.is_empty() { format!("{:05}", line) } else { rule.id.clone() };
+            let id = if rule.id.is_empty() {
+                format!("{:05}", line)
+            } else {
+                rule.id.clone()
+            };
             let compiled = RegexBuilder::new(&rule.rule_match)
                 .size_limit(10_000_000)
                 .dfa_size_limit(2_000_000)
                 .build()
-                .with_context(|| format!("invalid regex at {}:{} => {}", source, line, rule.rule_match))?;
+                .with_context(|| {
+                    format!(
+                        "invalid regex at {}:{} => {}",
+                        source, line, rule.rule_match
+                    )
+                })?;
             Ok(CompiledDetectionRule {
                 meta: DetectionRule {
                     id,
                     title: rule.title,
                     severity: rule.severity,
+                    score: rule.score,
                     cwe: rule.cwe,
                     description: rule.description,
                     reference_url: rule.url,
@@ -291,6 +333,7 @@ fn load_vectorscan_rules_json(path: &Path, source: &str) -> Result<Vec<Detection
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read vectorscan rule file {}", path.display()))?;
     validate_json_mapping(&content, path)?;
-    let parsed = parse_json_with_rule_escape_repair::<RegexBundle>(&content, path, "vectorscan rule file")?;
+    let parsed =
+        parse_json_with_rule_escape_repair::<RegexBundle>(&content, path, "vectorscan rule file")?;
     Ok(json_rules_to_detection_rules(parsed.rules, source))
 }

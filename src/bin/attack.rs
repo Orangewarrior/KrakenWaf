@@ -268,6 +268,31 @@ const SCANNER_UAS: &[(&str, &str)] = &[
     ("Acunetix Web Vulnerability Scanner", "Acunetix"),
 ];
 
+const SCORE_GET_CASES: &[(&str, bool)] = &[
+    ("kwaf-score-get-a", false),
+    ("kwaf-score-get-a kwaf-score-get-b kwaf-score-get-c", true),
+    ("kwaf-score-get-high", true),
+];
+
+const SCORE_POST_CASES: &[(&str, bool)] = &[
+    ("kwaf-score-post-a", false),
+    (
+        "kwaf-score-post-a kwaf-score-post-b kwaf-score-post-c kwaf-score-post-d",
+        true,
+    ),
+    ("kwaf-score-post-near", false),
+    ("kwaf-score-post-near kwaf-score-post-a", true),
+    ("kwaf-score-post-high", true),
+];
+
+const SCORE_RESPONSE_CASES: &[(&str, bool)] = &[
+    ("kwaf-score-response-a", false),
+    (
+        "kwaf-score-response-a kwaf-score-response-b kwaf-score-response-c",
+        true,
+    ),
+];
+
 // ─── Result tracking ──────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -279,6 +304,12 @@ enum Outcome {
 
 struct SweepResult {
     label: String,
+    outcome: Outcome,
+}
+
+struct ScoreSweepResult {
+    label: String,
+    expected_block: bool,
     outcome: Outcome,
 }
 
@@ -366,6 +397,34 @@ fn tally(results: &[SweepResult], verbose: bool) -> (usize, usize, usize) {
         print_result(r, verbose);
     }
     (b, p, e)
+}
+
+fn tally_score(results: &[ScoreSweepResult]) -> usize {
+    let mut failures = 0;
+    for r in results {
+        let actual_block = matches!(r.outcome, Outcome::Blocked);
+        let ok = actual_block == r.expected_block;
+        if !ok {
+            failures += 1;
+        }
+        let expected = if r.expected_block { "block" } else { "allow" };
+        match &r.outcome {
+            Outcome::Blocked => println!(
+                "  [{}] {} expected={expected} actual=block",
+                if ok { "OK" } else { "FAIL" },
+                r.label
+            ),
+            Outcome::Bypassed(code) => println!(
+                "  [{}] {} expected={expected} actual=allow({code})",
+                if ok { "OK" } else { "FAIL" },
+                r.label
+            ),
+            Outcome::Error(msg) => {
+                println!("  [FAIL] {} expected={expected} error={msg}", r.label);
+            }
+        }
+    }
+    failures
 }
 
 // ─── Concurrent sweep helpers ─────────────────────────────────────────────────
@@ -456,6 +515,52 @@ async fn sweep_get(
     collect_ordered(&mut set, payloads.len()).await
 }
 
+async fn sweep_score_get(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    cases: &[(&str, bool)],
+    concurrency: usize,
+) -> Vec<ScoreSweepResult> {
+    let payloads = cases
+        .iter()
+        .map(|(payload, _)| *payload)
+        .collect::<Vec<_>>();
+    let results = sweep_get(client, base, path, &payloads, concurrency).await;
+    results
+        .into_iter()
+        .zip(cases.iter())
+        .map(|(result, (_, expected_block))| ScoreSweepResult {
+            label: result.label,
+            expected_block: *expected_block,
+            outcome: result.outcome,
+        })
+        .collect()
+}
+
+async fn sweep_score_post(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    cases: &[(&str, bool)],
+    concurrency: usize,
+) -> Vec<ScoreSweepResult> {
+    let payloads = cases
+        .iter()
+        .map(|(payload, _)| *payload)
+        .collect::<Vec<_>>();
+    let results = sweep_post(client, base, path, &payloads, concurrency).await;
+    results
+        .into_iter()
+        .zip(cases.iter())
+        .map(|(result, (_, expected_block))| ScoreSweepResult {
+            label: result.label,
+            expected_block: *expected_block,
+            outcome: result.outcome,
+        })
+        .collect()
+}
+
 async fn sweep_ua(
     client: &reqwest::Client,
     base: &str,
@@ -527,6 +632,7 @@ async fn main() {
     let mut total_blocked = 0usize;
     let mut total_bypassed = 0usize;
     let mut total_errors = 0usize;
+    let mut score_failures = 0usize;
 
     macro_rules! run_sweep {
         ($label:expr, $fut:expr) => {{
@@ -787,6 +893,70 @@ async fn main() {
         sweep_ua(&client, &cfg.target, "/test_get", cfg.concurrency)
     );
 
+    println!(
+        "━━━ Score engine — GET /test_get ({} cases) ━━━",
+        SCORE_GET_CASES.len()
+    );
+    let score_get = sweep_score_get(
+        &client,
+        &cfg.target,
+        "/test_get",
+        SCORE_GET_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_get);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
+    println!(
+        "━━━ Score engine — POST /test_post ({} cases) ━━━",
+        SCORE_POST_CASES.len()
+    );
+    let score_post = sweep_score_post(
+        &client,
+        &cfg.target,
+        "/test_post",
+        SCORE_POST_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_post);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
+    println!(
+        "━━━ Score engine — response GET /test_get ({} cases) ━━━",
+        SCORE_RESPONSE_CASES.len()
+    );
+    let score_response_get = sweep_score_get(
+        &client,
+        &cfg.target,
+        "/test_get",
+        SCORE_RESPONSE_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_response_get);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
+    println!(
+        "━━━ Score engine — response POST /test_post ({} cases) ━━━",
+        SCORE_RESPONSE_CASES.len()
+    );
+    let score_response_post = sweep_score_post(
+        &client,
+        &cfg.target,
+        "/test_post",
+        SCORE_RESPONSE_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_response_post);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
     let grand_total = total_blocked + total_bypassed + total_errors;
     println!("╔══════════════════════════════════════════════════════════╗");
     println!("║  SUMMARY                                                ║");
@@ -796,6 +966,7 @@ async fn main() {
     println!("║  Blocked        : {total_blocked:<38}║");
     println!("║  Bypassed       : {total_bypassed:<38}║");
     println!("║  Errors         : {total_errors:<38}║");
+    println!("║  Score failures : {score_failures:<38}║");
     if total_bypassed == 0 && total_errors == 0 {
         println!("║  Status         : ALL PAYLOADS BLOCKED ✓               ║");
     } else if total_bypassed > 0 {
@@ -807,7 +978,7 @@ async fn main() {
     println!("╚══════════════════════════════════════════════════════════╝");
     println!();
 
-    if total_bypassed > 0 {
+    if total_bypassed > 0 || score_failures > 0 {
         std::process::exit(1);
     }
 }

@@ -1,4 +1,4 @@
-# KrakenWaf v2.12.4
+# KrakenWaf v2.12.5
 
 ## 🚀 Overview
 
@@ -263,7 +263,11 @@ KrakenWaf loads three rule families:
 - `rules/rules.json`: keyword rules for URI, headers, and body
 - `rules/regex/*.json`: Rust regex rules
 - `rules/Vectorscan/strings2block.json`: **literal** Vectorscan rules
-- 
+
+Regex and Vectorscan JSON rules support a numeric `score`. A direct match with
+`score >= 600` blocks immediately. Matches below `600` are accumulated inside
+the current rule list; the request or response is blocked when the accumulated
+score reaches `600`.
 
 This is useful for validating:
 - XSS detection

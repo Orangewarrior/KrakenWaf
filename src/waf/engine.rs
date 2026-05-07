@@ -1,7 +1,7 @@
-
 /// Maximum number of URL-decode passes to perform when canonicalizing a payload.
 /// Bounded to defeat double/triple-encoding evasions while keeping the cost O(n·k).
 const MAX_URL_DECODE_PASSES: usize = 4;
+const SCORE_BLOCK_THRESHOLD: u32 = 600;
 
 fn url_decode_once(input: &[u8]) -> (Vec<u8>, bool) {
     let mut out = Vec::with_capacity(input.len());
@@ -50,6 +50,8 @@ fn url_decode(input: &[u8]) -> Vec<u8> {
     current
 }
 
+use crate::ffi::libinjection;
+use crate::proxy::format_request_prefix_bytes;
 use crate::{
     dfa::DfaManager,
     metrics::WafMetrics,
@@ -60,13 +62,11 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use anyhow::Result;
 use chrono::Utc;
 use ipnet::IpNet;
-use crate::ffi::libinjection;
 use parking_lot::RwLock;
 use std::{borrow::Cow, net::IpAddr, path::Path, sync::Arc, time::Duration};
 use tracing::warn;
 #[cfg(feature = "vectorscan-engine")]
 use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
-use crate::proxy::format_request_prefix_bytes;
 
 /// Streaming and full-payload inspection context generated per request.
 #[derive(Debug, Clone)]
@@ -184,7 +184,11 @@ impl WafEngine {
         metrics: Arc<WafMetrics>,
         dfa_manager: Arc<DfaManager>,
     ) -> Result<Self> {
-        let rate_limiter = Arc::new(RateLimiter::new(rate_limit_per_minute, Duration::from_secs(60), snapshot_path)?);
+        let rate_limiter = Arc::new(RateLimiter::new(
+            rate_limit_per_minute,
+            Duration::from_secs(60),
+            snapshot_path,
+        )?);
         rate_limiter.clone().spawn_persistence_task();
         let matchers = build_matchers(&rules, vectorscan_enabled)?;
         Ok(Self {
@@ -211,7 +215,10 @@ impl WafEngine {
     pub async fn reload_from_dir(&self, root: &Path) -> Result<()> {
         let new_rules = Arc::new(RuleSet::from_dir(root)?);
         let new_matchers = build_matchers(&new_rules, self.vectorscan_enabled)?;
-        *self.snapshot.write() = Arc::new(RulesSnapshot { rules: new_rules, matchers: new_matchers });
+        *self.snapshot.write() = Arc::new(RulesSnapshot {
+            rules: new_rules,
+            matchers: new_matchers,
+        });
         Ok(())
     }
 
@@ -241,7 +248,12 @@ impl WafEngine {
 
         if self.blocklist_ip_enabled {
             if let Some(client) = canonical_ip(&ctx.client_ip) {
-                if rules.blocked_ips.iter().filter_map(|ip| canonical_ip(ip)).any(|blocked| blocked == client) {
+                if rules
+                    .blocked_ips
+                    .iter()
+                    .filter_map(|ip| canonical_ip(ip))
+                    .any(|blocked| blocked == client)
+                {
                     return Decision::Block(Box::new(self.simple_finding(
                         "Blocked source IP",
                         Severity::High,
@@ -254,7 +266,11 @@ impl WafEngine {
                     )));
                 }
 
-                if matchers.blocked_ip_nets.iter().any(|net| net.contains(&client)) {
+                if matchers
+                    .blocked_ip_nets
+                    .iter()
+                    .any(|net| net.contains(&client))
+                {
                     return Decision::Block(Box::new(self.simple_finding(
                         "Blocked IP range",
                         Severity::High,
@@ -275,7 +291,7 @@ impl WafEngine {
                 #[cfg(feature = "vectorscan-engine")]
                 {
                     if let Some(matcher) = &matchers.scanner_vectorscan {
-                        if let Some(finding) = vectorscan_match(matcher, &ua, &ua) {
+                        if let Some(finding) = vectorscan_match_scored(matcher, &ua, &ua) {
                             return Decision::Block(Box::new(finding));
                         }
                     }
@@ -283,13 +299,15 @@ impl WafEngine {
             }
             #[cfg(not(feature = "vectorscan-engine"))]
             {
-                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua) {
+                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
+                {
                     return Decision::Block(Box::new(finding));
                 }
             }
             #[cfg(feature = "vectorscan-engine")]
             if matchers.scanner_vectorscan.is_none() || !self.vectorscan_enabled {
-                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua) {
+                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
+                {
                     return Decision::Block(Box::new(finding));
                 }
             }
@@ -309,7 +327,11 @@ impl WafEngine {
     }
 
     /// Inspect a request payload. Only rules with `http_action: Request` fire here.
-    pub fn inspect_complete_payload_with_context(&self, payload: &[u8], _method_hint: Option<&str>) -> Decision {
+    pub fn inspect_complete_payload_with_context(
+        &self,
+        payload: &[u8],
+        _method_hint: Option<&str>,
+    ) -> Decision {
         let snap = self.snapshot.read().clone();
         let rules = &snap.rules;
         let matchers = &snap.matchers;
@@ -349,7 +371,11 @@ impl WafEngine {
             #[cfg(feature = "vectorscan-engine")]
             {
                 if let Some(matcher) = &matchers.req_vectorscan {
-                    if let Some(finding) = vectorscan_match(matcher, normalized_text.as_ref(), original_text.as_ref()) {
+                    if let Some(finding) = vectorscan_match_scored(
+                        matcher,
+                        normalized_text.as_ref(),
+                        original_text.as_ref(),
+                    ) {
                         return Decision::Block(Box::new(finding));
                     }
                 }
@@ -357,23 +383,44 @@ impl WafEngine {
         }
 
         for view in inspection_views(normalized_text.as_ref()) {
-            if let Some(finding) = keyword_match(matchers.req_uri.as_ref(), view, original_text.as_ref()) {
+            if let Some(finding) =
+                keyword_match(matchers.req_uri.as_ref(), view, original_text.as_ref())
+            {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = keyword_match(matchers.req_headers.as_ref(), view, original_text.as_ref()) {
+            if let Some(finding) =
+                keyword_match(matchers.req_headers.as_ref(), view, original_text.as_ref())
+            {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = keyword_match(matchers.req_body.as_ref(), view, original_text.as_ref()) {
+            if let Some(finding) =
+                keyword_match(matchers.req_body.as_ref(), view, original_text.as_ref())
+            {
                 return Decision::Block(Box::new(finding));
             }
 
-            if let Some(finding) = regex_match_phase(&rules.path_regex, view, original_text.as_ref(), &HttpAction::Request) {
+            if let Some(finding) = regex_match_phase_scored(
+                &rules.path_regex,
+                view,
+                original_text.as_ref(),
+                &HttpAction::Request,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = regex_match_phase(&rules.header_regex, view, original_text.as_ref(), &HttpAction::Request) {
+            if let Some(finding) = regex_match_phase_scored(
+                &rules.header_regex,
+                view,
+                original_text.as_ref(),
+                &HttpAction::Request,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = regex_match_phase(&rules.body_regex, view, original_text.as_ref(), &HttpAction::Request) {
+            if let Some(finding) = regex_match_phase_scored(
+                &rules.body_regex,
+                view,
+                original_text.as_ref(),
+                &HttpAction::Request,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
         }
@@ -401,11 +448,19 @@ impl WafEngine {
             #[cfg(feature = "vectorscan-engine")]
             {
                 if let Some(matcher) = &matchers.resp_vectorscan {
-                    if let Some(finding) = vectorscan_match(matcher, header_normalized_text.as_ref(), header_original.as_ref()) {
+                    if let Some(finding) = vectorscan_match_scored(
+                        matcher,
+                        header_normalized_text.as_ref(),
+                        header_original.as_ref(),
+                    ) {
                         return Decision::Block(Box::new(finding));
                     }
                     if !body_normalized_text.is_empty() {
-                        if let Some(finding) = vectorscan_match(matcher, body_normalized_text.as_ref(), body_original.as_ref()) {
+                        if let Some(finding) = vectorscan_match_scored(
+                            matcher,
+                            body_normalized_text.as_ref(),
+                            body_original.as_ref(),
+                        ) {
                             return Decision::Block(Box::new(finding));
                         }
                     }
@@ -414,19 +469,35 @@ impl WafEngine {
         }
 
         for view in inspection_views(header_normalized_text.as_ref()) {
-            if let Some(finding) = keyword_match(matchers.resp_headers.as_ref(), view, header_original.as_ref()) {
+            if let Some(finding) = keyword_match(
+                matchers.resp_headers.as_ref(),
+                view,
+                header_original.as_ref(),
+            ) {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = regex_match_phase(&rules.header_regex, view, header_original.as_ref(), &HttpAction::Response) {
+            if let Some(finding) = regex_match_phase_scored(
+                &rules.header_regex,
+                view,
+                header_original.as_ref(),
+                &HttpAction::Response,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
         }
 
         for view in inspection_views(body_normalized_text.as_ref()) {
-            if let Some(finding) = keyword_match(matchers.resp_body.as_ref(), view, body_original.as_ref()) {
+            if let Some(finding) =
+                keyword_match(matchers.resp_body.as_ref(), view, body_original.as_ref())
+            {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = regex_match_phase(&rules.body_regex, view, body_original.as_ref(), &HttpAction::Response) {
+            if let Some(finding) = regex_match_phase_scored(
+                &rules.body_regex,
+                view,
+                body_original.as_ref(),
+                &HttpAction::Response,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
         }
@@ -468,15 +539,43 @@ fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Result<EngineMat
     let req_filter = |r: &&DetectionRule| r.http_action == HttpAction::Request;
     let resp_filter = |r: &&DetectionRule| r.http_action == HttpAction::Response;
 
-    let req_uri_rules: Vec<DetectionRule> = rules.uri_keywords.iter().filter(req_filter).cloned().collect();
-    let req_hdr_rules: Vec<DetectionRule> = rules.header_keywords.iter().filter(req_filter).cloned().collect();
-    let req_body_rules: Vec<DetectionRule> = rules.body_keywords.iter().filter(req_filter).cloned().collect();
-    let resp_hdr_rules: Vec<DetectionRule> = rules.header_keywords.iter().filter(resp_filter).cloned().collect();
-    let resp_body_rules: Vec<DetectionRule> = rules.body_keywords.iter().filter(resp_filter).cloned().collect();
+    let req_uri_rules: Vec<DetectionRule> = rules
+        .uri_keywords
+        .iter()
+        .filter(req_filter)
+        .cloned()
+        .collect();
+    let req_hdr_rules: Vec<DetectionRule> = rules
+        .header_keywords
+        .iter()
+        .filter(req_filter)
+        .cloned()
+        .collect();
+    let req_body_rules: Vec<DetectionRule> = rules
+        .body_keywords
+        .iter()
+        .filter(req_filter)
+        .cloned()
+        .collect();
+    let resp_hdr_rules: Vec<DetectionRule> = rules
+        .header_keywords
+        .iter()
+        .filter(resp_filter)
+        .cloned()
+        .collect();
+    let resp_body_rules: Vec<DetectionRule> = rules
+        .body_keywords
+        .iter()
+        .filter(resp_filter)
+        .cloned()
+        .collect();
 
     // Build scanner-agent rules as synthetic DetectionRule entries.
-    let scanner_rules: Vec<DetectionRule> = rules.scanner_agents.iter().enumerate().map(|(idx, pattern)| {
-        DetectionRule {
+    let scanner_rules: Vec<DetectionRule> = rules
+        .scanner_agents
+        .iter()
+        .enumerate()
+        .map(|(idx, pattern)| DetectionRule {
             id: format!("{:05}", idx + 1),
             title: "Scanner/crawler user-agent detected".to_string(),
             severity: Severity::High,
@@ -487,13 +586,24 @@ fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Result<EngineMat
             source: "user_agents/scanners.txt".to_string(),
             line: idx + 1,
             http_action: HttpAction::Request,
-        }
-    }).collect();
+            score: SCORE_BLOCK_THRESHOLD,
+        })
+        .collect();
 
     #[cfg(feature = "vectorscan-engine")]
     let (req_vs_rules, resp_vs_rules): (Vec<_>, Vec<_>) = {
-        let req: Vec<DetectionRule> = rules.vectorscan_keywords.iter().filter(req_filter).cloned().collect();
-        let resp: Vec<DetectionRule> = rules.vectorscan_keywords.iter().filter(resp_filter).cloned().collect();
+        let req: Vec<DetectionRule> = rules
+            .vectorscan_keywords
+            .iter()
+            .filter(req_filter)
+            .cloned()
+            .collect();
+        let resp: Vec<DetectionRule> = rules
+            .vectorscan_keywords
+            .iter()
+            .filter(resp_filter)
+            .cloned()
+            .collect();
         (req, resp)
     };
 
@@ -504,7 +614,11 @@ fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Result<EngineMat
         req_scanner_agents: build_keyword_matcher(&scanner_rules)?,
         resp_headers: build_keyword_matcher(&resp_hdr_rules)?,
         resp_body: build_keyword_matcher(&resp_body_rules)?,
-        blocked_ip_nets: rules.blocked_ip_prefixes.iter().filter_map(|entry| parse_ip_net(entry)).collect(),
+        blocked_ip_nets: rules
+            .blocked_ip_prefixes
+            .iter()
+            .filter_map(|entry| parse_ip_net(entry))
+            .collect(),
         #[cfg(feature = "vectorscan-engine")]
         req_vectorscan: if vectorscan_enabled && !req_vs_rules.is_empty() {
             Some(build_vectorscan_matcher(&req_vs_rules)?)
@@ -530,25 +644,64 @@ fn build_keyword_matcher(rules: &[DetectionRule]) -> Result<Option<KeywordMatche
     if rules.is_empty() {
         return Ok(None);
     }
-    let patterns = rules.iter().map(|rule| rule.rule_match.as_str()).collect::<Vec<_>>();
+    let patterns = rules
+        .iter()
+        .map(|rule| rule.rule_match.as_str())
+        .collect::<Vec<_>>();
     let ac = AhoCorasickBuilder::new()
         .ascii_case_insensitive(true)
         .match_kind(MatchKind::LeftmostFirst)
         .build(patterns)?;
-    Ok(Some(KeywordMatcher { ac, rules: rules.to_vec() }))
+    Ok(Some(KeywordMatcher {
+        ac,
+        rules: rules.to_vec(),
+    }))
 }
 
-fn keyword_match(matcher: Option<&KeywordMatcher>, haystack: &str, original_payload: &str) -> Option<Finding> {
+fn keyword_match(
+    matcher: Option<&KeywordMatcher>,
+    haystack: &str,
+    original_payload: &str,
+) -> Option<Finding> {
     let matcher = matcher?;
     let mat = matcher.ac.find(haystack)?;
-    matcher.rules.get(mat.pattern().as_usize()).map(|rule| rule_to_finding(rule, original_payload))
+    matcher
+        .rules
+        .get(mat.pattern().as_usize())
+        .map(|rule| rule_to_finding(rule, original_payload))
 }
 
-/// Regex match filtered by http_action phase — avoids building separate Vecs at load time.
-fn regex_match_phase(rules: &[CompiledDetectionRule], haystack: &str, original_payload: &str, phase: &HttpAction) -> Option<Finding> {
-    rules.iter()
+fn score_allows_block(rule: &DetectionRule, sum_score: &mut u32) -> bool {
+    if rule.score >= SCORE_BLOCK_THRESHOLD {
+        *sum_score = 0;
+        return true;
+    }
+
+    *sum_score = sum_score.saturating_add(rule.score);
+    if *sum_score >= SCORE_BLOCK_THRESHOLD {
+        *sum_score = 0;
+        return true;
+    }
+    false
+}
+
+/// Regex match filtered by http_action phase. Each call is one rule-list scan,
+/// so the score accumulator starts at zero for that list.
+fn regex_match_phase_scored(
+    rules: &[CompiledDetectionRule],
+    haystack: &str,
+    original_payload: &str,
+    phase: &HttpAction,
+) -> Option<Finding> {
+    let mut sum_score = 0u32;
+    rules
+        .iter()
         .filter(|r| &r.meta.http_action == phase)
-        .find_map(|rule| rule.compiled.is_match(haystack).then(|| rule_to_finding(&rule.meta, original_payload)))
+        .filter(|rule| rule.compiled.is_match(haystack))
+        .find_map(|rule| {
+            score_allows_block(&rule.meta, &mut sum_score)
+                .then(|| rule_to_finding(&rule.meta, original_payload))
+        })
 }
 
 fn rule_to_finding(rule: &DetectionRule, haystack: &str) -> Finding {
@@ -605,13 +758,20 @@ fn canonical_ip(input: &str) -> Option<IpAddr> {
     let trimmed = input.trim();
     if let Ok(ip) = trimmed.parse::<IpAddr>() {
         return Some(match ip {
-            IpAddr::V6(v6) => v6.to_ipv4_mapped().map(IpAddr::V4).unwrap_or(IpAddr::V6(v6)),
+            IpAddr::V6(v6) => v6
+                .to_ipv4_mapped()
+                .map(IpAddr::V4)
+                .unwrap_or(IpAddr::V6(v6)),
             other @ IpAddr::V4(_) => other,
         });
     }
     let parts = trimmed.split('.').collect::<Vec<_>>();
     if parts.len() == 4 {
-        let octets = parts.into_iter().map(|part| part.parse::<u8>()).collect::<Result<Vec<_>, _>>().ok()?;
+        let octets = parts
+            .into_iter()
+            .map(|part| part.parse::<u8>())
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
         return Some(IpAddr::from([octets[0], octets[1], octets[2], octets[3]]));
     }
     None
@@ -720,11 +880,15 @@ fn build_vectorscan_matcher(rules: &[DetectionRule]) -> Result<VectorscanMatcher
             }
             return Err(anyhow::anyhow!(
                 "failed to compile Vectorscan database from {} rules. Underlying error: {}",
-                rules.len(), err
+                rules.len(),
+                err
             ));
         }
     };
-    Ok(VectorscanMatcher { db, keywords: rules.to_vec() })
+    Ok(VectorscanMatcher {
+        db,
+        keywords: rules.to_vec(),
+    })
 }
 
 #[cfg(feature = "vectorscan-engine")]
@@ -733,13 +897,19 @@ fn build_vectorscan_pattern(rule: &DetectionRule, idx: usize) -> Result<Pattern>
     if literal.is_empty() {
         anyhow::bail!(
             "invalid Vectorscan rule #{} at {}:{} (title: {}). Rule content is empty.",
-            idx + 1, rule.source, rule.line, rule.title,
+            idx + 1,
+            rule.source,
+            rule.line,
+            rule.title,
         );
     }
     if literal.as_bytes().contains(&0) {
         anyhow::bail!(
             "invalid Vectorscan rule #{} at {}:{} (title: {}). Rule content contains a NUL byte.",
-            idx + 1, rule.source, rule.line, rule.title,
+            idx + 1,
+            rule.source,
+            rule.line,
+            rule.title,
         );
     }
     Ok(Pattern::new(
@@ -767,14 +937,26 @@ fn find_vectorscan_rule_error(rules: &[DetectionRule]) -> Option<anyhow::Error> 
 }
 
 #[cfg(feature = "vectorscan-engine")]
-fn vectorscan_match(matcher: &VectorscanMatcher, normalized_haystack: &str, original_payload: &str) -> Option<Finding> {
+fn vectorscan_match_scored(
+    matcher: &VectorscanMatcher,
+    normalized_haystack: &str,
+    original_payload: &str,
+) -> Option<Finding> {
     let mut scanner = matcher.db.create_scanner().ok()?;
-    let mut matched_index: Option<usize> = None;
+    let mut matched_indexes: Vec<usize> = Vec::new();
     let _ = scanner.scan(normalized_haystack.as_bytes(), |id, _from, _to, _flags| {
-        matched_index = Some(id as usize);
-        Scan::Terminate
+        matched_indexes.push(id as usize);
+        Scan::Continue
     });
-    matched_index
-        .and_then(|idx| matcher.keywords.get(idx))
-        .map(|rule| rule_to_finding(rule, original_payload))
+    matched_indexes.sort_unstable();
+    matched_indexes.dedup();
+
+    let mut sum_score = 0u32;
+    matched_indexes
+        .into_iter()
+        .filter_map(|idx| matcher.keywords.get(idx))
+        .find_map(|rule| {
+            score_allows_block(rule, &mut sum_score)
+                .then(|| rule_to_finding(rule, original_payload))
+        })
 }

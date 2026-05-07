@@ -9,7 +9,8 @@
       "description": "Detects classic ../ traversal in request targets.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:\\.\\./|\\.\\.\\\\)",
-      "id": "00001"
+      "id": "00001",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -20,7 +21,8 @@
       "description": "Detects percent-encoded traversal in request targets.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:%2e%2e(?:%2f|/|%5c|\\\\)|%252e%252e%252f|%c0%ae%c0%ae/)",
-      "id": "00002"
+      "id": "00002",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -31,7 +33,8 @@
       "description": "Detects direct access to sensitive Unix files.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:/etc/passwd|/etc/shadow|/proc/self/environ|/root/\\.ssh/)",
-      "id": "00003"
+      "id": "00003",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -42,7 +45,8 @@
       "description": "Detects direct access to sensitive Windows files.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:boot\\.ini|win\\.ini|windows/system32/drivers/etc/hosts)",
-      "id": "00004"
+      "id": "00004",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -53,7 +57,8 @@
       "description": "Detects dangerous PHP stream wrapper access in URIs.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
       "rule_match": "(?i)(?:php://(?:filter|input|fd)|phar://|zip://|data://text/html)",
-      "id": "00005"
+      "id": "00005",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -64,7 +69,8 @@
       "description": "Detects remote file include style URL parameters.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
       "rule_match": "(?i)(?:=https?://[^\\s&]+\\.(?:php|txt|inc|jsp)|=ftp://)",
-      "id": "00006"
+      "id": "00006",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -75,7 +81,8 @@
       "description": "Detects localhost SSRF targets in URIs.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:https?://(?:127\\.0\\.0\\.1|localhost|0\\.0\\.0\\.0|\\[::1\\]|169\\.254\\.169\\.254))",
-      "id": "00007"
+      "id": "00007",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -86,7 +93,8 @@
       "description": "Detects private/internal IPv4 SSRF targets.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:https?://(?:10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}|172\\.(?:1[6-9]|2\\d|3[0-1])\\.\\d{1,3}\\.\\d{1,3}|192\\.168\\.\\d{1,3}\\.\\d{1,3}))",
-      "id": "00008"
+      "id": "00008",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -97,7 +105,8 @@
       "description": "Detects common cloud metadata endpoints and aliases.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:latest/meta-data|metadata\\.google\\.internal|100\\.100\\.100\\.200|169\\.254\\.170\\.2)",
-      "id": "00009"
+      "id": "00009",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -108,7 +117,8 @@
       "description": "Detects shell separators in URI parameters.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|powershell|cmd))",
-      "id": "00010"
+      "id": "00010",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -119,7 +129,8 @@
       "description": "Detects command substitution syntax in URI.",
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:\\$\\((?:id|whoami|curl|wget)|`(?:id|whoami|curl|wget))",
-      "id": "00011"
+      "id": "00011",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -130,7 +141,8 @@
       "description": "Detects encoded CRLF or header separator injection in URI.",
       "url": "https://cwe.mitre.org/data/definitions/444.html",
       "rule_match": "(?i)(?:%0d%0a|\\r\\n|%0a%0d|%0d|%0a)(?:host:|x-forwarded-|content-length:|transfer-encoding:)",
-      "id": "00012"
+      "id": "00012",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -141,7 +153,8 @@
       "description": "Detects repeated suspicious parameters commonly used in HPP attacks.",
       "url": "https://cwe.mitre.org/data/definitions/235.html",
       "rule_match": "(?i)(?:[?&](?:url|uri|path|dest|redirect|next|return|continue)=[^&]+(?:&(?:url|uri|path|dest|redirect|next|return|continue)=))",
-      "id": "00013"
+      "id": "00013",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -152,7 +165,8 @@
       "description": "Detects protocol-relative or absolute redirect targets.",
       "url": "https://cwe.mitre.org/data/definitions/601.html",
       "rule_match": "(?i)(?:[?&](?:next|url|redirect|return|continue|dest)=//|[?&](?:next|url|redirect|return|continue|dest)=https?://)",
-      "id": "00014"
+      "id": "00014",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -163,7 +177,8 @@
       "description": "Detects Java serialized object references in URI.",
       "url": "https://cwe.mitre.org/data/definitions/502.html",
       "rule_match": "(?i)(?:rmi://|ldap://|jndi:|java\\.serialized)",
-      "id": "00015"
+      "id": "00015",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -174,7 +189,8 @@
       "description": "Detects Tomcat/JBoss management paths.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)(?:/(?:manager/html|host-manager/html|jmx-console|web-console|invoker/JMXInvokerServlet))",
-      "id": "00016"
+      "id": "00016",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -185,7 +201,8 @@
       "description": "Detects source code or backup extension access.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)(?:\\.(?:bak|old|orig|save|swp|inc|dist|sql|tar|gz|tgz|zip)(?:$|[?&]))",
-      "id": "00017"
+      "id": "00017",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -196,7 +213,8 @@
       "description": "Detects VCS metadata exposure in URI.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)(?:/\\.git/|/\\.svn/|/\\.hg/|/\\.bzr/)",
-      "id": "00018"
+      "id": "00018",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -207,7 +225,8 @@
       "description": "Detects sensitive debug or env endpoints.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)(?:/phpinfo\\.php|/\\.env|/server-status|/actuator/(?:env|heapdump|beans))",
-      "id": "00019"
+      "id": "00019",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -218,7 +237,8 @@
       "description": "Detects JNDI lookup patterns in URI.",
       "url": "https://cwe.mitre.org/data/definitions/94.html",
       "rule_match": "(?i)(?:\\$\\{jndi:(?:ldap|ldaps|rmi|dns|iiop|nis|nds|http)://)",
-      "id": "00020"
+      "id": "00020",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -229,7 +249,8 @@
       "description": "Detects overlong slash traversal encodings.",
       "url": "https://cwe.mitre.org/data/definitions/22.html",
       "rule_match": "(?i)(?:%2f%2e%2e%2f|%5c%2e%2e%5c|%255c%252e%252e%255c)",
-      "id": "00021"
+      "id": "00021",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -240,7 +261,8 @@
       "description": "Detects Windows UNC style include targets.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
       "rule_match": "(?i)(?:\\\\\\\\[a-z0-9._-]+\\\\(?:share|c\\$|admin\\$))",
-      "id": "00022"
+      "id": "00022",
+      "score": 1000
     },
     {
       "enable": 0,
@@ -251,7 +273,8 @@
       "description": "Detects file:// and gopher:// SSRF targets.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:file://|gopher://|dict://|smb://)",
-      "id": "00023"
+      "id": "00023",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -262,7 +285,8 @@
       "description": "Detects protocol handler abuse in URIs.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)(?:fcgi://|uwsgi://|scgi://)",
-      "id": "00024"
+      "id": "00024",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -273,7 +297,8 @@
       "description": "Detects null-byte poisoning attempts in URI.",
       "url": "https://cwe.mitre.org/data/definitions/158.html",
       "rule_match": "(?i)(?:%00|\\\\x00)",
-      "id": "00025"
+      "id": "00025",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -284,7 +309,8 @@
       "description": "Detects AWS IMDS path access.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:/latest/meta-data/|/latest/user-data|/latest/dynamic/instance-identity/)",
-      "id": "00026"
+      "id": "00026",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -295,7 +321,8 @@
       "description": "Detects access to Kubernetes serviceaccount secrets.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:/var/run/secrets/kubernetes\\.io/serviceaccount|kubernetes/default/token)",
-      "id": "00027"
+      "id": "00027",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -306,7 +333,8 @@
       "description": "Detects Docker daemon socket references.",
       "url": "https://cwe.mitre.org/data/definitions/918.html",
       "rule_match": "(?i)(?:/var/run/docker\\.sock|docker\\.sock)",
-      "id": "00028"
+      "id": "00028",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -317,7 +345,8 @@
       "description": "Detects php filter chains used for source disclosure.",
       "url": "https://cwe.mitre.org/data/definitions/98.html",
       "rule_match": "(?i)(?:php://filter/(?:convert\\.(?:base64|quoted-printable)-(?:encode|decode)|string\\.(?:rot13|toupper|tolower)))",
-      "id": "00029"
+      "id": "00029",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -328,7 +357,8 @@
       "description": "Detects common admin API paths.",
       "url": "https://cwe.mitre.org/data/definitions/285.html",
       "rule_match": "(?i)(?:/(?:admin|internal|private|manage|management|debug|console)(?:/|$))",
-      "id": "00030"
+      "id": "00030",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -339,7 +369,8 @@
       "description": "Detects GraphQL schema introspection attempts in URI.",
       "url": "https://cwe.mitre.org/data/definitions/200.html",
       "rule_match": "(?i)(?:__schema|__type)",
-      "id": "00031"
+      "id": "00031",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -350,7 +381,8 @@
       "description": "Detects javascript/data/vbscript callback targets.",
       "url": "https://cwe.mitre.org/data/definitions/601.html",
       "rule_match": "(?i)(?:[?&](?:url|next|redirect|return|dest)=\\s*(?:javascript:|data:|vbscript:))",
-      "id": "00032"
+      "id": "00032",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -361,7 +393,8 @@
       "description": "Detects boolean-based, UNION-based, time-based, and structural SQLi probes in URI query strings.",
       "url": "https://cwe.mitre.org/data/definitions/89.html",
       "rule_match": "(?i)(?:'\\s*(?:or|and)\\s+(?:'[^']*'|[0-9])\\s*[=<>]|'\\s*\\)\\s*or\\s*\\(\\s*'|union\\s+all\\s+select\\b|sleep\\s*\\(\\s*[0-9]+|waitfor\\s+delay\\b|benchmark\\s*\\(\\s*[0-9]+|extractvalue\\s*\\(|updatexml\\s*\\(|'\\s*(?:--|#)(?:[^a-zA-Z0-9]|$)|'\\s*/\\*|admin'\\s*--|or\\s+true\\b|[0-9]+\\s+(?:or|and)\\s+[0-9]+=\\s*[0-9]+|\"\\s*or\\s+(?:\"[^\"]*\"\\s*=|[0-9])|'\\s*having\\s+[0-9]|'\\s*order\\s+by\\s+[0-9]+\\s*--|xp_cmdshell|;\\s*(?:select|insert|update|delete|drop|exec)\\b|(?:or|and)\\s+\\(\\s*select\\b)",
-      "id": "00033"
+      "id": "00033",
+      "score": 1000
     },
     {
       "enable": 1,
@@ -372,7 +405,68 @@
       "description": "Detects XSS script tags, event handlers, and javascript URI scheme in URI query strings.",
       "url": "https://cwe.mitre.org/data/definitions/79.html",
       "rule_match": "(?i)(?:<\\s*(?:script|iframe|frame|svg|math|object|embed|style|link|base|bgsound)\\b|onerror\\s*=|onload\\s*=|javascript\\s*:|\\bon(?:click|focus|blur|submit|mouseover|mouseenter|mousemove|toggle|start|end|animationend|keyup|keydown|keypress|input|change|reset|copy|paste|drag|drop|scroll)\\s*=)",
-      "id": "00034"
+      "id": "00034",
+      "score": 1000
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine GET test 1",
+      "severity": "low",
+      "score": 200,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on GET requests.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-get-a",
+      "id": "score-path-low-001"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine GET test 2",
+      "severity": "low",
+      "score": 200,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on GET requests.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-get-b",
+      "id": "score-path-low-002"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine GET test 3",
+      "severity": "low",
+      "score": 200,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on GET requests.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-get-c",
+      "id": "score-path-low-003"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine GET test 4",
+      "severity": "low",
+      "score": 300,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on GET requests.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-get-d",
+      "id": "score-path-low-004"
+    },
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Score engine GET test 5",
+      "severity": "high",
+      "score": 600,
+      "cwe": "CWE-693",
+      "description": "Laboratory rule used by the demo attack tool to validate score accumulation on GET requests.",
+      "url": "https://owasp.org/www-project-web-security-testing-guide/",
+      "rule_match": "kwaf-score-get-high",
+      "id": "score-path-high-001"
     }
   ]
 }
