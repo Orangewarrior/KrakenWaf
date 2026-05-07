@@ -1,4 +1,4 @@
-# KrakenWaf v2.12.2
+# KrakenWaf v2.12.4
 
 ## 🚀 Overview
 
@@ -39,7 +39,6 @@ KrakenWaf supports multiple detection layers:
 - Used in tools such as Suricata for high-speed pattern matching
 
 ### 🔹 Custom DFA(deterministic finite automaton)
-- SQLinjection comments evasion detect
 - Overflow attack detect 
 - SSTI detect
 - Ssi injection detect
@@ -48,6 +47,7 @@ KrakenWaf supports multiple detection layers:
 - Request smuggling detect
 - NoSQL injection detect
 - XXE attacks detect
+- SQLinjection comments evasion detect
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
