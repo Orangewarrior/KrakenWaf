@@ -2,7 +2,7 @@ use krakenwaf::{
     dfa::{DfaConfig, DfaManagerBuilder},
     metrics::WafMetrics,
     rules::RuleSet,
-    waf::{Decision, InspectionContext, WafEngine},
+    waf::{rate_limit::PersistenceMode, Decision, InspectionContext, WafEngine},
 };
 use std::{sync::Arc, path::Path};
 
@@ -15,7 +15,8 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
         false,
         false,
         vectorscan_enabled,
-        tempfile::tempdir().unwrap().path().join("rate_limit.json"),
+        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         Arc::new(DfaManagerBuilder::new(DfaConfig::default()).build()),
     )

@@ -1,4 +1,4 @@
-# KrakenWaf v2.12.5
+# KrakenWaf v2.13.0
 
 ## 🚀 Overview
 
@@ -338,7 +338,8 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--enable-libinjection-sqli` | `false` | Enable libinjection-based SQL injection detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-libinjection-xss` | `false` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-vectorscan` | `false` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature) |
-| `--rate-limit-per-minute` | `240` | Maximum requests allowed per client IP per minute |
+| `--rate-limit-per-minute` | `240` | Maximum admissions per client IP per minute (GCRA-sharded) — see [docs/rate_limit.md](docs/rate_limit.md) |
+| `--wal-mode` | `sqlite` | Persistence backend for the rate-limiter snapshot: `sqlite` (inspectable, WAL journal) or `bincode` (atomic-rename binary, 10–50× faster) — see [docs/rate_limit.md](docs/rate_limit.md) |
 | `--upstream-timeout-secs` | `15` | Timeout in seconds for upstream requests |
 | `--connection-timeout-secs` | `30` | Timeout in seconds for client connections accepted by the WAF |
 | `--max-connections` | `2048` | Maximum simultaneous client connections |
@@ -767,7 +768,7 @@ Actions → Monthly Release Artifacts → [run] → Artifacts
 
 ## Operational notes
 
-- Rate limiting now persists snapshots for single-node restarts, but clustered/global enforcement still requires a shared backend such as Redis.
+- Rate limiting is enforced per-IP and per-process by a lock-free GCRA-sharded limiter (64 shards, ~20–30 ns admission on the hot path) with snapshots persisted to `tmp_cache/` so brief restarts do not give blocked clients a fresh budget. The on-disk format is selectable via `--wal-mode` (`sqlite` or `bincode`). For full algorithm, sharding, persistence and tuning details see [docs/rate_limit.md](docs/rate_limit.md). Clustered/global enforcement across multiple WAF instances still requires a shared backend such as Redis.
 - SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
 - Send `SIGHUP` to hot-reload rule files without restarting the process.
 - `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.

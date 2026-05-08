@@ -1,3 +1,33 @@
+## [2.13.0] - 2026-05-08
+
+### Changed
+
+#### Rate limiter rewritten as lock-free GCRA-sharded
+- `src/waf/rate_limit.rs` rewritten from a single global `Mutex<HashMap>` to a 64-shard GCRA design.
+- Per-client TAT (Theoretical Arrival Time) stored in `Arc<AtomicU64>`; admission is a CAS loop with no mutex on the hot path (~20–30 ns per request for tracked IPs).
+- 64 shards (`parking_lot::RwLock<AHashMap>`) eliminate contention; read-lock fast-path for known IPs, write-lock only for first-insertion of a new IP (with double-checked locking).
+- `tolerance_ns = window_ns` (burst = exactly `limit` requests) — fixes a textbook off-by-one where `tolerance = window − emit` admitted only `limit − 1` requests in a same-instant burst.
+- Stable FNV-1a IP hash (deterministic across restarts) so persisted `(ip_hash, tat_ns)` pairs re-hydrate into the correct shard.
+- Background sweeper task evicts drained entries every 30 s; `MAX_PER_SHARD = 4 096` (262 144 unique IPs total) with eviction-of-expired-or-LRU when full.
+
+### Added
+
+#### `--wal-mode` flag selecting the rate-limiter persistence backend
+- New CLI option `--wal-mode {sqlite|bincode}` (default `sqlite`).
+- `sqlite` uses SQLite + WAL (`PRAGMA journal_mode=WAL`, `synchronous=NORMAL`); state lives in `tmp_cache/rate_limit_state.db` and is inspectable via `sqlite3 cli`.
+- `bincode` serialises the entire `Vec<(u64, u64)>` snapshot with an 8-byte `KWAFRL01` magic, writes to `rate_limit_state.bin.tmp`, `fsync`s, and atomically renames into place. Roughly 10–50× faster snapshot/re-hydrate than SQLite for this workload.
+- New `PersistenceMode` enum exposed from `waf::rate_limit`; internal `Backend` enum (`Sqlite(Connection)` / `Bincode(PathBuf)`) replaces the bare `Connection` field on `RateLimiter`.
+- `WafEngine::new` gains a `rate_limit_persistence: PersistenceMode` parameter; integration tests updated.
+- Snapshot directory is `tmp_cache/` at the process working directory.
+- New documentation: [`docs/rate_limit.md`](docs/rate_limit.md).
+
+### Fixed
+
+- **Vectorscan: scanner-agent compilation failure.** Patterns from `rules/user_agents/scanners.txt` are plain string literals (e.g. `Mozilla/5.0 (compatible; Panoptic`), but were passed to Vectorscan as PCRE — unbalanced `(` triggered "Missing close parenthesis" at engine boot. New `build_vectorscan_literal_matcher` in `engine.rs` runs every UA pattern through `regex_escape_literal` (escapes `. ^ $ * + ? ( ) [ ] { } | \`) before compilation. The original unescaped UA strings remain on `VectorscanMatcher::keywords` so findings still report the raw substring.
+
+### Dependencies
+- Added `ahash = "0.8"`, `bincode = "1.3"`, `rusqlite = "0.32"` (with `bundled` feature) — used by the new rate-limiter implementation and persistence backends.
+
 ## [2.12.5] - 2026-05-07
 
 ### Added

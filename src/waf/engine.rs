@@ -56,7 +56,7 @@ use crate::{
     dfa::DfaManager,
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
-    waf::rate_limit::RateLimiter,
+    waf::rate_limit::{PersistenceMode, RateLimiter},
 };
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use anyhow::Result;
@@ -181,6 +181,7 @@ impl WafEngine {
         libinjection_xss_enabled: bool,
         vectorscan_enabled: bool,
         snapshot_path: std::path::PathBuf,
+        rate_limit_persistence: PersistenceMode,
         metrics: Arc<WafMetrics>,
         dfa_manager: Arc<DfaManager>,
     ) -> Result<Self> {
@@ -188,6 +189,7 @@ impl WafEngine {
             rate_limit_per_minute,
             Duration::from_secs(60),
             snapshot_path,
+            rate_limit_persistence,
         )?);
         rate_limiter.clone().spawn_persistence_task();
         let matchers = build_matchers(&rules, vectorscan_enabled)?;
@@ -633,7 +635,10 @@ fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Result<EngineMat
         },
         #[cfg(feature = "vectorscan-engine")]
         scanner_vectorscan: if vectorscan_enabled && !scanner_rules.is_empty() {
-            Some(build_vectorscan_matcher(&scanner_rules)?)
+            // Scanner agents are plain string literals, not regexes —
+            // metacharacters such as '(' must be escaped before Vectorscan
+            // compiles them as PCRE patterns.
+            Some(build_vectorscan_literal_matcher(&scanner_rules)?)
         } else {
             None
         },
@@ -889,6 +894,61 @@ fn build_vectorscan_matcher(rules: &[DetectionRule]) -> Result<VectorscanMatcher
         db,
         keywords: rules.to_vec(),
     })
+}
+
+/// Like `build_vectorscan_matcher` but treats every `rule_match` as a plain
+/// string literal (e.g. scanner-agent UA strings). Regex metacharacters are
+/// escaped before the pattern is handed to Vectorscan.
+#[cfg(feature = "vectorscan-engine")]
+fn build_vectorscan_literal_matcher(rules: &[DetectionRule]) -> Result<VectorscanMatcher> {
+    if rules.is_empty() {
+        anyhow::bail!("vectorscan enabled but no scanner-agent rules were loaded");
+    }
+    let escaped_rules: Vec<DetectionRule> = rules
+        .iter()
+        .map(|r| DetectionRule {
+            rule_match: regex_escape_literal(&r.rule_match),
+            ..r.clone()
+        })
+        .collect();
+    let patterns = escaped_rules
+        .iter()
+        .enumerate()
+        .map(|(idx, rule)| build_vectorscan_pattern(rule, idx))
+        .collect::<Result<Vec<_>>>()?;
+
+    let db = match BlockDatabase::new(patterns) {
+        Ok(db) => db,
+        Err(err) => {
+            if let Some(detailed) = find_vectorscan_rule_error(&escaped_rules) {
+                return Err(detailed);
+            }
+            return Err(anyhow::anyhow!(
+                "failed to compile Vectorscan scanner-agent database from {} rules. Underlying error: {}",
+                rules.len(),
+                err
+            ));
+        }
+    };
+    // Store original (unescaped) rules so finding reports show the raw UA substring.
+    Ok(VectorscanMatcher {
+        db,
+        keywords: rules.to_vec(),
+    })
+}
+
+/// Escapes Vectorscan/PCRE regex metacharacters in a plain-string literal.
+#[cfg(feature = "vectorscan-engine")]
+fn regex_escape_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if matches!(c, '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' |
+                       '[' | ']' | '{' | '}' | '|' | '\\') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(feature = "vectorscan-engine")]

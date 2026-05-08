@@ -20,7 +20,8 @@ use anyhow::{Context, Result};
 use app::AppState;
 use bytes::Bytes;
 use clap::Parser;
-use cli::Cli;
+use cli::{Cli, WalMode};
+use waf::rate_limit::PersistenceMode;
 use dfa::{DfaConfig, DfaManagerBuilder};
 use metrics::WafMetrics;
 use response_headers::ResponseHeaderPolicy;
@@ -61,7 +62,11 @@ async fn main() -> Result<()> {
         cli.libinjection_sqli_enabled(),
         cli.libinjection_xss_enabled(),
         cli.enable_vectorscan,
-        root_dir.join("logs").join("db").join("rate_limit_state.json"),
+        rate_limit_snapshot_path(&root_dir, cli.wal_mode),
+        match cli.wal_mode {
+            WalMode::Sqlite => PersistenceMode::Sqlite,
+            WalMode::Bincode => PersistenceMode::Bincode,
+        },
         metrics.clone(),
         dfa_manager.clone(),
     )?);
@@ -127,6 +132,14 @@ fn spawn_rule_reload(state: Arc<AppState>) {
                 }
             }
         });
+    }
+}
+
+fn rate_limit_snapshot_path(root: &std::path::Path, mode: WalMode) -> std::path::PathBuf {
+    let dir = root.join("tmp_cache");
+    match mode {
+        WalMode::Sqlite => dir.join("rate_limit_state.db"),
+        WalMode::Bincode => dir.join("rate_limit_state.bin"),
     }
 }
 

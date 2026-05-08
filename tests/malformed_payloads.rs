@@ -2,7 +2,7 @@ use krakenwaf::{
     dfa::{DfaConfig, DfaManagerBuilder},
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
-    waf::{Decision, ResponseContext, WafEngine},
+    waf::{rate_limit::PersistenceMode, Decision, ResponseContext, WafEngine},
 };
 use regex::Regex;
 use std::{collections::HashMap, sync::Arc};
@@ -48,7 +48,8 @@ fn blocks_malformed_traversal_payload() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.json"),
+        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_dfa_manager(),
     )
@@ -97,7 +98,8 @@ fn blocks_regex_based_rce_pattern() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.json"),
+        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_dfa_manager(),
     )
@@ -178,7 +180,8 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.json"),
+        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_dfa_manager(),
     )
@@ -243,7 +246,8 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.json"),
+        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_dfa_manager(),
     )

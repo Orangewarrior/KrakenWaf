@@ -9,6 +9,16 @@ pub enum WafMode {
     Silent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum WalMode {
+    /// Persist rate-limiter state in SQLite (WAL journal). Slower writes
+    /// but supports inspection via `sqlite3 cli` and partial updates.
+    Sqlite,
+    /// Persist as a flat bincode file (atomic rename). Much faster snapshots
+    /// and re-hydration; entire state is rewritten on each persist tick.
+    Bincode,
+}
+
 #[derive(Debug, Clone, Parser)]
 #[command(name = "krakenwaf")]
 #[command(author, version, about = "KrakenWaf - TLS-aware Rust WAF inspired by OctopusWAF")]
@@ -104,6 +114,12 @@ pub struct Cli {
     /// is ignored.
     #[arg(long = "no-tls", default_value_t = false)]
     pub no_tls: bool,
+
+    /// Persistence backend for the rate-limiter snapshot.
+    /// `sqlite` uses WAL journaling (queryable, slower); `bincode` uses a
+    /// flat binary file with atomic rename (much faster, opaque format).
+    #[arg(long = "wal-mode", value_enum, default_value = "sqlite")]
+    pub wal_mode: WalMode,
 }
 
 impl Cli {
