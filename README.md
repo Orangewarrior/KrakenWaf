@@ -262,7 +262,7 @@ Login admin, password is password.
 KrakenWaf loads three rule families:
 - `rules/rules.json`: keyword rules for URI, headers, and body
 - `rules/regex/*.json`: Rust regex rules
-- `rules/Vectorscan/strings2block.json`: **literal** Vectorscan rules
+- `rules/Vectorscan/strings2block.json`: Vectorscan rules — **`rule_match` is compiled as PCRE**, escape your metacharacters; see [docs/vectorscan_rules.md](docs/vectorscan_rules.md)
 
 Regex and Vectorscan JSON rules support a numeric `score`. A direct match with
 `score >= 600` blocks immediately. Matches below `600` are accumulated inside
