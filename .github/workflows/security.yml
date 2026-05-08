@@ -157,7 +157,9 @@ jobs:
             --allow-private-upstream \
             --listen 0.0.0.0:8080 \
             --upstream http://127.0.0.1:9077 \
-            --rules-dir $GITHUB_WORKSPACE/rules &
+            --rules-dir $GITHUB_WORKSPACE/rules \
+            --dfa-load $GITHUB_WORKSPACE/rules/dfa/config.yaml \
+            --rate-limit-per-minute 100000 &
 
       - name: Wait for WAF to be ready
         run: |

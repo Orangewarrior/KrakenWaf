@@ -164,7 +164,7 @@ impl OverflowDfa {
     }
 }
 
-const X86_PATTERNS: &[(&[u8], &'static str, usize)] = &[
+const X86_PATTERNS: &[(&[u8], &str, usize)] = &[
     (&[0xcd, 0x80], "linux int 0x80 syscall", 2),
     (
         &[0x31, 0xc0, 0x50, 0x68],
@@ -190,7 +190,7 @@ const X86_PATTERNS: &[(&[u8], &'static str, usize)] = &[
     ),
 ];
 
-const X64_PATTERNS: &[(&[u8], &'static str, usize)] = &[
+const X64_PATTERNS: &[(&[u8], &str, usize)] = &[
     (&[0x0f, 0x05], "linux syscall instruction", 2),
     (&[0x48, 0x31, 0xd2], "xor rdx,rdx", 1),
     (&[0x48, 0x31, 0xf6], "xor rsi,rsi", 1),
@@ -205,7 +205,7 @@ const X64_PATTERNS: &[(&[u8], &'static str, usize)] = &[
     ),
 ];
 
-const ARM_PATTERNS: &[(&[u8], &'static str, usize)] = &[
+const ARM_PATTERNS: &[(&[u8], &str, usize)] = &[
     (
         &[0x01, 0x30, 0x8f, 0xe2],
         "arm adr/add pc shellcode prologue",
