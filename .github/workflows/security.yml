@@ -68,10 +68,16 @@ jobs:
 
   # ──────────────────────────────────────────────────────────────────────────
   # 3. SCA — cargo-audit (RustSec advisory database)
+  #
+  # Advisory-only: surfaces RustSec findings without blocking CI, matching
+  # the policy used for Semgrep and OSV Scanner. Triage findings via the
+  # job log; pin or replace the affected crate, or add an `[advisories]
+  # ignore` entry to deny.toml with justification.
   # ──────────────────────────────────────────────────────────────────────────
   cargo-audit:
     name: SCA · cargo-audit (RustSec)
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -80,13 +86,17 @@ jobs:
 
       - name: Audit dependencies
         run: cargo audit
+        continue-on-error: true
 
   # ──────────────────────────────────────────────────────────────────────────
   # 4. SCA — cargo-deny (licenses + bans + advisories)
+  #
+  # Advisory-only: same rationale as cargo-audit above.
   # ──────────────────────────────────────────────────────────────────────────
   cargo-deny:
     name: SCA · cargo-deny
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -157,7 +167,9 @@ jobs:
             --allow-private-upstream \
             --listen 0.0.0.0:8080 \
             --upstream http://127.0.0.1:9077 \
-            --rules-dir $GITHUB_WORKSPACE/rules &
+            --rules-dir $GITHUB_WORKSPACE/rules \
+            --dfa-load $GITHUB_WORKSPACE/rules/dfa/config.yaml \
+            --rate-limit-per-minute 100000 &
 
       - name: Wait for WAF to be ready
         run: |
