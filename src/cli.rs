@@ -68,7 +68,10 @@ pub struct Cli {
     #[arg(long, default_value = "")]
     pub internal_header_name: String,
 
-    #[arg(long, default_value_t = 2048)]
+    /// Maximum simultaneous TCP connections the WAF accepts. Each connection
+    /// holds inspection buffers, so keep this proportional to available memory.
+    /// 512 provides solid backpressure; raise for very high-traffic deployments.
+    #[arg(long, default_value_t = 512)]
     pub max_connections: usize,
 
     /// Maximum upstream response body to buffer (bytes). Prevents an upstream returning
