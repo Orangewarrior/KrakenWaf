@@ -31,11 +31,33 @@ impl ResponseHeaderPolicy {
 
 
     pub fn apply(&self, headers: &mut HeaderMap, is_websocket_upgrade: bool) {
-        if is_websocket_upgrade || self.entries.is_empty() {
+        if is_websocket_upgrade {
+            // CSP and X-Frame-Options legitimately do not apply to WebSocket upgrade
+            // responses, but X-Content-Type-Options and Referrer-Policy are still
+            // meaningful and cheap. Apply only those two so the upgrade response is
+            // not left completely bare of hardening headers.
+            apply_minimal_ws_headers(headers);
+            return;
+        }
+        if self.entries.is_empty() {
             return;
         }
         for (name, value) in &self.entries {
             headers.insert(name.clone(), value.clone());
         }
+    }
+}
+
+fn apply_minimal_ws_headers(headers: &mut HeaderMap) {
+    static NOSNIFF: HeaderName = HeaderName::from_static("x-content-type-options");
+    static REFERRER_POLICY: HeaderName = HeaderName::from_static("referrer-policy");
+    if !headers.contains_key(&NOSNIFF) {
+        headers.insert(NOSNIFF.clone(), HeaderValue::from_static("nosniff"));
+    }
+    if !headers.contains_key(&REFERRER_POLICY) {
+        headers.insert(
+            REFERRER_POLICY.clone(),
+            HeaderValue::from_static("strict-origin-when-cross-origin"),
+        );
     }
 }

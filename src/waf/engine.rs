@@ -343,6 +343,11 @@ impl WafEngine {
         let normalized_text = String::from_utf8_lossy(normalized_bytes.as_ref());
 
         {
+            // Inspect the fully URL-decoded payload first (catches double/triple encoding
+            // such as %2525 → %25 → %). When normalisation actually changed the bytes we
+            // also re-inspect the original lowercased payload so that detectors keyed on
+            // raw `%`-escapes still see the unmodified evidence and cannot be evaded by
+            // pairing an encoded version with a benign decoded form.
             let dfa_lower = normalized_text.to_ascii_lowercase();
             if let Some(finding) = self.dfa_manager.inspect(&dfa_lower) {
                 return Decision::Block(Box::new(finding));
@@ -1019,4 +1024,33 @@ fn vectorscan_match_scored(
             score_allows_block(rule, &mut sum_score)
                 .then(|| rule_to_finding(rule, original_payload))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn url_decode_handles_double_and_triple_encoded_percent() {
+        // %2525 → %25 → %  (within MAX_URL_DECODE_PASSES=4)
+        assert_eq!(url_decode(b"%2525"), b"%");
+        // %25252F → %252F → %2F → /  (three real decode passes)
+        assert_eq!(url_decode(b"%25252F"), b"/");
+        // Single-pass remains correct.
+        assert_eq!(url_decode(b"%2F"), b"/");
+        // Plain `%` with no hex digits is preserved.
+        assert_eq!(url_decode(b"100%"), b"100%");
+    }
+
+    #[test]
+    fn inspection_views_first_view_is_full_normalized_text() {
+        // Regression test for the multi-view score-accumulation concern: the
+        // FIRST view returned must be the entire normalized text so that score
+        // accumulation across substring rules can fire on a single payload that
+        // is also splittable by `&` `;` etc.
+        let normalized = "kwaf-score-get-a&kwaf-score-get-b&kwaf-score-get-c";
+        let views = inspection_views(normalized);
+        assert_eq!(views[0], normalized);
+        assert!(views.len() > 1, "expected the normalized payload to also be split into per-segment views");
+    }
 }
