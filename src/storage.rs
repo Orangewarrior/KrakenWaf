@@ -15,7 +15,7 @@ const PURGE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
 
 #[derive(Clone)]
 pub struct SqliteStore {
-    tx: mpsc::UnboundedSender<SecurityEvent>,
+    tx: mpsc::Sender<SecurityEvent>,
 }
 
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel)]
@@ -59,8 +59,8 @@ impl SqliteStore {
         let url = format!("sqlite://{}?mode=rwc", db_path.display());
 
         let mut opts = ConnectOptions::new(url);
-        opts.max_connections(8)
-            .min_connections(1)
+        opts.max_connections(16)
+            .min_connections(2)
             .connect_timeout(Duration::from_secs(5))
             .sqlx_logging(false);
 
@@ -92,7 +92,7 @@ impl SqliteStore {
             }
         });
 
-        let (tx, mut rx) = mpsc::unbounded_channel::<SecurityEvent>();
+        let (tx, mut rx) = mpsc::channel::<SecurityEvent>(1024);
         let db_clone = db.clone();
 
         tokio::spawn(async move {
@@ -117,8 +117,14 @@ impl SqliteStore {
     }
 
     pub fn enqueue(&self, event: SecurityEvent) {
-        if let Err(err) = self.tx.send(event) {
-            error!(target: "krakenwaf", "failed to enqueue security event: {err}");
+        match self.tx.try_send(event) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                warn!(target: "krakenwaf", "security event queue full — dropping event (backpressure)");
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                error!(target: "krakenwaf", "security event queue closed — event dropped");
+            }
         }
     }
 }

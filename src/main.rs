@@ -32,6 +32,16 @@ use tracing::{error, info};
 #[tokio::main]
 async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider().install_default().expect("failed to install rustls CryptoProvider");
+
+    // Ignore SIGPIPE so that a client closing its TCP socket doesn't kill the process.
+    // Without this, writing to a broken pipe raises SIGPIPE → default handler terminates us.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigpipe = signal(SignalKind::pipe()).expect("failed to register SIGPIPE handler");
+        tokio::spawn(async move { loop { sigpipe.recv().await; } });
+    }
+
     let cli = Cli::parse();
     let root_dir = std::env::current_dir()?;
 

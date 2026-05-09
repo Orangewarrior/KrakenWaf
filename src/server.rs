@@ -79,21 +79,19 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
     tokio::pin!(shutdown);
 
     loop {
-        let permit = match semaphore.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => return Err(anyhow::anyhow!("connection semaphore closed")),
+        let permit = tokio::select! {
+            result = semaphore.clone().acquire_owned() => match result {
+                Ok(p) => p,
+                Err(_) => return Err(anyhow::anyhow!("connection semaphore closed")),
+            },
+            _ = &mut shutdown => break,
         };
 
         let (stream, peer) = tokio::select! {
-            biased;
-            _ = &mut shutdown => {
-                info!(target: "krakenwaf", "shutdown signal received; stopping accept loop and draining");
-                drop(permit);
-                wait_for_drain(&in_flight, &drain_notify).await;
-                return Ok(());
-            }
-            res = listener.accept() => res?,
+            result = listener.accept() => result?,
+            _ = &mut shutdown => break,
         };
+
         let acceptor = tls_acceptor.clone();
         let state = state.clone();
         let in_flight = in_flight.clone();
@@ -118,7 +116,7 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
                     match timeout(Duration::from_secs(timeout_secs), conn).await {
                         Ok(Ok(())) => {}
                         Ok(Err(err)) => error!(target: "krakenwaf", "connection error: {err}"),
-                        Err(err) => error!(target: "krakenwaf", "connection timed out: {err}"),
+                        Err(_) => error!(target: "krakenwaf", "connection timed out"),
                     }
                 }
                 Err(err) => error!(target: "krakenwaf", "TLS handshake failed for {}: {}", peer, err),
@@ -128,6 +126,11 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
             }
         });
     }
+
+    info!(target: "krakenwaf", "shutdown signal received; draining in-flight connections (up to 30 s)");
+    wait_for_drain(&in_flight, &drain_notify).await;
+    info!(target: "krakenwaf", "drain complete, exiting");
+    Ok(())
 }
 
 /// Start the plain-HTTP listener (--no-tls mode — for testing or load-balancer deployments).
@@ -142,21 +145,19 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
     tokio::pin!(shutdown);
 
     loop {
-        let permit = match semaphore.clone().acquire_owned().await {
-            Ok(p) => p,
-            Err(_) => return Err(anyhow::anyhow!("connection semaphore closed")),
+        let permit = tokio::select! {
+            result = semaphore.clone().acquire_owned() => match result {
+                Ok(p) => p,
+                Err(_) => return Err(anyhow::anyhow!("connection semaphore closed")),
+            },
+            _ = &mut shutdown => break,
         };
 
         let (stream, peer) = tokio::select! {
-            biased;
-            _ = &mut shutdown => {
-                info!(target: "krakenwaf", "shutdown signal received; stopping accept loop and draining");
-                drop(permit);
-                wait_for_drain(&in_flight, &drain_notify).await;
-                return Ok(());
-            }
-            res = listener.accept() => res?,
+            result = listener.accept() => result?,
+            _ = &mut shutdown => break,
         };
+
         let state = state.clone();
         let in_flight = in_flight.clone();
         let drain_notify = drain_notify.clone();
@@ -178,13 +179,19 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
             match timeout(Duration::from_secs(timeout_secs), conn).await {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => error!(target: "krakenwaf", "connection error: {err}"),
-                Err(err) => error!(target: "krakenwaf", "connection timed out: {err}"),
+                Err(_) => error!(target: "krakenwaf", "connection timed out"),
             }
             if in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
                 drain_notify.notify_waiters();
             }
         });
+        let _ = peer;
     }
+
+    info!(target: "krakenwaf", "shutdown signal received; draining in-flight connections (up to 30 s)");
+    wait_for_drain(&in_flight, &drain_notify).await;
+    info!(target: "krakenwaf", "drain complete, exiting");
+    Ok(())
 }
 
 async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String) -> Response<Full<Bytes>> {
