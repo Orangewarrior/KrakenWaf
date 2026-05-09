@@ -196,6 +196,24 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
             .inspect_body_chunk(b"payload_test=kwaf-score-low-a kwaf-score-low-b kwaf-score-low-c"),
         Decision::Block(_)
     ));
+
+    // Regression test for finding #7: when the same three substring rules are
+    // delimited by query-string separators (`&`, `;`) or newlines they must
+    // still accumulate score against the full normalized payload — an attacker
+    // splitting the payload across delimiters cannot keep each segment under
+    // the block threshold.
+    assert!(matches!(
+        engine.inspect_body_chunk(b"kwaf-score-low-a&kwaf-score-low-b&kwaf-score-low-c"),
+        Decision::Block(_),
+    ));
+    assert!(matches!(
+        engine.inspect_body_chunk(b"kwaf-score-low-a;kwaf-score-low-b;kwaf-score-low-c"),
+        Decision::Block(_),
+    ));
+    assert!(matches!(
+        engine.inspect_body_chunk(b"kwaf-score-low-a\nkwaf-score-low-b\nkwaf-score-low-c"),
+        Decision::Block(_),
+    ));
 }
 
 #[test]

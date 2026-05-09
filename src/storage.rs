@@ -286,6 +286,13 @@ async fn migrate_to_v3(db: &DatabaseConnection) -> Result<()> {
     Ok(())
 }
 
+// SAFETY (SQL): every dynamic value reaching SQLite goes through SeaORM's `ActiveModel`
+// (see `batch_insert` below) or `Statement::from_sql_and_values` with a positional `?`
+// placeholder (see `table_exists` and `purge_old_events`). No untrusted string is ever
+// concatenated into a raw SQL string. The `format!()` calls in this file (PRAGMAs,
+// ALTER TABLE, table-name introspection) operate exclusively on compile-time constants
+// or values controlled by the operator running the binary — never on request data.
+
 async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Result<()> {
     if events.is_empty() {
         return Ok(());

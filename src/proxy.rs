@@ -31,6 +31,11 @@ const MAX_FORWARDED_HEADERS: usize = 100;
 /// Hard ceiling on the cumulative bytes of forwarded headers (name + value sum).
 const MAX_FORWARDED_HEADER_BYTES: usize = 32 * 1024;
 
+/// Maximum wall-clock time we wait for a single body frame from the client. Bounds the
+/// memory + connection cost of a slowloris-style streaming body that trickles bytes to
+/// keep the inspection loop alive indefinitely.
+const BODY_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 pub struct ProxyClient {
     client: Client,
     upstream: Url,
@@ -46,6 +51,7 @@ enum BodyInspectionError {
         finding: Box<Finding>,
         partial_body: Bytes,
     },
+    Timeout,
     Other(anyhow::Error),
 }
 
@@ -56,6 +62,11 @@ impl std::fmt::Display for BodyInspectionError {
                 write!(f, "request body exceeded route limit of {} bytes", limit)
             }
             Self::Blocked { .. } => write!(f, "request blocked during streaming inspection"),
+            Self::Timeout => write!(
+                f,
+                "request body frame did not arrive within {} seconds",
+                BODY_FRAME_TIMEOUT.as_secs()
+            ),
             Self::Other(err) => write!(f, "{err}"),
         }
     }
@@ -126,6 +137,16 @@ impl ProxyClient {
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
         let uri = req.uri().clone();
         let path = crate::rules::normalize_url_path(uri.path());
+        // Reject oversize header sets BEFORE materialising any flattened representation
+        // so an attacker cannot force the WAF to allocate the full string just to learn
+        // the request will be denied.
+        if exceeds_header_limits(req.headers()) {
+            return block_content_response(
+                state,
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                "KrakenWaf rejected the request header set",
+            );
+        }
         let headers_flat = flatten_headers(req.headers());
         // A-2: per-route rule limit is further bounded by the operator-configured hard cap.
         let body_limit = state
@@ -183,6 +204,13 @@ impl ProxyClient {
                 }
                 // Silent mode or allowlisted path: forward whatever body was accumulated.
                 partial_body
+            }
+            Err(BodyInspectionError::Timeout) => {
+                return block_content_response(
+                    state,
+                    StatusCode::REQUEST_TIMEOUT,
+                    "KrakenWaf timed out waiting for the request body",
+                );
             }
             Err(BodyInspectionError::Other(err)) => {
                 warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
@@ -387,8 +415,12 @@ async fn consume_and_inspect_body(
     let mut acc = BytesMut::new();
     let mut overlap = Vec::new();
 
-    while let Some(frame) = body.frame().await {
-        let frame = frame.map_err(|err| BodyInspectionError::Other(err.into()))?;
+    loop {
+        let frame = match tokio::time::timeout(BODY_FRAME_TIMEOUT, body.frame()).await {
+            Ok(Some(frame)) => frame.map_err(|err| BodyInspectionError::Other(err.into()))?,
+            Ok(None) => break,
+            Err(_) => return Err(BodyInspectionError::Timeout),
+        };
         if let Some(chunk) = frame.data_ref() {
             if acc.len() + chunk.len() > ctx.body_limit {
                 return Err(BodyInspectionError::TooLarge {
@@ -510,11 +542,79 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
                     anyhow::bail!("private or local upstreams require --allow-private-upstream");
                 }
             }
-            Host::Domain(_) => {}
+            Host::Domain(domain) => {
+                // Eager DNS resolution at startup mitigates DNS-rebinding by giving the
+                // operator visibility into which IPs the upstream resolves to before any
+                // request is forwarded. We do NOT pin the IP at the connection layer
+                // (would require a custom resolver inside reqwest); operators that need
+                // hard pinning should configure the upstream as an explicit IP literal.
+                let port = upstream.port_or_known_default().unwrap_or(0);
+                let host_port = format!("{domain}:{port}");
+                match std::net::ToSocketAddrs::to_socket_addrs(&host_port.as_str()) {
+                    Ok(iter) => {
+                        let resolved: Vec<std::net::IpAddr> =
+                            iter.map(|sa| sa.ip()).collect();
+                        for ip in &resolved {
+                            let is_local = match ip {
+                                std::net::IpAddr::V4(v4) => {
+                                    v4.is_private()
+                                        || v4.is_loopback()
+                                        || v4.is_link_local()
+                                        || v4.is_unspecified()
+                                }
+                                std::net::IpAddr::V6(v6) => {
+                                    v6.is_loopback()
+                                        || v6.is_unspecified()
+                                        || v6.is_unique_local()
+                                }
+                            };
+                            if is_local {
+                                anyhow::bail!(
+                                    "upstream {} resolved to private/local address {}; \
+                                     refuse to start without --allow-private-upstream",
+                                    domain,
+                                    ip
+                                );
+                            }
+                        }
+                        info!(
+                            target: "krakenwaf",
+                            upstream_host = %domain,
+                            resolved = ?resolved,
+                            "resolved upstream hostname at startup (DNS-rebinding visibility)"
+                        );
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "krakenwaf",
+                            upstream_host = %domain,
+                            error = %err,
+                            "failed to resolve upstream hostname at startup; continuing — \
+                             the connection layer will retry at request time"
+                        );
+                    }
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+/// Returns true when the inbound header set exceeds the configured count or byte limits.
+/// Counted with raw `name + value` byte sums so the check does not depend on materialised
+/// strings.
+fn exceeds_header_limits(headers: &HeaderMap) -> bool {
+    let mut count = 0usize;
+    let mut bytes = 0usize;
+    for (name, value) in headers.iter() {
+        count += 1;
+        bytes += name.as_str().len() + value.as_bytes().len();
+        if count > MAX_FORWARDED_HEADERS || bytes > MAX_FORWARDED_HEADER_BYTES {
+            return true;
+        }
+    }
+    false
 }
 
 fn flatten_headers(headers: &HeaderMap) -> String {
@@ -600,12 +700,19 @@ fn block_content_response(
 }
 
 pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
+    // All header names/values are static literals so the builder cannot actually fail.
+    // Falling back to a bare Response::new keeps the request path infallible if the
+    // http crate ever tightens its validation.
     Response::builder()
         .status(status)
         .header("content-type", "text/plain; charset=utf-8")
         .header("x-content-type-options", "nosniff")
         .body(Full::new(Bytes::copy_from_slice(message.as_bytes())))
-        .unwrap()
+        .unwrap_or_else(|_| {
+            let mut resp = Response::new(Full::new(Bytes::copy_from_slice(message.as_bytes())));
+            *resp.status_mut() = status;
+            resp
+        })
 }
 
 fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Option<String> {

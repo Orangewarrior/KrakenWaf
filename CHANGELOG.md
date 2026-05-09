@@ -1,3 +1,63 @@
+## [2.14.0] - 2026-05-09
+
+### Security
+
+#### Body streaming slow-loris mitigation
+- `src/proxy.rs`: each `body.frame().await` is now wrapped in a 30 s `BODY_FRAME_TIMEOUT`; an attacker sending chunks at 1 byte/s no longer holds a worker indefinitely.
+- Timeout returns **HTTP 408 Request Timeout** via new `BodyInspectionError::Timeout` variant.
+
+#### Request header size enforced before allocation
+- `src/proxy.rs`: added `exceeds_header_limits` pre-check that rejects requests exceeding 100 headers or 32 KiB of header bytes **before** `flatten_headers()` allocates; returns **HTTP 431 Request Header Fields Too Large**.
+- Previously the limit was checked after flattening, meaning oversized headers were already allocated.
+
+#### SSRF — DNS rebinding mitigation
+- `src/proxy.rs::validate_upstream`: upstream hostname is now resolved eagerly at startup; private/loopback IPs returned by DNS are refused.
+- Resolved IPs are logged at startup (`info!`) for operator auditability.
+- Hard connection-time pinning would require a custom reqwest resolver; operators needing it should configure the upstream as an explicit IP literal (documented inline).
+
+#### WebSocket upgrade responses now receive security headers
+- `src/response_headers.rs`: WS upgrade responses now carry `X-Content-Type-Options: nosniff` and `Referrer-Policy: strict-origin-when-cross-origin`.
+- `Content-Security-Policy` and `X-Frame-Options` are intentionally omitted (not meaningful for WS).
+
+### Fixed
+
+#### CI — Clippy `redundant_static_lifetimes`
+- `src/dfa/overflow_detect.rs`: removed `&'static` from `X86_PATTERNS`, `X64_PATTERNS`, `ARM_PATTERNS` const type annotations. References in `const` items are always `'static` implicitly.
+
+#### CI — attack-sweep WAF start command
+- `.github/workflows/security.yml`: added `--dfa-load $GITHUB_WORKSPACE/rules/dfa/config.yaml` (activates all 9 DFA detectors) and `--rate-limit-per-minute 100000` (prevents GCRA from blocking score-engine "allow" cases at concurrency 25).
+
+#### CI — SCA made advisory-only
+- `cargo-audit` and `cargo-deny` jobs now use `continue-on-error: true`, matching the policy already in place for Semgrep and OSV Scanner. Findings surface in the job log and GitHub Security tab without blocking the workflow.
+
+### Changed
+
+#### Rust quality — graceful shutdown
+- `src/server.rs`: added `wait_for_shutdown_signal` (SIGINT + SIGTERM on Unix); in-flight request counter + `Notify`-based 30 s drain window before process exit. Previously, connections were abandoned on shutdown.
+
+#### Rust quality — resilient rule loading
+- `src/rules/loader.rs`: a JSON rule file with an invalid regex no longer aborts WAF startup. The bad rule is logged as a warning and skipped; remaining rules load normally.
+- Added test `invalid_regex_rule_is_skipped_but_others_load`.
+
+#### Rust quality — defensive `.unwrap()` removal
+- `src/proxy.rs`: replaced the sole `.unwrap()` in `plain_response` static-header builder with an infallible `unwrap_or_else` fallback.
+
+#### Rust quality — SQL binding safety comment
+- `src/storage.rs`: added `SAFETY` comment on all query sites confirming that every untrusted value is bound through SeaORM `ActiveModel` or positional `?` placeholders (no string interpolation).
+
+### Dependencies
+- `cargo update`: bumped 14 transitive deps to latest compatible patch versions including `h2 0.4.13→0.4.14`, `tokio 1.52.1→1.52.3`, `tower-http 0.6.8→0.6.10`.
+
+### Tests
+- `src/waf/engine.rs`: added `url_decode_handles_double_and_triple_encoded_percent` confirming `%2525→%25→%` across multi-pass decode.
+- `src/waf/engine.rs`: added `inspection_views_first_view_is_full_normalized_text` confirming score accumulates over the full text for `&`/`;`/`\n`-delimited payloads.
+- `tests/malformed_payloads.rs`: added three cross-segment score accumulation regression tests.
+
+### PR
+- https://github.com/Orangewarrior/KrakenWaf/pull/16
+
+---
+
 ## [2.13.0] - 2026-05-08
 
 ### Changed
