@@ -38,16 +38,22 @@ KrakenWaf supports multiple detection layers:
 - Extremely fast multi-pattern matching
 - Used in tools such as Suricata for high-speed pattern matching
 
-### 🔹 Custom DFA(deterministic finite automaton)
-- Overflow attack detect 
-- SSTI detect
-- Ssi injection detect
-- esi injection detect
-- CRLF injection detect
-- Request smuggling detect
-- NoSQL injection detect
-- XXE attacks detect
-- SQLinjection comments evasion detect
+### 🔹 Custom DFA (deterministic finite automaton)
+
+Single-pass, zero-allocation Rust scanners — each module is individually togglable
+via `rules/dfa/config.yaml`.  See [docs/dfa/schema.md](docs/dfa/schema.md) for the
+full module catalogue.
+
+- [SQLi comments evasion](docs/dfa/sqli_comments_detect.md) — counts `/* */` block-comment pairs used to break up SQL keywords (CWE-89)
+- [Overflow detect](docs/dfa/overflow_detect.md) — shellcode opcode clusters (x86/x64/ARM) + repeated-character flooding (CWE-94 / CWE-400)
+- [SSTI detect](docs/dfa/ssti_detect.md) — 22 template-engine families (Jinja2, Twig, Velocity, Freemarker, ERB, Thymeleaf, …) (CWE-1336)
+- [SSI injection detect](docs/dfa/ssi_injection_detect.md) — Apache `<!--#…-->` directives + JSP/JSTL/ColdFusion include tags (CWE-97)
+- [ESI injection detect](docs/dfa/esi_injection_detect.md) — `<esi:…>` tags processed by Varnish, Squid, Akamai, Fastly (CWE-94)
+- [CRLF injection detect](docs/dfa/crlf_injection_detect.md) — control chars + 26 escape forms + 6 Unicode surrogates, with smart HTTP-framing bypass resistance (CWE-93)
+- [Request smuggling detect](docs/dfa/request_smuggling_detect.md) — TE.CL / CL.0 desync indicators (CWE-444)
+- [NoSQL injection detect](docs/dfa/nosql_injection_detect.md) — two-list conjunction (operators ∩ values), Aho-Corasick / Vectorscan (CWE-943)
+- [XXE attack detect](docs/dfa/xxe_attack_detect.md) — two-list conjunction with UTF-16 LE/BE evasion bypass (CWE-611)
+- [Anti exposed backup](docs/dfa/anti_exposed_backup.md) — backup-file suffixes and editor artefacts in request paths (CWE-538)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -672,6 +678,7 @@ DFA-Rules:
   Request_Smuggling_detect: true # HTTP request smuggling
   NOSQL_injection_detect: true  # NoSQL injection marker correlation
   XXE_attack_detect: true       # XML external entity attack marker correlation
+  Anti_exposed_backup: true     # Backup-file / editor-artefact path exposure
 ```
 
 Set any key to `false` to disable that detector without recompiling.
