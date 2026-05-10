@@ -1,3 +1,38 @@
+## [2.15.0] - 2026-05-10
+
+### Added
+
+#### DFA — Anti-Exposed-Backup detector (`Anti_exposed_backup`)
+- `src/dfa/anti_exposed_backup.rs`: new DFA module that blocks `GET` and `HEAD` requests
+  whose URI path ends with a known backup/temporary/config-leak extension (`.bak`, `.bkp`,
+  `.backup`, `.old`, `.orig`, `.save`, `.sav`, `.swp`, `.swo`, `.swn`, `.swx`, `.un~`,
+  `.tmp`, `.temp`, `.wbk`, `.env`, `.sql.`, `.dump`).
+- Matching is **case-insensitive** and **suffix-only** (the extension must appear at the end
+  of the path; `/file.bak.txt` is never blocked).
+- Query-strings and fragments are stripped before matching so `?v=1` appended to a backup
+  path cannot bypass the rule.
+- `POST`/`PUT`/`PATCH`/`DELETE` are never inspected by this module.
+- When `--enable-vectorscan` is active, all 18 patterns are compiled into a Hyperscan
+  `BlockDatabase` and scanned in a single SIMD pass with end-offset filtering.
+- Activated via `Anti_exposed_backup: true` in the DFA config YAML.
+- `src/dfa/mod.rs`: `inspect_uri(method, path)` method added to `DfaManager`; called from
+  `inspect_early()` before the full request payload is assembled — zero body-read latency.
+- `src/waf/engine.rs`: `inspect_uri()` hooked into `inspect_early()`.
+- `rules/dfa/config.yaml`: `Anti_exposed_backup: true` added to the default config.
+- `src/bin/demo_server.rs`: wildcard `/*path` GET route added so the attack-sweep tool
+  can distinguish a WAF bypass (HTTP 200) from a WAF block (HTTP 403).
+- `src/bin/attack.rs`: `BACKUP_URI_PAYLOADS` list (20 paths) + `sweep_backup_uris()` function
+  added; exposed-backup sweep included in the main attack-tool run.
+- `tests/server_real_test.rs`: four new integration tests:
+  `dfa_anti_exposed_backup_get_is_blocked`, `dfa_anti_exposed_backup_post_is_allowed`,
+  `dfa_anti_exposed_backup_normal_paths_allowed`,
+  `dfa_anti_exposed_backup_suffix_in_query_string_not_blocked`.
+- `docs/dfa/anti_exposed_backup.md`: full documentation (behaviour, config, examples,
+  false-positive guidance, performance notes).
+- Detection finding: severity **High**, CWE-538, OWASP Insecure Direct Object References.
+
+---
+
 ## [2.14.0] - 2026-05-09
 
 ### Security

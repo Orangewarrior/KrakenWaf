@@ -315,6 +315,11 @@ impl WafEngine {
             }
         }
 
+        // URI-level DFA check (method + path only — runs before body assembly).
+        if let Some(finding) = self.dfa_manager.inspect_uri(&ctx.method, &ctx.path) {
+            return Decision::Block(Box::new(finding));
+        }
+
         let early_request = format_request_prefix_bytes(ctx);
         self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
     }

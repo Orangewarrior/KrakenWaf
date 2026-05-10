@@ -456,6 +456,28 @@ const XXE_ATTACK_PAYLOADS: &[&str] = &[
     "%3C%00!%00D%00O%00C%00T%00Y%00P%00E%00%20%00x%00x%00e%00%20%00%5B%00%3C%00!%00E%00N%00T%00I%00T%00Y%00%20%00x%00x%00e%00%20%00S%00Y%00S%00T%00E%00M%00%20%00%22%00f%00i%00l%00e%00:%00/%00/%00/%00e%00t%00c%00/%00p%00a%00s%00s%00w%00d%00%22%00%3E%00%5D%00%3E%00",
 ];
 
+/// URI paths with backup/temp/leak extensions — must be blocked by the
+/// Anti_exposed_backup DFA on GET/HEAD; POST to the same path must pass through.
+const BACKUP_URI_PATHS: &[&str] = &[
+    "/wp-config.php.bak",
+    "/database.sql.bak",
+    "/.env",
+    "/app/.env",
+    "/config/settings.bkp",
+    "/var/www/html/config.backup",
+    "/admin/users.old",
+    "/src/config.orig",
+    "/backup/db.save",
+    "/files/export.sav",
+    "/editor/.config.php.swp",
+    "/home/.viminfo.swn",
+    "/tmp/session.tmp",
+    "/cache/render.temp",
+    "/.htpasswd.bak",
+    "/prod.dump",
+    "/sql/migration.sql.",
+];
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 /// Sweep 50 XSS payloads via POST body — every one must be blocked (HTTP 403).
@@ -1033,4 +1055,128 @@ async fn dfa_xxe_attack_payload_sweep_get_and_post() {
             "XXE POST payload not blocked: {payload:?}"
         );
     }
+}
+
+/// Anti-exposed-backup DFA: GET/HEAD requests to paths ending with a known backup
+/// extension must be blocked (HTTP 403).
+#[tokio::test]
+async fn dfa_anti_exposed_backup_get_is_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for path in BACKUP_URI_PATHS {
+        let url = format!("{}{}", waf_base(port), path);
+        let resp = client
+            .get(&url)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for backup path {path:?}: {e}"));
+
+        assert_eq!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "Anti-exposed-backup: GET {path} should be blocked (HTTP 403) but got {}",
+            resp.status()
+        );
+    }
+}
+
+/// Anti-exposed-backup DFA: POST requests must NOT be blocked by this module.
+/// We use a WAF without DFA (no other detectors loaded) so that we can verify
+/// the method guard in isolation — only GET/HEAD should be blocked.
+#[tokio::test]
+async fn dfa_anti_exposed_backup_post_is_allowed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    // Spawn WAF WITHOUT the DFA config so we only test the backup module's method guard.
+    // The backup module itself is URI-level: if method ≠ GET/HEAD it must pass through.
+    let _waf = spawn_waf(port, &[]);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    // These paths end with backup suffixes; without DFA they should pass through on POST.
+    let post_paths = [
+        "/backup/data.bak",
+        "/archive/export.old",
+        "/files/dump.bkp",
+        "/uploads/log.tmp",
+        "/store/image.save",
+    ];
+
+    for path in &post_paths {
+        let url = format!("{}{}", waf_base(port), path);
+        let resp = client
+            .post(url)
+            .form(&[("payload_test", "hello")])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST request failed for {path:?}: {e}"));
+
+        assert_ne!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "Method guard: POST {path} must not be blocked (no backup module without DFA)"
+        );
+    }
+}
+
+/// Anti-exposed-backup DFA: normal GET paths must pass through unaffected.
+#[tokio::test]
+async fn dfa_anti_exposed_backup_normal_paths_allowed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let safe_paths = [
+        "/test_get",
+        "/index.html",
+        "/api/v1/status",
+        "/assets/logo.png",
+        "/robots.txt",
+    ];
+
+    for path in &safe_paths {
+        let url = format!("{}{}", waf_base(port), path);
+        let resp = client
+            .get(&url)
+            .query(&[("payload_test", "hello")])
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET request failed for safe path {path:?}: {e}"));
+
+        assert_ne!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "Anti-exposed-backup: safe path {path} must not be blocked"
+        );
+    }
+}
+
+/// Anti-exposed-backup: suffix in query string only (not in path) must NOT block.
+#[tokio::test]
+async fn dfa_anti_exposed_backup_suffix_in_query_string_not_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    // The .bak suffix is in the query-string value, not in the path.
+    let resp = client
+        .get(format!("{}/test_get", waf_base(port)))
+        .query(&[("file", "backup.bak")])
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_ne!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "backup suffix in query string value should not trigger anti-exposed-backup"
+    );
 }

@@ -250,6 +250,31 @@ const XXE_ATTACK_PAYLOADS: &[&str] = &[
     "%3C%00!%00D%00O%00C%00T%00Y%00P%00E%00%20%00x%00x%00e%00%20%00%5B%00%3C%00!%00E%00N%00T%00I%00T%00Y%00%20%00x%00x%00e%00%20%00S%00Y%00S%00T%00E%00M%00%20%00%22%00f%00i%00l%00e%00:%00/%00/%00/%00e%00t%00c%00/%00p%00a%00s%00s%00w%00d%00%22%00%3E%00%5D%00%3E%00",
 ];
 
+/// URI paths that end with a known backup/temp/config-leak extension.
+/// All of these should be blocked as GET requests when Anti_exposed_backup is enabled.
+const BACKUP_URI_PAYLOADS: &[&str] = &[
+    "/wp-config.php.bak",
+    "/database.sql.bak",
+    "/.env",
+    "/app/.env",
+    "/config/settings.bkp",
+    "/var/www/html/config.backup",
+    "/admin/users.old",
+    "/src/config.orig",
+    "/backup/db.save",
+    "/files/export.sav",
+    "/editor/.wp-config.php.swp",
+    "/home/.viminfo.swn",
+    "/tmp/session.tmp",
+    "/cache/render.temp",
+    "/office/report.wbk",
+    "/.un~config.php",
+    "/dumps/prod.dump",
+    "/sql/migration.sql.",
+    "/secrets/api_keys.bkp",
+    "/.htpasswd.bak",
+];
+
 const SCANNER_UAS: &[(&str, &str)] = &[
     ("nikto/2.1.6", "Nikto"),
     ("sqlmap/1.7", "sqlmap"),
@@ -597,6 +622,37 @@ async fn sweep_ua(
     collect_ordered(&mut set, SCANNER_UAS.len()).await
 }
 
+/// Sweep backup URI paths: sends a GET request directly to each path (the path
+/// IS the payload, not a query parameter).  Expects 403 from a WAF with
+/// Anti_exposed_backup enabled; any other status counts as a bypass.
+async fn sweep_backup_uris(
+    client: &reqwest::Client,
+    base: &str,
+    paths: &[&str],
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &path) in paths.iter().enumerate() {
+        let client = client.clone();
+        let url = format!("{base}{path}");
+        let sem = sem.clone();
+        let label = path.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let outcome = match client.get(&url).send().await {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r) => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (idx, SweepResult { label, outcome })
+        });
+    }
+
+    collect_ordered(&mut set, paths.len()).await
+}
+
 // Drains a JoinSet and returns results sorted by original index.
 async fn collect_ordered(set: &mut JoinSet<(usize, SweepResult)>, len: usize) -> Vec<SweepResult> {
     let mut indexed = Vec::with_capacity(len);
@@ -891,6 +947,13 @@ async fn main() {
     run_sweep!(
         format!("Scanner UA — GET /test_get ({} UAs)", SCANNER_UAS.len()),
         sweep_ua(&client, &cfg.target, "/test_get", cfg.concurrency)
+    );
+    run_sweep!(
+        format!(
+            "Exposed backup DFA — GET (backup URIs) ({} payloads)",
+            BACKUP_URI_PAYLOADS.len()
+        ),
+        sweep_backup_uris(&client, &cfg.target, BACKUP_URI_PAYLOADS, cfg.concurrency)
     );
 
     println!(
