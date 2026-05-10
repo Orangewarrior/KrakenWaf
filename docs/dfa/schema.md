@@ -1,45 +1,243 @@
-# KrakenWAF DFA schema
+# KrakenWAF DFA Module Schema
 
-KrakenWAF can load optional DFA-style anomaly detectors through `--dfa-load ./rules/dfa/config.yaml`.
+KrakenWAF ships a set of opt-in, zero-allocation anomaly detectors modelled after
+Deterministic Finite Automata (DFA).  Each module is a focused, single-pass Rust
+scanner that operates on borrowed string slices — no heap allocation in the fast
+path, no `unsafe` code, and no global state.  All modules are loaded at startup
+from a single YAML manifest and are individually togglable without recompiling.
 
-Enabled modules:
+---
 
-- `SQLi_comments_detect`: counts SQL block comments like `/**/`. Two or more comments trigger a block.
-- `Overflow_detect`: detects repeated character runs, structured overflow/flooding patterns, and common shellcode opcode clusters/NOP sleds for x86-32, x86-64 and ARM/Thumb payloads.
-- `SSTI_detect`: detects common SSTI delimiters and returns the matched SSTI family id.
-- `SSI_injection_detect`: detects SSI directives such as `<!--#include ... -->`, `<!--#exec ... -->`, `<!--#set ... -->`, conditional directives, and spacing/case variants.
-- `ESI_injection_detect`: detects ESI tags such as `<esi:include>`, `<esi:inline>`, `<esi:debug/>`, `<esi:vars>`, `<esi:remove>`, flow-control directives, and `<!--esi ... -->`.
-- `CRLF_injection_detect`: detects CRLF injection and HTTP response-splitting payloads such as `%0d%0aSet-Cookie:...`, `%0d%0aHTTP/1.1 200 OK`, double-encoded CRLF, `%u000d%u000a`, `\u000d\u000a`, and UTF-8 CR/LF bypass variants.
-- `Request_Smuggling_detect`: detects request smuggling indicators such as `Transfer-Encoding: chunked`, `X-Session-Hijack: true`, `Content-Length` values `<= 4`, and injected `Transfer-Encoding: chunked` patterns in URI or body content.
-- `NOSQL_injection_detect`: detects NoSQL injection when URI or body content contains at least one marker from list A and one marker from list B.
-- `XXE_attack_detect`: detects XML external entity attacks when URI or body content contains at least one marker from list A and one marker from list B.
+## Loading the DFA modules
 
-`NOSQL_injection_detect` list A markers:
+Pass the config file path to `--dfa-load`:
 
-`$gt`, `$nin`, `$where`, `$save`, `$exists`, `$remove`, `$in`, `$comment`, `selector`, `$or`, `$and`, `this.password.match`, `db.stores.mapReduce`, `db.injection.insert`, `&&`, `||`.
+```sh
+krakenwaf \
+  --no-tls \
+  --listen 0.0.0.0:8443 \
+  --upstream http://127.0.0.1:8080 \
+  --dfa-load rules/dfa/config.yaml
+```
 
-`NOSQL_injection_detect` list B markers:
+The default manifest lives at `rules/dfa/config.yaml`.  Each key maps directly to a
+field on the internal `DfaConfig` struct; unknown keys are ignored, absent keys
+default to `false`.
 
-`==1`, `== 1`, `]=1`, `] = 1`, `true`, `sleep(`, `logins`, `admin`, `pass`, `user`, `undefined`, `Date`, `null`, `root`, `new%`, `%00`, `{}`, `success`, `.insert`, `while(true)`, `dropDatabase(`.
+```yaml
+# rules/dfa/config.yaml
+DFA-Rules:
+  SQLi_comments_detect: true
+  Overflow_detect: true
+  SSTI_detect: true
+  SSI_injection_detect: true
+  ESI_injection_detect: true
+  CRLF_injection_detect: true
+  Request_Smuggling_detect: true
+  NOSQL_injection_detect: true
+  XXE_attack_detect: true
+  Anti_exposed_backup: true
+```
 
-The detector also treats `==[1-9]` and `== [1-9]` as list B matches. When KrakenWAF is compiled with the Vectorscan feature and started with `--enable-vectorscan`, the NoSQL DFA uses Vectorscan for the literal list checks and keeps the DFA numeric equality check for the digit pattern.
+---
 
-`XXE_attack_detect` list A markers:
+## Module catalogue
 
-`ENTITY`, `xi:include`.
+| Key | CWE | Severity | Doc |
+|-----|-----|----------|-----|
+| `SQLi_comments_detect` | [CWE-89](https://cwe.mitre.org/data/definitions/89.html) | High | [sqli_comments_detect.md](sqli_comments_detect.md) |
+| `Overflow_detect` | [CWE-94](https://cwe.mitre.org/data/definitions/94.html) / [CWE-400](https://cwe.mitre.org/data/definitions/400.html) | High / Medium | [overflow_detect.md](overflow_detect.md) |
+| `SSTI_detect` | [CWE-1336](https://cwe.mitre.org/data/definitions/1336.html) | High | [ssti_detect.md](ssti_detect.md) |
+| `SSI_injection_detect` | [CWE-97](https://cwe.mitre.org/data/definitions/97.html) | High | [ssi_injection_detect.md](ssi_injection_detect.md) |
+| `ESI_injection_detect` | [CWE-94](https://cwe.mitre.org/data/definitions/94.html) | High | [esi_injection_detect.md](esi_injection_detect.md) |
+| `CRLF_injection_detect` | [CWE-93](https://cwe.mitre.org/data/definitions/93.html) | High | [crlf_injection_detect.md](crlf_injection_detect.md) |
+| `Request_Smuggling_detect` | [CWE-444](https://cwe.mitre.org/data/definitions/444.html) | High | [request_smuggling_detect.md](request_smuggling_detect.md) |
+| `NOSQL_injection_detect` | [CWE-943](https://cwe.mitre.org/data/definitions/943.html) | High | [nosql_injection_detect.md](nosql_injection_detect.md) |
+| `XXE_attack_detect` | [CWE-611](https://cwe.mitre.org/data/definitions/611.html) | High | [xxe_attack_detect.md](xxe_attack_detect.md) |
+| `Anti_exposed_backup` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Medium | [anti_exposed_backup.md](anti_exposed_backup.md) |
 
-`XXE_attack_detect` list B markers:
+---
 
-`xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, `file`.
+## Module summaries
 
-When KrakenWAF is compiled with the Vectorscan feature and started with `--enable-vectorscan`, the XXE detector uses Vectorscan for the literal list checks. If the normalized request contains UTF-16LE/BE payload bytes represented as NUL-interleaved text after URL decoding, the XXE detector decodes that view before matching so encoded external entity payloads are still blocked.
+### [`SQLi_comments_detect`](sqli_comments_detect.md)
 
-All DFA modules are implemented as safe Rust state scanners without `unsafe`, following a generated-DFA style layout appropriate for future re2rust migration.
+Counts `/* */`-style SQL block-comment pairs.  Attackers embed two or more pairs to
+break up SQL keywords and defeat simple substring filters (`UN/**/ION SE/**/LECT`).
+The detector increments a counter on every `/*` open token and fires when it reaches
+two — a threshold that virtually never occurs in legitimate traffic but is essential
+to every comment-evasion payload.
 
-When a DFA returns true, KrakenWAF emits the same structured block event pipeline used by regex, keyword, Vectorscan and libinjection:
+### [`Overflow_detect`](overflow_detect.md)
 
-- JSONL log
-- raw critical log
-- SQLite evidence row
+Two independent sub-detectors run in sequence:
 
-The event engine is recorded as `dfa` and the rule source uses the form `dfa/<module>.rs:generated`.
+**Shellcode recognition** — decodes escape sequences in any of the forms `\xNN`,
+`%NN`, `0xNN`, or `\u00NN` to a raw byte slice, then scores the decoded bytes against
+weighted opcode-cluster tables for x86-32, x86-64, and ARM/Thumb.  NOP sleds
+(`0x90…`, ARM `00 00 a0 e1`, Thumb `c0 46`) are detected before the cluster check.
+A cumulative score ≥ 3 fires the shellcode finding.
+
+**Repeated-character flooding** — a single iterator pass counts consecutive identical
+characters (threshold: 10), long digit runs (30), format specifiers `%n/%p/%s/…` (5),
+and `../` traversal segments (5).  This sub-detector is allocation-free and exits
+early on the first threshold breach.
+
+### [`SSTI_detect`](ssti_detect.md)
+
+Recognises the delimiter pairs of **22 template-engine families** including Jinja2,
+Twig, Handlebars, Velocity, Freemarker, Ruby ERB, Thymeleaf, Slim, Tornado, and
+Vue.js.  The scanner searches for an open token and then performs a bounded scan of
+at most `max_len` bytes for the matching close token — bounded to prevent worst-case
+quadratic behaviour on adversarial inputs.  Patterns are tested in most-to-least-
+specific order so that longer aliases (e.g. `{{=`) shadow shorter ones (`{{`).
+
+### [`SSI_injection_detect`](ssi_injection_detect.md)
+
+Detects Server-Side Include directives in two dialects:
+
+* **Apache / Nginx** — `<!--#keyword … -->` with any whitespace between `<!--`, `#`,
+  and the keyword.  Twelve directives are recognised: `include`, `exec`, `echo`,
+  `config`, `fsize`, `flastmod`, `printenv`, `set`, `if`, `elif`, `else`, `endif`.
+* **JSP / JSTL / ColdFusion** — `<jsp:include`, `<jsp:forward`, `<c:import`,
+  `<cfinclude`, `<cfexecute`.
+
+`memchr` (SSE2/AVX2/NEON) locates every `<` in one O(n/16) SIMD pass; only the
+handful of bytes surrounding each hit are then examined.
+
+### [`ESI_injection_detect`](esi_injection_detect.md)
+
+Detects Edge Side Include tags processed by Varnish, Squid, Akamai, and Fastly.
+Thirteen `<esi:…>` directives are matched case-insensitively, plus the HTML-comment
+form `<!--esi … -->`.  Like the SSI detector, `memchr` drives the outer scan; per-hit
+inspection is a bounded byte comparison.
+
+### [`CRLF_injection_detect`](crlf_injection_detect.md)
+
+Covers three injection vectors — raw `\r`/`\n` control characters, 26 escape and
+percent-encoded variants (`%0d%0a`, `%250d%250a`, `%u000d%u000a`, …), and 6 Unicode
+surrogate forms (U+010A, U+010D, U+2028, U+2029, …).
+
+A line-break alone is not sufficient to fire; the bytes **immediately following** the
+break must resemble an injected HTTP element: a header name from a 56-entry table, an
+HTTP status line, an HTML tag, or a chunked-transfer digit.  Normal `\r\n` framing
+inside a well-formed request block is explicitly excluded.
+
+### [`Request_Smuggling_detect`](request_smuggling_detect.md)
+
+Flags three smuggling indicators that appear as header injections: a
+`Transfer-Encoding: chunked` directive in a field that should not contain it, an
+`X-Session-Hijack: true` marker (used by some bypass toolkits), and a
+`Content-Length` value of 4 or fewer bytes (common in CL.0 / CL.TE desync probes).
+A header-boundary guard prevents false positives from query parameters that happen to
+contain the same substrings.
+
+### [`NOSQL_injection_detect`](nosql_injection_detect.md)
+
+Uses a **two-list conjunction**: both a list-A operator marker and a list-B value
+marker must be present in the same inspected string before the detector fires.  A
+single operator or value in isolation is ignored — the conjunction eliminates the
+false positives that plague single-keyword NoSQL filters.
+
+**List A — operators (16 markers)**
+
+`$gt`, `$nin`, `$where`, `$save`, `$exists`, `$remove`, `$in`, `$comment`,
+`selector`, `$or`, `$and`, `this.password.match`, `db.stores.mapReduce`,
+`db.injection.insert`, `&&`, `||`
+
+**List B — values (21 markers + numeric pattern)**
+
+`==1`, `== 1`, `]=1`, `] = 1`, `true`, `sleep(`, `logins`, `admin`, `pass`, `user`,
+`undefined`, `Date`, `null`, `root`, `new%`, `%00`, `{}`, `success`, `.insert`,
+`while(true)`, `dropDatabase(`
+
+The pattern `==[1-9]` / `== [1-9]` is treated as an additional list-B match
+implemented as a DFA digit check rather than a literal, keeping Vectorscan
+acceleration available for the literal lists while covering the numeric equality form
+that commonly appears in authentication-bypass payloads.
+
+When compiled with the `vectorscan-engine` feature and started with
+`--enable-vectorscan`, both lists are scanned with Vectorscan `BlockDatabase`
+(`CASELESS | SINGLEMATCH`) — a single SIMD pass per list.
+
+### [`XXE_attack_detect`](xxe_attack_detect.md)
+
+Also uses a **two-list conjunction**: an XML entity / include marker (list A) must
+appear alongside a suspicious target or context marker (list B).
+
+**List A — entity / include markers (2 markers)**
+
+`entity`, `xi:include`
+
+**List B — suspicious context markers (10 markers)**
+
+`xxe`, `system`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `doctype`,
+`soap`, `file`
+
+All comparisons are case-insensitive.  Before running the conjunction check, the
+detector probes for UTF-16 LE/BE encoding (≥ 50 % NUL-interleaved bytes) and, if
+found, decodes the payload and re-runs the check — closing a common evasion path
+used to bypass ASCII-only WAF filters.  The `decoded_utf16` flag in the finding
+records whether evasion decoding was needed.
+
+### [`Anti_exposed_backup`](anti_exposed_backup.md)
+
+Matches request paths against a compiled list of backup-file suffixes and editor
+artefacts (`.bak`, `.old`, `.orig`, `.swp`, `.un~`, `~`, `.DS_Store`, etc.).  The
+check is URI-only and runs in `inspect_early()`, before the request body is assembled,
+so it adds no latency to normal traffic.
+
+---
+
+## Vectorscan SIMD acceleration
+
+Modules that use Aho-Corasick for multi-keyword matching (`NOSQL_injection_detect`,
+`XXE_attack_detect`) can switch to Vectorscan `BlockDatabase` when:
+
+1. KrakenWAF is compiled with the `vectorscan-engine` Cargo feature.
+2. The process is started with `--enable-vectorscan`.
+
+Vectorscan processes each pattern list in a single SIMD pass and terminates on the
+first match (`SINGLEMATCH`), reducing per-request latency for long pattern lists.
+All other modules use `memchr`, `str::find`, or hand-rolled byte-comparison loops
+that are already SIMD-accelerated by `memchr` or by the compiler's auto-vectoriser.
+
+---
+
+## Detection event pipeline
+
+When any DFA module fires, KrakenWAF emits a structured block event through the same
+pipeline used by regex, keyword, Vectorscan, and libinjection detectors:
+
+| Sink | Detail |
+|------|--------|
+| **JSONL log** | Machine-readable structured finding |
+| **Critical log** | Human-readable one-liner for log aggregators |
+| **SQLite row** | Persistent evidence record for the dashboard |
+| **Prometheus counter** | `waf_blocks_total{engine="dfa"}` incremented |
+
+Every finding carries a `rule_match` field of the form
+`dfa::<module>:<details>` and a `rule_line_match` of
+`dfa/<module>.rs:generated`, making it straightforward to correlate log entries
+back to the specific detector implementation.
+
+---
+
+## Implementation notes
+
+All DFA modules are written in safe Rust with no `unsafe` blocks.  Each module:
+
+* Operates on a `&str` or `&[u8]` borrow — zero copies on the happy path.
+* Performs at most one or two linear passes over the input.
+* Uses early-return / `?` propagation so a confirmed match exits immediately
+  without evaluating remaining patterns.
+* Is structured in the *generated-DFA* style (`match state { … }`) to facilitate a
+  future migration to `re2rust`-generated automata if throughput requirements grow.
+
+The `DfaManager` struct owns one instance of each enabled detector and exposes two
+entry points called from the WAF engine:
+
+* `inspect_uri(&str)` — URI-only check, called from `inspect_early()` before body
+  assembly (used by `Anti_exposed_backup` and `Request_Smuggling_detect`).
+* `inspect(&str)` — full-payload check, called once the complete request string is
+  available.
