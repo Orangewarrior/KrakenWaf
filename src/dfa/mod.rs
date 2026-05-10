@@ -3,6 +3,7 @@ use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path};
 use tracing::warn;
 
+mod anti_exposed_backup;
 mod crlf_injection_detect;
 mod esi_injection_detect;
 mod nosql_injection_detect;
@@ -17,6 +18,7 @@ use crate::rules::Severity;
 use crate::waf::Finding;
 use chrono::Utc;
 
+pub use anti_exposed_backup::AntiExposedBackupDfaBuilder;
 pub use crlf_injection_detect::CrlfInjectionDfaBuilder;
 pub use esi_injection_detect::EsiInjectionDfaBuilder;
 pub use nosql_injection_detect::NoSqlInjectionDfaBuilder;
@@ -38,6 +40,7 @@ pub struct DfaConfig {
     pub request_smuggling_detect: bool,
     pub nosql_injection_detect: bool,
     pub xxe_attack_detect: bool,
+    pub anti_exposed_backup: bool,
 }
 
 impl DfaConfig {
@@ -108,6 +111,11 @@ impl DfaManagerBuilder {
                     .vectorscan_enabled(self.vectorscan_enabled)
                     .build()
             }),
+            anti_exposed_backup: self.config.anti_exposed_backup.then(|| {
+                AntiExposedBackupDfaBuilder::new()
+                    .vectorscan_enabled(self.vectorscan_enabled)
+                    .build()
+            }),
         }
     }
 }
@@ -123,6 +131,7 @@ pub struct DfaManager {
     request_smuggling: Option<request_smuggling_detect::RequestSmugglingDfa>,
     nosql_injection: Option<nosql_injection_detect::NoSqlInjectionDfa>,
     xxe_attack: Option<xxe_attack_detect::XxeAttackDfa>,
+    anti_exposed_backup: Option<anti_exposed_backup::AntiExposedBackupDfa>,
 }
 
 impl DfaManager {
@@ -300,6 +309,34 @@ impl DfaManager {
 
         None
     }
+
+    /// Inspect the request URI path. Called from `inspect_early()` so that
+    /// method-gated detectors (e.g. `anti_exposed_backup`) have access to the
+    /// original method and path before the full payload is assembled.
+    pub fn inspect_uri(&self, method: &str, path: &str) -> Option<Finding> {
+        if let Some(detector) = &self.anti_exposed_backup {
+            if let Some(matched) = detector.detect(method, path) {
+                return Some(finding(
+                    "DFA exposed backup/temp file detection",
+                    Severity::High,
+                    "CWE-538",
+                    &format!(
+                        "Blocked {} request for a backup, temporary, or configuration-leak file. \
+                         URI path ends with '{}', a known sensitive file extension that should \
+                         never be publicly accessible.",
+                        method,
+                        matched.suffix()
+                    ),
+                    "https://owasp.org/www-community/vulnerabilities/Insecure_Direct_Object_References",
+                    format!("dfa::anti_exposed_backup:suffix={}", matched.suffix()),
+                    "dfa/anti_exposed_backup.rs:generated",
+                    &format!("{method} {path}"),
+                ));
+            }
+        }
+
+        None
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -414,6 +451,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> DfaConfig {
         request_smuggling_detect: enabled("Request_Smuggling_detect"),
         nosql_injection_detect: enabled("NOSQL_injection_detect"),
         xxe_attack_detect: enabled("XXE_attack_detect"),
+        anti_exposed_backup: enabled("Anti_exposed_backup"),
     }
 }
 
@@ -467,5 +505,29 @@ DFA-Rules:
         )
         .expect("parse XXE attack key");
         assert!(cfg.xxe_attack_detect);
+    }
+
+    #[test]
+    fn parses_anti_exposed_backup_config_key() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  Anti_exposed_backup: true
+"#,
+        )
+        .expect("parse Anti_exposed_backup key");
+        assert!(cfg.anti_exposed_backup);
+    }
+
+    #[test]
+    fn anti_exposed_backup_disabled_by_default() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  SQLi_comments_detect: true
+"#,
+        )
+        .expect("parse minimal config");
+        assert!(!cfg.anti_exposed_backup);
     }
 }

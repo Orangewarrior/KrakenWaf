@@ -8,3 +8,4 @@ DFA-Rules:
   Request_Smuggling_detect: true
   NOSQL_injection_detect: true
   XXE_attack_detect: true
+  Anti_exposed_backup: true

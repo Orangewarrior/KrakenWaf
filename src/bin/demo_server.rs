@@ -14,7 +14,7 @@
 //!   cargo run --bin attack -- --target http://127.0.0.1:8080
 
 use axum::{
-    extract::{Form, Query},
+    extract::{Form, Path, Query},
     response::Html,
     routing::{get, post},
     Router,
@@ -72,6 +72,19 @@ async fn test_post(Form(p): Form<Payload>) -> Html<String> {
     ))
 }
 
+/// Catch-all GET handler used by the backup-file sweep in the attack tool.
+/// Returns 200 so that the attack tool can distinguish a WAF bypass (200) from
+/// a WAF block (403).  In a real deployment these paths would never exist on a
+/// hardened server; here we deliberately expose them so the demo is meaningful.
+async fn backup_file(Path(path): Path<String>) -> Html<String> {
+    Html(format!(
+        "<!DOCTYPE html><html><body>\
+         <h1>EXPOSED: /{path}</h1>\
+         <p>This file should have been blocked by the WAF.</p>\
+         </body></html>"
+    ))
+}
+
 #[tokio::main]
 async fn main() {
     let port: u16 = std::env::args()
@@ -82,7 +95,11 @@ async fn main() {
     let app = Router::new()
         .route("/", get(index))
         .route("/test_get", get(test_get))
-        .route("/test_post", post(test_post));
+        .route("/test_post", post(test_post))
+        // Wildcard route for the backup-file sweep: returns 200 so the attack
+        // tool can distinguish a WAF bypass from a WAF block (403).
+        // Axum 0.8+ requires the `{*name}` syntax for wildcard capture.
+        .route("/{*path}", get(backup_file));
 
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
     println!("Demo backend listening on http://{addr}");

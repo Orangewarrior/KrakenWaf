@@ -157,7 +157,14 @@ jobs:
         run: cargo build --bin krakenwaf --bin demo_server --bin attack
 
       - name: Start demo_server
-        run: ./target/debug/demo_server 9077 &
+        run: |
+          ./target/debug/demo_server 9077 &
+          for i in $(seq 1 20); do
+            curl -sf http://127.0.0.1:9077/ -o /dev/null && echo "demo_server ready" && exit 0
+            sleep 0.5
+          done
+          echo "::error::demo_server failed to start within 10s" >&2
+          exit 1
 
       - name: Start KrakenWAF
         run: |

@@ -1,5 +1,14 @@
 [advisories]
 version = 2
+ignore = [
+    # bincode 1.x is "unmaintained" per RUSTSEC-2025-0141, but the upstream
+    # team explicitly considers v1.3.3 a complete release with no security
+    # issues — they ceased development after a harassment incident. We rely
+    # on bincode for serde-compatible binary encoding and the alternative
+    # crates (postcard, bitcode, rkyv) are not API-compatible drop-ins.
+    # No safe upgrade exists; tracking for future migration.
+    { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is feature-complete, no CVE; tracking migration to postcard/bitcode" },
+]
 
 [licenses]
 version = 2
