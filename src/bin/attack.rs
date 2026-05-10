@@ -275,6 +275,10 @@ const BACKUP_URI_PAYLOADS: &[&str] = &[
     "/.htpasswd.bak",
 ];
 
+/// Paths whose response bodies contain passwd or shadow file content.
+/// The WAF must block the RESPONSE (not the request) and return 403.
+const PASSWD_LEAK_PATHS: &[&str] = &["/leak/passwd", "/leak/shadow"];
+
 const SCANNER_UAS: &[(&str, &str)] = &[
     ("nikto/2.1.6", "Nikto"),
     ("sqlmap/1.7", "sqlmap"),
@@ -653,6 +657,36 @@ async fn sweep_backup_uris(
     collect_ordered(&mut set, paths.len()).await
 }
 
+/// Sweep response-body leak paths: GET each path directly.  The demo backend
+/// returns passwd/shadow content; the WAF must block the response (403).
+async fn sweep_leak_paths(
+    client: &reqwest::Client,
+    base: &str,
+    paths: &[&str],
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &path) in paths.iter().enumerate() {
+        let client = client.clone();
+        let url = format!("{base}{path}");
+        let sem = sem.clone();
+        let label = path.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let outcome = match client.get(&url).send().await {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r) => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (idx, SweepResult { label, outcome })
+        });
+    }
+
+    collect_ordered(&mut set, paths.len()).await
+}
+
 // Drains a JoinSet and returns results sorted by original index.
 async fn collect_ordered(set: &mut JoinSet<(usize, SweepResult)>, len: usize) -> Vec<SweepResult> {
     let mut indexed = Vec::with_capacity(len);
@@ -954,6 +988,13 @@ async fn main() {
             BACKUP_URI_PAYLOADS.len()
         ),
         sweep_backup_uris(&client, &cfg.target, BACKUP_URI_PAYLOADS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!(
+            "Anti passwd/shadow leak DFA — response ({} paths)",
+            PASSWD_LEAK_PATHS.len()
+        ),
+        sweep_leak_paths(&client, &cfg.target, PASSWD_LEAK_PATHS, cfg.concurrency)
     );
 
     println!(

@@ -54,6 +54,7 @@ full module catalogue.
 - [NoSQL injection detect](docs/dfa/nosql_injection_detect.md) — two-list conjunction (operators ∩ values), Aho-Corasick / Vectorscan (CWE-943)
 - [XXE attack detect](docs/dfa/xxe_attack_detect.md) — two-list conjunction with UTF-16 LE/BE evasion bypass (CWE-611)
 - [Anti exposed backup](docs/dfa/anti_exposed_backup.md) — backup-file suffixes and editor artefacts in request paths (CWE-538)
+- [Anti passwd/shadow leak](docs/dfa/anti_passwd_leak.md) — blocks upstream **responses** leaking `/etc/passwd` or `/etc/shadow` content (CWE-538, Critical)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -679,6 +680,7 @@ DFA-Rules:
   NOSQL_injection_detect: true  # NoSQL injection marker correlation
   XXE_attack_detect: true       # XML external entity attack marker correlation
   Anti_exposed_backup: true     # Backup-file / editor-artefact path exposure
+  Anti_passwd_leak: true        # Response-body /etc/passwd and /etc/shadow leak detection
 ```
 
 Set any key to `false` to disable that detector without recompiling.

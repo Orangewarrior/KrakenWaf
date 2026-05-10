@@ -9,3 +9,4 @@ DFA-Rules:
   NOSQL_injection_detect: true
   XXE_attack_detect: true
   Anti_exposed_backup: true
+  Anti_passwd_leak: true

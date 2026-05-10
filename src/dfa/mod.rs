@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, fs, path::Path};
 use tracing::warn;
 
 mod anti_exposed_backup;
+mod anti_passwd_leak;
 mod crlf_injection_detect;
 mod esi_injection_detect;
 mod nosql_injection_detect;
@@ -19,6 +20,7 @@ use crate::waf::Finding;
 use chrono::Utc;
 
 pub use anti_exposed_backup::AntiExposedBackupDfaBuilder;
+pub use anti_passwd_leak::AntiPasswdLeakDfaBuilder;
 pub use crlf_injection_detect::CrlfInjectionDfaBuilder;
 pub use esi_injection_detect::EsiInjectionDfaBuilder;
 pub use nosql_injection_detect::NoSqlInjectionDfaBuilder;
@@ -41,6 +43,7 @@ pub struct DfaConfig {
     pub nosql_injection_detect: bool,
     pub xxe_attack_detect: bool,
     pub anti_exposed_backup: bool,
+    pub anti_passwd_leak_detect: bool,
 }
 
 impl DfaConfig {
@@ -116,6 +119,11 @@ impl DfaManagerBuilder {
                     .vectorscan_enabled(self.vectorscan_enabled)
                     .build()
             }),
+            anti_passwd_leak: self.config.anti_passwd_leak_detect.then(|| {
+                AntiPasswdLeakDfaBuilder::new()
+                    .vectorscan_enabled(self.vectorscan_enabled)
+                    .build()
+            }),
         }
     }
 }
@@ -132,6 +140,7 @@ pub struct DfaManager {
     nosql_injection: Option<nosql_injection_detect::NoSqlInjectionDfa>,
     xxe_attack: Option<xxe_attack_detect::XxeAttackDfa>,
     anti_exposed_backup: Option<anti_exposed_backup::AntiExposedBackupDfa>,
+    anti_passwd_leak: Option<anti_passwd_leak::AntiPasswdLeakDfa>,
 }
 
 impl DfaManager {
@@ -337,6 +346,44 @@ impl DfaManager {
 
         None
     }
+
+    /// Inspect the upstream response body for sensitive data leaks.
+    /// Called from `inspect_response()` after the full response body is buffered.
+    pub fn inspect_response_body(&self, body: &str) -> Option<Finding> {
+        if let Some(detector) = &self.anti_passwd_leak {
+            if let Some(matched) = detector.detect(body) {
+                let (kind_label, cwe) = match matched.kind() {
+                    anti_passwd_leak::LeakKind::Passwd => ("passwd", "CWE-538"),
+                    anti_passwd_leak::LeakKind::Shadow => ("shadow", "CWE-538"),
+                };
+                return Some(finding(
+                    "DFA passwd/shadow file leak detection",
+                    Severity::Critical,
+                    cwe,
+                    &format!(
+                        "Blocked a response body that contains {count} distinct /etc/{kind} \
+                         structural tokens ('{a}' and '{b}'), indicating the upstream may be \
+                         leaking a Unix password or shadow file to an attacker.",
+                        count = matched.match_count(),
+                        kind = kind_label,
+                        a = matched.token_a(),
+                        b = matched.token_b(),
+                    ),
+                    "https://owasp.org/www-community/vulnerabilities/Sensitive_Data_Exposure",
+                    format!(
+                        "dfa::anti_passwd_leak:{kind_label}:token_a={a} token_b={b} count={c}",
+                        a = matched.token_a(),
+                        b = matched.token_b(),
+                        c = matched.match_count(),
+                    ),
+                    "dfa/anti_passwd_leak.rs:generated",
+                    &body.chars().take(256).collect::<String>(),
+                ));
+            }
+        }
+
+        None
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -452,6 +499,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> DfaConfig {
         nosql_injection_detect: enabled("NOSQL_injection_detect"),
         xxe_attack_detect: enabled("XXE_attack_detect"),
         anti_exposed_backup: enabled("Anti_exposed_backup"),
+        anti_passwd_leak_detect: enabled("Anti_passwd_leak"),
     }
 }
 
@@ -529,5 +577,29 @@ DFA-Rules:
         )
         .expect("parse minimal config");
         assert!(!cfg.anti_exposed_backup);
+    }
+
+    #[test]
+    fn parses_anti_passwd_leak_config_key() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  Anti_passwd_leak: true
+"#,
+        )
+        .expect("parse Anti_passwd_leak key");
+        assert!(cfg.anti_passwd_leak_detect);
+    }
+
+    #[test]
+    fn anti_passwd_leak_disabled_by_default() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  SQLi_comments_detect: true
+"#,
+        )
+        .expect("parse minimal config");
+        assert!(!cfg.anti_passwd_leak_detect);
     }
 }

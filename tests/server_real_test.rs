@@ -86,6 +86,21 @@ async fn test_post(Form(p): Form<Payload>) -> Html<String> {
     Html(format!("<h1>{}</h1>", p.payload_test))
 }
 
+/// Returns a realistic /etc/passwd dump — blocked by Anti_passwd_leak.
+async fn leak_passwd() -> &'static str {
+    "root:x:0:0:root:/root:/bin/bash\n\
+     daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+     bin:x:2:2:bin:/bin:/usr/sbin/nologin\n\
+     nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n"
+}
+
+/// Returns a realistic /etc/shadow dump — blocked by Anti_passwd_leak.
+async fn leak_shadow() -> &'static str {
+    "root:$6$salt$longhash:19000:0:99999:7:::\n\
+     daemon:*:18858:0:99999:7:::\n\
+     nobody:*:18858:0:99999:7:::\n"
+}
+
 fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
         let addr: SocketAddr = backend_addr().parse().unwrap();
@@ -99,7 +114,9 @@ fn ensure_backend() {
                         .route("/test_one", get(test_one))
                         .route("/test_get", get(test_get))
                         .route("/test_two", get(test_two))
-                        .route("/test_post", post(test_post));
+                        .route("/test_post", post(test_post))
+                        .route("/leak/passwd", get(leak_passwd))
+                        .route("/leak/shadow", get(leak_shadow));
                     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
                     axum::serve(listener, app).await.unwrap();
                 });
@@ -1178,5 +1195,96 @@ async fn dfa_anti_exposed_backup_suffix_in_query_string_not_blocked() {
         resp.status(),
         StatusCode::FORBIDDEN,
         "backup suffix in query string value should not trigger anti-exposed-backup"
+    );
+}
+
+// ─── Anti_passwd_leak DFA tests ───────────────────────────────────────────────
+
+/// passwd leak: response body containing ≥2 PASSWD_TOKENS must be blocked (403).
+#[tokio::test]
+async fn dfa_anti_passwd_leak_response_is_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/passwd", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "/leak/passwd response must be blocked by Anti_passwd_leak DFA"
+    );
+}
+
+/// shadow leak: response body containing ≥2 SHADOW_TOKENS must be blocked (403).
+#[tokio::test]
+async fn dfa_anti_shadow_leak_response_is_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/shadow", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "/leak/shadow response must be blocked by Anti_passwd_leak DFA"
+    );
+}
+
+/// Normal responses with no sensitive tokens must pass through unaffected.
+#[tokio::test]
+async fn dfa_anti_passwd_leak_normal_response_allowed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/test_get", waf_base(port)))
+        .query(&[("payload_test", "hello")])
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "normal response must not be blocked"
+    );
+}
+
+/// Without DFA enabled the passwd response passes through (200).
+#[tokio::test]
+async fn dfa_anti_passwd_leak_disabled_allows_response() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]); // no --dfa-load
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/passwd", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "without DFA the passwd response must pass through"
     );
 }
