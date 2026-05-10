@@ -7,6 +7,7 @@ mod anti_exposed_backup;
 mod anti_passwd_leak;
 mod crlf_injection_detect;
 mod esi_injection_detect;
+mod java_deserialize_detect;
 mod nosql_injection_detect;
 mod overflow_detect;
 mod request_smuggling_detect;
@@ -22,6 +23,7 @@ use chrono::Utc;
 pub use anti_exposed_backup::AntiExposedBackupDfaBuilder;
 pub use anti_passwd_leak::AntiPasswdLeakDfaBuilder;
 pub use crlf_injection_detect::CrlfInjectionDfaBuilder;
+pub use java_deserialize_detect::JavaDeserializeDfaBuilder;
 pub use esi_injection_detect::EsiInjectionDfaBuilder;
 pub use nosql_injection_detect::NoSqlInjectionDfaBuilder;
 pub use overflow_detect::OverflowDfaBuilder;
@@ -31,7 +33,7 @@ pub use ssi_injection_detect::SsiInjectionDfaBuilder;
 pub use ssti_detect::SstiDfaBuilder;
 pub use xxe_attack_detect::XxeAttackDfaBuilder;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DfaConfig {
     pub sqli_comments_detect: bool,
     pub overflow_detect: bool,
@@ -44,6 +46,31 @@ pub struct DfaConfig {
     pub xxe_attack_detect: bool,
     pub anti_exposed_backup: bool,
     pub anti_passwd_leak_detect: bool,
+    pub java_deserialize_detect: bool,
+    /// Global paranoia level (0–100). Controls the 2-signal block threshold
+    /// and the 1-signal informative-log threshold in `java_deserialize_detect`.
+    /// Default: 60.
+    pub untrust_level: u8,
+}
+
+impl Default for DfaConfig {
+    fn default() -> Self {
+        Self {
+            sqli_comments_detect: false,
+            overflow_detect: false,
+            ssti_detect: false,
+            ssi_injection_detect: false,
+            esi_injection_detect: false,
+            crlf_injection_detect: false,
+            request_smuggling_detect: false,
+            nosql_injection_detect: false,
+            xxe_attack_detect: false,
+            anti_exposed_backup: false,
+            anti_passwd_leak_detect: false,
+            java_deserialize_detect: false,
+            untrust_level: 60,
+        }
+    }
 }
 
 impl DfaConfig {
@@ -124,6 +151,12 @@ impl DfaManagerBuilder {
                     .vectorscan_enabled(self.vectorscan_enabled)
                     .build()
             }),
+            java_deserialize: self.config.java_deserialize_detect.then(|| {
+                JavaDeserializeDfaBuilder::new()
+                    .untrust_level(self.config.untrust_level)
+                    .vectorscan_enabled(self.vectorscan_enabled)
+                    .build()
+            }),
         }
     }
 }
@@ -141,6 +174,7 @@ pub struct DfaManager {
     xxe_attack: Option<xxe_attack_detect::XxeAttackDfa>,
     anti_exposed_backup: Option<anti_exposed_backup::AntiExposedBackupDfa>,
     anti_passwd_leak: Option<anti_passwd_leak::AntiPasswdLeakDfa>,
+    java_deserialize: Option<java_deserialize_detect::JavaDeserializeDfa>,
 }
 
 impl DfaManager {
@@ -384,6 +418,62 @@ impl DfaManager {
 
         None
     }
+
+    /// Inspect a request or response for Java deserialization attack signals.
+    ///
+    /// `text`      — the combined text representation (headers + body, UTF-8 lossy).
+    /// `raw_bytes` — the raw body bytes used for binary magic detection.
+    ///
+    /// Returns `Some(Finding)` when the detector fires a blocking decision.
+    /// Silent / informative log cases emit a `tracing::warn!` but return `None`.
+    pub fn inspect_java_deser(&self, text: &str, raw_bytes: &[u8]) -> Option<Finding> {
+        use java_deserialize_detect::JavaDeserDecision;
+
+        let detector = self.java_deserialize.as_ref()?;
+        match detector.detect(text, raw_bytes) {
+            JavaDeserDecision::Block(m) => Some(finding(
+                "DFA Java deserialization attack detection",
+                Severity::Critical,
+                "CWE-502",
+                &format!(
+                    "Detected Java deserialization attack payload. \
+                     {count} distinct signals fired ({signals}). Evidence: {ev}.",
+                    count = m.signal_count(),
+                    signals = m.signals_fired(),
+                    ev = m.evidence(),
+                ),
+                "https://owasp.org/www-community/vulnerabilities/Deserialization_of_untrusted_data",
+                format!(
+                    "dfa::java_deserialize_detect:signals={signals} evidence={ev}",
+                    signals = m.signals_fired(),
+                    ev = m.evidence(),
+                ),
+                "dfa/java_deserialize_detect.rs:generated",
+                &text.chars().take(256).collect::<String>(),
+            )),
+            JavaDeserDecision::SuspiciousHigh(m) => {
+                warn!(
+                    target: "krakenwaf",
+                    signals = %m.signals_fired(),
+                    evidence = %m.evidence(),
+                    signal_count = m.signal_count(),
+                    "java_deserialize_detect: 2 signals but untrust_level < 60 — suspicious-high, not blocking"
+                );
+                None
+            }
+            JavaDeserDecision::SuspiciousLow(m) => {
+                warn!(
+                    target: "krakenwaf",
+                    signals = %m.signals_fired(),
+                    evidence = %m.evidence(),
+                    signal_count = m.signal_count(),
+                    "java_deserialize_detect: 1 signal with untrust_level > 80 — suspicious-low, not blocking"
+                );
+                None
+            }
+            JavaDeserDecision::Clean => None,
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -433,18 +523,34 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
     struct StrictCfg {
         #[serde(rename = "DFA-Rules")]
         dfa_rules: Option<BTreeMap<String, BoolOrInt>>,
+        #[serde(rename = "global-options")]
+        global_options: Option<BTreeMap<String, serde_yaml::Value>>,
     }
 
     if let Ok(strict) = serde_yaml::from_str::<StrictCfg>(content) {
+        let untrust_level = strict
+            .global_options
+            .as_ref()
+            .and_then(|m| m.get("Untrust"))
+            .and_then(|v| match v {
+                serde_yaml::Value::Number(n) => n.as_u64().map(|n| n.min(100) as u8),
+                _ => None,
+            })
+            .unwrap_or(60);
+
         if let Some(map) = strict.dfa_rules {
             let int_map: BTreeMap<String, i64> =
                 map.into_iter().map(|(k, v)| (k, v.into())).collect();
-            return Ok(from_map(&int_map));
+            let mut cfg = from_map(&int_map);
+            cfg.untrust_level = untrust_level;
+            return Ok(cfg);
         }
     }
 
+    // Lenient line-by-line fallback for non-standard / legacy config formats.
     let mut map = BTreeMap::new();
     let mut saw_candidate = false;
+    let mut untrust_level: u8 = 60;
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty()
@@ -452,14 +558,25 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
             || trimmed == "---"
             || trimmed.eq_ignore_ascii_case("DFA-Rules")
             || trimmed.eq_ignore_ascii_case("DFA-Rules:")
+            || trimmed.eq_ignore_ascii_case("global-options")
+            || trimmed.eq_ignore_ascii_case("global-options:")
         {
             continue;
         }
         let normalized = trimmed.replace('=', ":");
         if let Some((k, v)) = normalized.split_once(':') {
-            saw_candidate = true;
             let key = k.trim().to_string();
             let raw = v.trim();
+
+            // Handle Untrust as a global integer option.
+            if key == "Untrust" {
+                if let Ok(n) = raw.parse::<u8>() {
+                    untrust_level = n.min(100);
+                }
+                continue;
+            }
+
+            saw_candidate = true;
             let value = if raw.eq_ignore_ascii_case("true") {
                 1i64
             } else if raw.eq_ignore_ascii_case("false") {
@@ -483,7 +600,9 @@ fn parse_lenient_yaml(content: &str) -> Result<DfaConfig> {
     } else if map.is_empty() {
         warn!(target: "krakenwaf", "DFA config parsed to an empty rule map; all DFA engines are disabled");
     }
-    Ok(from_map(&map))
+    let mut cfg = from_map(&map);
+    cfg.untrust_level = untrust_level;
+    Ok(cfg)
 }
 
 fn from_map(map: &BTreeMap<String, i64>) -> DfaConfig {
@@ -500,6 +619,8 @@ fn from_map(map: &BTreeMap<String, i64>) -> DfaConfig {
         xxe_attack_detect: enabled("XXE_attack_detect"),
         anti_exposed_backup: enabled("Anti_exposed_backup"),
         anti_passwd_leak_detect: enabled("Anti_passwd_leak"),
+        java_deserialize_detect: enabled("Java_deserialize_detect"),
+        untrust_level: 60, // overwritten by caller when global-options is parsed
     }
 }
 
@@ -601,5 +722,70 @@ DFA-Rules:
         )
         .expect("parse minimal config");
         assert!(!cfg.anti_passwd_leak_detect);
+    }
+
+    #[test]
+    fn parses_java_deserialize_detect_config_key() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  Java_deserialize_detect: true
+"#,
+        )
+        .expect("parse Java_deserialize_detect key");
+        assert!(cfg.java_deserialize_detect);
+    }
+
+    #[test]
+    fn java_deserialize_detect_disabled_by_default() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  SQLi_comments_detect: true
+"#,
+        )
+        .expect("parse minimal config");
+        assert!(!cfg.java_deserialize_detect);
+    }
+
+    #[test]
+    fn parses_global_options_untrust_level() {
+        let cfg = parse_lenient_yaml(
+            r#"
+global-options:
+  Untrust: 75
+DFA-Rules:
+  Java_deserialize_detect: true
+"#,
+        )
+        .expect("parse global-options Untrust");
+        assert_eq!(cfg.untrust_level, 75);
+        assert!(cfg.java_deserialize_detect);
+    }
+
+    #[test]
+    fn untrust_level_defaults_to_60() {
+        let cfg = parse_lenient_yaml(
+            r#"
+DFA-Rules:
+  Java_deserialize_detect: true
+"#,
+        )
+        .expect("parse without global-options");
+        assert_eq!(cfg.untrust_level, 60);
+    }
+
+    #[test]
+    fn untrust_level_clamped_to_100() {
+        let cfg = parse_lenient_yaml(
+            r#"
+global-options:
+  Untrust: 150
+DFA-Rules:
+  Java_deserialize_detect: true
+"#,
+        )
+        .expect("parse clamped Untrust");
+        assert_eq!(cfg.untrust_level, 100);
     }
 }

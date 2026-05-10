@@ -101,6 +101,12 @@ async fn leak_shadow() -> &'static str {
      nobody:*:18858:0:99999:7:::\n"
 }
 
+/// Java deserialization target endpoint — accepts any POST body; the WAF must
+/// block requests containing Java magic bytes before they reach this handler.
+async fn java_deser_endpoint() -> &'static str {
+    "ok"
+}
+
 fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
         let addr: SocketAddr = backend_addr().parse().unwrap();
@@ -116,7 +122,8 @@ fn ensure_backend() {
                         .route("/test_two", get(test_two))
                         .route("/test_post", post(test_post))
                         .route("/leak/passwd", get(leak_passwd))
-                        .route("/leak/shadow", get(leak_shadow));
+                        .route("/leak/shadow", get(leak_shadow))
+                        .route("/java-deser", post(java_deser_endpoint));
                     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
                     axum::serve(listener, app).await.unwrap();
                 });
@@ -1286,5 +1293,155 @@ async fn dfa_anti_passwd_leak_disabled_allows_response() {
         resp.status(),
         StatusCode::OK,
         "without DFA the passwd response must pass through"
+    );
+}
+
+// ─── Java_deserialize_detect DFA tests ───────────────────────────────────────
+
+/// A POST body containing rO0A (base64 Java magic) fires 2 signals (A+C) and
+/// must be blocked at the default untrust_level=60.
+#[tokio::test]
+async fn dfa_java_deser_base64_body_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .post(format!("{}/java-deser", waf_base(port)))
+        .header("Content-Type", "application/octet-stream")
+        .body("rO0AAABwdXIAEGphdmEubGFuZy5PYmplY3Q=")
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "rO0A base64 magic in POST body must be blocked (signals A+C)"
+    );
+}
+
+/// POST with Java Content-Type header AND rO0A body fires 3 signals (A+B+C)
+/// and must be blocked unconditionally.
+#[tokio::test]
+async fn dfa_java_deser_header_plus_body_three_signals_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .post(format!("{}/java-deser", waf_base(port)))
+        .header("Content-Type", "application/x-java-serialized-object")
+        .body("rO0AAABwdXIAC1tMamF2YS5sYW5n")
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Java content-type + rO0A body → 3 signals → must always block"
+    );
+}
+
+/// The URL-encoded Java magic %AC%ED with Java content-type header fires 2
+/// signals (A+B) → blocked at untrust=60.
+#[tokio::test]
+async fn dfa_java_deser_url_encoded_magic_with_header_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .post(format!("{}/java-deser", waf_base(port)))
+        .header("Content-Type", "application/x-java-serialized-object")
+        .body("%AC%EDpayload-gadget")
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "%AC%ED + Java content-type header → 2 signals → block at untrust=60"
+    );
+}
+
+/// A Commons-Collections gadget chain payload (rO0AB prefix) must be blocked.
+#[tokio::test]
+async fn dfa_java_deser_commons_collections_gadget_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .post(format!("{}/java-deser", waf_base(port)))
+        .header("Content-Type", "application/x-java-serialized-object")
+        .body("rO0ABXNyADJzdW4ucmVmbGVjdC5hbm5vdGF0aW9uLkFubm90YXRpb25JbnZvY2F0aW9uSGFuZGxlcg==")
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "CommonsCollections gadget chain (rO0AB prefix + Java content-type) must be blocked"
+    );
+}
+
+/// A benign POST request with a clean JSON body and standard content-type must
+/// pass through unaffected.
+#[tokio::test]
+async fn dfa_java_deser_clean_json_post_allowed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_dfa(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .post(format!("{}/java-deser", waf_base(port)))
+        .header("Content-Type", "application/json")
+        .body(r#"{"user":"alice","action":"login"}"#)
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "clean JSON POST must not be blocked by Java_deserialize_detect"
+    );
+}
+
+/// Without DFA enabled the Java deserialization request passes through (200).
+#[tokio::test]
+async fn dfa_java_deser_disabled_allows_request() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]); // no --dfa-load
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .post(format!("{}/java-deser", waf_base(port)))
+        .header("Content-Type", "application/x-java-serialized-object")
+        .body("rO0AAABwdXIAEGphdmEubGFuZy5PYmplY3Q=")
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "without DFA the Java deser request must pass through"
     );
 }

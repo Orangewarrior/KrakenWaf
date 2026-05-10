@@ -1,3 +1,45 @@
+## [2.17.0] - 2026-05-10
+
+### Added
+
+#### DFA — Java Deserialize Detect (`Java_deserialize_detect`)
+
+A new three-signal scoring detector blocks Java deserialization attack payloads
+on both incoming requests and upstream responses.
+
+**Signal categories:**
+- **Signal A (magic bytes / encoding prefixes)**: raw binary `\xAC\xED` (Java stream magic), `\x1f\x8b` (GZIP), and text-encoded forms `rO0A`, `rO0AB`, `H4sI`, `%AC%ED`, `%ac%ed`, `aced`.
+- **Signal B (Java content headers)**: `Content-Type: application/x-java-serialized-object` or `Accept: application/x-java-serialized-object` (case-insensitive).
+- **Signal C (base64 prefix patterns)**: `rO0`, `rO0A`, `rO0AB` (case-sensitive).
+
+**Scoring thresholds** (governed by the new global `Untrust` level):
+- 3 signals → always block.
+- 2 signals + `Untrust ≥ 60` → block.
+- 2 signals + `Untrust < 60` → silent `WARN` log; no block.
+- 1 signal + `Untrust > 80` → informative `WARN` log; no block.
+
+**Global-options YAML section**: a new top-level `global-options` key in the DFA config accepts `Untrust: <0–100>` (default 60), which applies to all score-based detectors.
+
+**Dual-pipeline inspection**: `inspect_java_deser(&str, &[u8])` is called from both `inspect_complete_payload_with_context()` (request) and `inspect_response()` (response). The request path uses the original non-lowercased payload to preserve case-sensitive base64 magic detection.
+
+**Engine support**: Aho-Corasick (three independent automata, per-signal) with optional Vectorscan `BlockDatabase` acceleration. Signal B uses `Flag::CASELESS`; Signals A and C use `Flag::SINGLEMATCH` (case-sensitive).
+
+**New files:**
+- `src/dfa/java_deserialize_detect.rs` — detector implementation with 20 unit tests.
+- `docs/dfa/java_deserialize_detect.md` — full documentation with scoring tables, examples, and false-positive guidance.
+
+**Modified files:**
+- `src/dfa/mod.rs` — new module, `DfaConfig.java_deserialize_detect`, `DfaConfig.untrust_level`, `DfaManager.java_deserialize`, `DfaManager::inspect_java_deser()`, updated `parse_lenient_yaml()` for `global-options`.
+- `src/waf/engine.rs` — `inspect_java_deser` called in both request and response pipelines.
+- `rules/dfa/config.yaml` — added `global-options.Untrust: 60`, `Java_deserialize_detect: true`.
+- `src/bin/demo_server.rs` — new `/java-deser` POST endpoint.
+- `src/bin/attack.rs` — 10 Java deserialization payloads + `sweep_java_deser()` with `Content-Type` header.
+- `tests/server_real_test.rs` — 6 integration tests covering block/allow/disabled scenarios.
+- `docs/dfa/schema.md` — `global-options` section, `Java_deserialize_detect` in module catalogue and summaries.
+- `README.md` — updated DFA module list and config snippet.
+
+---
+
 ## [2.16.0] - 2026-05-10
 
 ### Added

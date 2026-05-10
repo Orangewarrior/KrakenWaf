@@ -368,6 +368,16 @@ impl WafEngine {
             }
         }
 
+        // Java deserialization detection runs on the ORIGINAL (non-lowercased) text
+        // because base64 prefixes like rO0A are case-sensitive. Binary magic is
+        // detected directly from the raw payload bytes.
+        if let Some(dfa_finding) = self
+            .dfa_manager
+            .inspect_java_deser(original_text.as_ref(), payload)
+        {
+            return Decision::Block(Box::new(dfa_finding));
+        }
+
         if self.libinjection_sqli_enabled || self.libinjection_xss_enabled {
             if let Some(finding) = libinjection_match(
                 normalized_bytes.as_ref(),
@@ -520,6 +530,16 @@ impl WafEngine {
         if let Some(dfa_finding) = self
             .dfa_manager
             .inspect_response_body(body_original.as_ref())
+        {
+            return Decision::Block(Box::new(dfa_finding));
+        }
+
+        // Java deserialization detection on upstream responses: combine response
+        // headers + body text so signal-B (header) detection works correctly.
+        let java_deser_text = format!("{header_payload}{body_original}");
+        if let Some(dfa_finding) = self
+            .dfa_manager
+            .inspect_java_deser(&java_deser_text, &ctx.body)
         {
             return Decision::Block(Box::new(dfa_finding));
         }

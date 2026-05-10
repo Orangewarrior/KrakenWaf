@@ -1,4 +1,4 @@
-# KrakenWaf v2.16.0
+# KrakenWaf v2.17.0
 
 ## 🚀 Overview
 
@@ -55,6 +55,7 @@ full module catalogue.
 - [XXE attack detect](docs/dfa/xxe_attack_detect.md) — two-list conjunction with UTF-16 LE/BE evasion bypass (CWE-611)
 - [Anti exposed backup](docs/dfa/anti_exposed_backup.md) — backup-file suffixes and editor artefacts in request paths (CWE-538)
 - [Anti passwd/shadow leak](docs/dfa/anti_passwd_leak.md) — blocks upstream **responses** leaking `/etc/passwd` or `/etc/shadow` content (CWE-538, Critical)
+- [Java deserialize detect](docs/dfa/java_deserialize_detect.md) — three-signal scoring (magic bytes + header + encoded prefix) for Java deserialization gadget chains; inspects both requests and responses (CWE-502, Critical)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -669,6 +670,9 @@ Toggles each DFA detector independently at startup.
 Loaded via `--dfa-load rules/dfa/config.yaml`.
 
 ```yaml
+global-options:
+  Untrust: 60                   # Global paranoia level 0–100 (default 60)
+
 DFA-Rules:
   SQLi_comments_detect: true    # SQL comment evasion (/**/, --, #)
   Overflow_detect: true         # Buffer overflow patterns
@@ -681,6 +685,7 @@ DFA-Rules:
   XXE_attack_detect: true       # XML external entity attack marker correlation
   Anti_exposed_backup: true     # Backup-file / editor-artefact path exposure
   Anti_passwd_leak: true        # Response-body /etc/passwd and /etc/shadow leak detection
+  Java_deserialize_detect: true # Java deserialization gadget chains (req + resp)
 ```
 
 Set any key to `false` to disable that detector without recompiling.

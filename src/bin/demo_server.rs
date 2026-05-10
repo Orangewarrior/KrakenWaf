@@ -72,6 +72,13 @@ async fn test_post(Form(p): Form<Payload>) -> Html<String> {
     ))
 }
 
+/// Endpoint that accepts any POST body — used by the Java deserialization
+/// attack sweep as a target that would normally deserialize data. Returns 200
+/// regardless of payload; the WAF must intercept the malicious request first.
+async fn java_deser_endpoint() -> Html<&'static str> {
+    Html("<html><body><h1>java-deser: received</h1></body></html>")
+}
+
 /// Simulates a server leaking /etc/passwd content in the response body.
 /// Used by the attack sweep to verify that Anti_passwd_leak blocks the
 /// response before it reaches the attacker.
@@ -116,6 +123,9 @@ async fn main() {
         // passwd/shadow leak routes — used by Anti_passwd_leak sweep.
         .route("/leak/passwd", get(leak_passwd))
         .route("/leak/shadow", get(leak_shadow))
+        // Java deserialization target — accepts POST with any body so the
+        // attack tool can test Java deserialization payloads against the WAF.
+        .route("/java-deser", post(java_deser_endpoint))
         // Wildcard route for the backup-file sweep: returns 200 so the attack
         // tool can distinguish a WAF bypass from a WAF block (403).
         // Axum 0.8+ requires the `{*name}` syntax for wildcard capture.

@@ -275,6 +275,32 @@ const BACKUP_URI_PAYLOADS: &[&str] = &[
     "/.htpasswd.bak",
 ];
 
+/// Java deserialization payloads — all should be blocked by Java_deserialize_detect.
+/// Each payload carries at least 2 signals (A+C or A+B+C) so untrust=60 blocks them.
+const JAVA_DESER_PAYLOADS: &[&str] = &[
+    // rO0A fires both signal A (text magic) and signal C (encoded prefix) → 2 signals → block
+    "rO0AAABwdXIAEGphdmEubGFuZy5PYmplY3Q=",
+    // rO0AB is the very-common prefix seen in real Java gadget chains
+    "rO0ABXNyABFqYXZhLnV0aWwuSGFzaE1hcA==",
+    // Base64-GZIP form (H4sI fires signal A)
+    "H4sIAAAAAAAAA6tWKkktLlGyUlIqS80rKU4tykvMTQUA",
+    // URL-encoded Java magic (%AC%ED fires signal A + content-type fires B)
+    "%AC%EDpayload-with-gadget",
+    // ASCII hex magic (aced fires signal A)
+    "aced0005737200",
+    // rO0 is signal C only (1 signal) — won't block at untrust=60 alone, skipped below
+    // Three-signal payload: binary magic + header set in sweep + rO0A prefix
+    "rO0AAABwdXIAC1tMamF2YS5sYW5n",
+    // Realistic Commons-Collections gadget chain prefix (base64)
+    "rO0ABXNyADJzdW4ucmVmbGVjdC5hbm5vdGF0aW9uLkFubm90YXRpb25JbnZvY2F0aW9uSGFuZGxlcg==",
+    // Spring framework gadget (rO0A prefix)
+    "rO0ABXNyABhvcmcuc3ByaW5nZnJhbWV3b3JrLmNvcmU=",
+    // XStream XML deserialization with Java magic in base64
+    "rO0ABXNyAA1qYXZhLmxhbmcuUmVm",
+    // Kryo serialized object (AC ED magic as hex in request body)
+    "aced00057372001f6f72672e6170616368652e636f6d6d6f6e732e636f6c6c656374696f6e73",
+];
+
 /// Paths whose response bodies contain passwd or shadow file content.
 /// The WAF must block the RESPONSE (not the request) and return 403.
 const PASSWD_LEAK_PATHS: &[&str] = &["/leak/passwd", "/leak/shadow"];
@@ -657,6 +683,45 @@ async fn sweep_backup_uris(
     collect_ordered(&mut set, paths.len()).await
 }
 
+/// Sweep Java deserialization payloads: POST each payload with the Java
+/// serialization content-type header so that both signal-B (header) and
+/// signal-A/C (payload magic) fire together → 3 signals → always blocked.
+async fn sweep_java_deser(
+    client: &reqwest::Client,
+    base: &str,
+    payloads: &[&str],
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let url = Arc::new(format!("{base}/java-deser"));
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &payload) in payloads.iter().enumerate() {
+        let client = client.clone();
+        let url = url.clone();
+        let sem = sem.clone();
+        let payload = payload.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            let outcome = match client
+                .post(url.as_str())
+                // Signal-B: Content-Type header for Java serialized objects.
+                .header("Content-Type", "application/x-java-serialized-object")
+                .body(payload.clone())
+                .send()
+                .await
+            {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r) => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (idx, SweepResult { label: payload, outcome })
+        });
+    }
+
+    collect_ordered(&mut set, payloads.len()).await
+}
+
 /// Sweep response-body leak paths: GET each path directly.  The demo backend
 /// returns passwd/shadow content; the WAF must block the response (403).
 async fn sweep_leak_paths(
@@ -995,6 +1060,13 @@ async fn main() {
             PASSWD_LEAK_PATHS.len()
         ),
         sweep_leak_paths(&client, &cfg.target, PASSWD_LEAK_PATHS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!(
+            "Java deserialization DFA — POST /java-deser ({} payloads)",
+            JAVA_DESER_PAYLOADS.len()
+        ),
+        sweep_java_deser(&client, &cfg.target, JAVA_DESER_PAYLOADS, cfg.concurrency)
     );
 
     println!(
