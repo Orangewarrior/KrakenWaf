@@ -801,6 +801,80 @@ async fn main() {
         }};
     }
 
+    // ─── Score-engine validation ────────────────────────────────────────
+    //
+    // Score-engine tests must run BEFORE the DFA sweeps so they see a clean
+    // per-IP rate-limit window.  The DFA sweeps fire several hundred requests
+    // from the same source address; with the default `--rate-limit-per-minute`
+    // budget (240), late requests are rejected with HTTP 403 by the
+    // rate-limiter rather than evaluated by the score engine.  An "allow"
+    // expectation would then be flagged as a false failure even though the
+    // score logic itself produced the correct verdict.  Running these first
+    // keeps the rate-limit budget intact for the deterministic checks.
+    println!(
+        "━━━ Score engine — GET /test_get ({} cases) ━━━",
+        SCORE_GET_CASES.len()
+    );
+    let score_get = sweep_score_get(
+        &client,
+        &cfg.target,
+        "/test_get",
+        SCORE_GET_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_get);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
+    println!(
+        "━━━ Score engine — POST /test_post ({} cases) ━━━",
+        SCORE_POST_CASES.len()
+    );
+    let score_post = sweep_score_post(
+        &client,
+        &cfg.target,
+        "/test_post",
+        SCORE_POST_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_post);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
+    println!(
+        "━━━ Score engine — response GET /test_get ({} cases) ━━━",
+        SCORE_RESPONSE_CASES.len()
+    );
+    let score_response_get = sweep_score_get(
+        &client,
+        &cfg.target,
+        "/test_get",
+        SCORE_RESPONSE_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_response_get);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
+    println!(
+        "━━━ Score engine — response POST /test_post ({} cases) ━━━",
+        SCORE_RESPONSE_CASES.len()
+    );
+    let score_response_post = sweep_score_post(
+        &client,
+        &cfg.target,
+        "/test_post",
+        SCORE_RESPONSE_CASES,
+        cfg.concurrency,
+    )
+    .await;
+    let failures = tally_score(&score_response_post);
+    score_failures += failures;
+    println!("  → {failures} score expectation failure(s)\n");
+
     run_sweep!(
         format!("XSS — POST /test_post ({} payloads)", XSS_PAYLOADS.len()),
         sweep_post(
@@ -1068,70 +1142,6 @@ async fn main() {
         ),
         sweep_java_deser(&client, &cfg.target, JAVA_DESER_PAYLOADS, cfg.concurrency)
     );
-
-    println!(
-        "━━━ Score engine — GET /test_get ({} cases) ━━━",
-        SCORE_GET_CASES.len()
-    );
-    let score_get = sweep_score_get(
-        &client,
-        &cfg.target,
-        "/test_get",
-        SCORE_GET_CASES,
-        cfg.concurrency,
-    )
-    .await;
-    let failures = tally_score(&score_get);
-    score_failures += failures;
-    println!("  → {failures} score expectation failure(s)\n");
-
-    println!(
-        "━━━ Score engine — POST /test_post ({} cases) ━━━",
-        SCORE_POST_CASES.len()
-    );
-    let score_post = sweep_score_post(
-        &client,
-        &cfg.target,
-        "/test_post",
-        SCORE_POST_CASES,
-        cfg.concurrency,
-    )
-    .await;
-    let failures = tally_score(&score_post);
-    score_failures += failures;
-    println!("  → {failures} score expectation failure(s)\n");
-
-    println!(
-        "━━━ Score engine — response GET /test_get ({} cases) ━━━",
-        SCORE_RESPONSE_CASES.len()
-    );
-    let score_response_get = sweep_score_get(
-        &client,
-        &cfg.target,
-        "/test_get",
-        SCORE_RESPONSE_CASES,
-        cfg.concurrency,
-    )
-    .await;
-    let failures = tally_score(&score_response_get);
-    score_failures += failures;
-    println!("  → {failures} score expectation failure(s)\n");
-
-    println!(
-        "━━━ Score engine — response POST /test_post ({} cases) ━━━",
-        SCORE_RESPONSE_CASES.len()
-    );
-    let score_response_post = sweep_score_post(
-        &client,
-        &cfg.target,
-        "/test_post",
-        SCORE_RESPONSE_CASES,
-        cfg.concurrency,
-    )
-    .await;
-    let failures = tally_score(&score_response_post);
-    score_failures += failures;
-    println!("  → {failures} score expectation failure(s)\n");
 
     let grand_total = total_blocked + total_bypassed + total_errors;
     println!("╔══════════════════════════════════════════════════════════╗");
