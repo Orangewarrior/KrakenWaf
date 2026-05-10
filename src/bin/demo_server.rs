@@ -98,7 +98,8 @@ async fn main() {
         .route("/test_post", post(test_post))
         // Wildcard route for the backup-file sweep: returns 200 so the attack
         // tool can distinguish a WAF bypass from a WAF block (403).
-        .route("/*path", get(backup_file));
+        // Axum 0.8+ requires the `{*name}` syntax for wildcard capture.
+        .route("/{*path}", get(backup_file));
 
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
     println!("Demo backend listening on http://{addr}");
