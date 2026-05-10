@@ -268,7 +268,7 @@ const BACKUP_URI_PAYLOADS: &[&str] = &[
     "/tmp/session.tmp",
     "/cache/render.temp",
     "/office/report.wbk",
-    "/.un~config.php",
+    "/.config.un~",
     "/dumps/prod.dump",
     "/sql/migration.sql.",
     "/secrets/api_keys.bkp",
