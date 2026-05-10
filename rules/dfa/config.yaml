@@ -1,3 +1,6 @@
+global-options:
+  Untrust: 60
+
 DFA-Rules:
   SQLi_comments_detect: true
   Overflow_detect: true
@@ -10,3 +13,4 @@ DFA-Rules:
   XXE_attack_detect: true
   Anti_exposed_backup: true
   Anti_passwd_leak: true
+  Java_deserialize_detect: true

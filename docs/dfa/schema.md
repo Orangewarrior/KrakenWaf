@@ -20,12 +20,24 @@ krakenwaf \
   --dfa-load rules/dfa/config.yaml
 ```
 
-The default manifest lives at `rules/dfa/config.yaml`.  Each key maps directly to a
-field on the internal `DfaConfig` struct; unknown keys are ignored, absent keys
-default to `false`.
+The default manifest lives at `rules/dfa/config.yaml`.  Each key under
+`DFA-Rules` maps directly to a field on the internal `DfaConfig` struct;
+unknown keys are silently ignored, absent keys default to `false`.
+
+### `global-options`
+
+A top-level `global-options` section controls parameters that apply across all
+DFA modules:
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `Untrust` | integer 0–100 | `60` | Global paranoia level.  Governs the 2-signal and 1-signal blocking thresholds in score-based detectors (currently `Java_deserialize_detect`). |
 
 ```yaml
 # rules/dfa/config.yaml
+global-options:
+  Untrust: 60   # 0 = lenient; 100 = paranoid
+
 DFA-Rules:
   SQLi_comments_detect: true
   Overflow_detect: true
@@ -37,6 +49,8 @@ DFA-Rules:
   NOSQL_injection_detect: true
   XXE_attack_detect: true
   Anti_exposed_backup: true
+  Anti_passwd_leak: true
+  Java_deserialize_detect: true
 ```
 
 ---
@@ -56,6 +70,7 @@ DFA-Rules:
 | `XXE_attack_detect` | [CWE-611](https://cwe.mitre.org/data/definitions/611.html) | High | [xxe_attack_detect.md](xxe_attack_detect.md) |
 | `Anti_exposed_backup` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Medium | [anti_exposed_backup.md](anti_exposed_backup.md) |
 | `Anti_passwd_leak` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Critical | [anti_passwd_leak.md](anti_passwd_leak.md) |
+| `Java_deserialize_detect` | [CWE-502](https://cwe.mitre.org/data/definitions/502.html) | Critical | [java_deserialize_detect.md](java_deserialize_detect.md) |
 
 ---
 
@@ -196,16 +211,37 @@ patterns) or `/etc/shadow` (`SHADOW_TOKENS` — 8 patterns) appear in the same b
 response body.  A single token in isolation (e.g. `/bin/bash` in a documentation
 response) is deliberately below the threshold to avoid false positives.
 
-This is the only DFA module that acts as a data-loss-prevention (DLP) filter — it
+This is one of the DFA modules that acts as a data-loss-prevention (DLP) filter — it
 blocks the upstream *response* before it reaches the attacker, rather than blocking an
 attacker *request* before it reaches the upstream.
+
+### [`Java_deserialize_detect`](java_deserialize_detect.md)
+
+Detects **Java deserialization attack payloads** in both request inputs and upstream
+responses.  The detector uses a three-signal scoring model:
+
+* **Signal A — magic bytes / encoding prefixes**: raw binary `\xAC\xED` / `\x1f\x8b`,
+  base64 forms (`rO0A`, `rO0AB`, `H4sI`), URL-encoded (`%AC%ED`, `%ac%ed`), ASCII hex
+  (`aced`).
+* **Signal B — Java content headers**: `Content-Type: application/x-java-serialized-object`
+  or `Accept: application/x-java-serialized-object` (case-insensitive).
+* **Signal C — base64 prefix patterns**: `rO0`, `rO0A`, `rO0AB` (case-sensitive).
+
+Blocking thresholds depend on the global `Untrust` level:
+3 signals → always block; 2 signals + `Untrust ≥ 60` → block; 2 signals + `Untrust < 60`
+→ silent log; 1 signal + `Untrust > 80` → informative log.
+
+Unlike all other request-side detectors, this module also inspects the upstream
+**response** body and headers — e.g., to block a backend that accidentally echoes back
+a serialized Java object.
 
 ---
 
 ## Vectorscan SIMD acceleration
 
 Modules that use Aho-Corasick for multi-keyword matching (`NOSQL_injection_detect`,
-`XXE_attack_detect`) can switch to Vectorscan `BlockDatabase` when:
+`XXE_attack_detect`, `Anti_passwd_leak`, `Java_deserialize_detect`) can switch to
+Vectorscan `BlockDatabase` when:
 
 1. KrakenWAF is compiled with the `vectorscan-engine` Cargo feature.
 2. The process is started with `--enable-vectorscan`.
@@ -247,12 +283,16 @@ All DFA modules are written in safe Rust with no `unsafe` blocks.  Each module:
 * Is structured in the *generated-DFA* style (`match state { … }`) to facilitate a
   future migration to `re2rust`-generated automata if throughput requirements grow.
 
-The `DfaManager` struct owns one instance of each enabled detector and exposes two
-entry points called from the WAF engine:
+The `DfaManager` struct owns one instance of each enabled detector and exposes the
+following entry points called from the WAF engine:
 
 * `inspect_uri(&str)` — URI-only check, called from `inspect_early()` before body
-  assembly (used by `Anti_exposed_backup` and `Request_Smuggling_detect`).
-* `inspect(&str)` — full-payload check, called once the complete request string is
-  available.
+  assembly (used by `Anti_exposed_backup`).
+* `inspect(&str)` — full-payload check on a lowercased, URL-decoded string, called
+  once the complete request string is available (used by all injection detectors).
 * `inspect_response_body(&str)` — response-body check, called from `inspect_response()`
   after the full upstream response body is buffered (used by `Anti_passwd_leak`).
+* `inspect_java_deser(&str, &[u8])` — score-based check on the original
+  (non-lowercased) text plus raw body bytes; called from both the request and response
+  pipelines.  Accepts a combined headers+body string so that Signal B (header check)
+  and Signals A/C (body scan) are evaluated in a single call.
