@@ -55,6 +55,7 @@ DFA-Rules:
 | `NOSQL_injection_detect` | [CWE-943](https://cwe.mitre.org/data/definitions/943.html) | High | [nosql_injection_detect.md](nosql_injection_detect.md) |
 | `XXE_attack_detect` | [CWE-611](https://cwe.mitre.org/data/definitions/611.html) | High | [xxe_attack_detect.md](xxe_attack_detect.md) |
 | `Anti_exposed_backup` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Medium | [anti_exposed_backup.md](anti_exposed_backup.md) |
+| `Anti_passwd_leak` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Critical | [anti_passwd_leak.md](anti_passwd_leak.md) |
 
 ---
 
@@ -187,6 +188,18 @@ artefacts (`.bak`, `.old`, `.orig`, `.swp`, `.un~`, `~`, `.DS_Store`, etc.).  Th
 check is URI-only and runs in `inspect_early()`, before the request body is assembled,
 so it adds no latency to normal traffic.
 
+### [`Anti_passwd_leak`](anti_passwd_leak.md)
+
+Operates on the **response body** rather than the request.  The detector fires when
+two or more structurally-distinctive tokens from `/etc/passwd` (`PASSWD_TOKENS` — 9
+patterns) or `/etc/shadow` (`SHADOW_TOKENS` — 8 patterns) appear in the same buffered
+response body.  A single token in isolation (e.g. `/bin/bash` in a documentation
+response) is deliberately below the threshold to avoid false positives.
+
+This is the only DFA module that acts as a data-loss-prevention (DLP) filter — it
+blocks the upstream *response* before it reaches the attacker, rather than blocking an
+attacker *request* before it reaches the upstream.
+
 ---
 
 ## Vectorscan SIMD acceleration
@@ -241,3 +254,5 @@ entry points called from the WAF engine:
   assembly (used by `Anti_exposed_backup` and `Request_Smuggling_detect`).
 * `inspect(&str)` — full-payload check, called once the complete request string is
   available.
+* `inspect_response_body(&str)` — response-body check, called from `inspect_response()`
+  after the full upstream response body is buffered (used by `Anti_passwd_leak`).

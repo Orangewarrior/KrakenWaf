@@ -514,6 +514,16 @@ impl WafEngine {
             }
         }
 
+        // DFA response-body scan: passwd/shadow leak detection.
+        // Runs on the raw (non-normalized) body so that structural tokens such as
+        // "root:x:0:0:" are never mangled before matching.
+        if let Some(dfa_finding) = self
+            .dfa_manager
+            .inspect_response_body(body_original.as_ref())
+        {
+            return Decision::Block(Box::new(dfa_finding));
+        }
+
         Decision::Allow
     }
 

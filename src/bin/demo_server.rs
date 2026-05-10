@@ -72,6 +72,23 @@ async fn test_post(Form(p): Form<Payload>) -> Html<String> {
     ))
 }
 
+/// Simulates a server leaking /etc/passwd content in the response body.
+/// Used by the attack sweep to verify that Anti_passwd_leak blocks the
+/// response before it reaches the attacker.
+async fn leak_passwd() -> &'static str {
+    "root:x:0:0:root:/root:/bin/bash\n\
+     daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
+     bin:x:2:2:bin:/bin:/usr/sbin/nologin\n\
+     nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n"
+}
+
+/// Simulates a server leaking /etc/shadow content in the response body.
+async fn leak_shadow() -> &'static str {
+    "root:$6$salt$longhash:19000:0:99999:7:::\n\
+     daemon:*:18858:0:99999:7:::\n\
+     nobody:*:18858:0:99999:7:::\n"
+}
+
 /// Catch-all GET handler used by the backup-file sweep in the attack tool.
 /// Returns 200 so that the attack tool can distinguish a WAF bypass (200) from
 /// a WAF block (403).  In a real deployment these paths would never exist on a
@@ -96,6 +113,9 @@ async fn main() {
         .route("/", get(index))
         .route("/test_get", get(test_get))
         .route("/test_post", post(test_post))
+        // passwd/shadow leak routes — used by Anti_passwd_leak sweep.
+        .route("/leak/passwd", get(leak_passwd))
+        .route("/leak/shadow", get(leak_shadow))
         // Wildcard route for the backup-file sweep: returns 200 so the attack
         // tool can distinguish a WAF bypass from a WAF block (403).
         // Axum 0.8+ requires the `{*name}` syntax for wildcard capture.

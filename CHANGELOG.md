@@ -1,3 +1,58 @@
+## [2.16.0] - 2026-05-10
+
+### Added
+
+#### DFA — Anti-Passwd-Leak detector (`Anti_passwd_leak`)
+
+- `src/dfa/anti_passwd_leak.rs`: new **response-side** DFA module that intercepts
+  upstream responses whose body contains ≥ 2 distinct structural tokens from either
+  `/etc/passwd` (`PASSWD_TOKENS` — 9 patterns: `root:x:0:0:`, `daemon:x:`, `bin:x:`,
+  `nobody:`, `/bin/bash`, `/bin/sh`, `/bin/false`, `/usr/sbin/nologin`,
+  `/sbin/nologin`) or `/etc/shadow` (`SHADOW_TOKENS` — 8 patterns: `root:$y$`,
+  `root:$6$`, `root:$5$`, `root:$1$`, `root:!:`, `daemon:`, `nobody:`,
+  `:0:99999:7:::`).
+- A single token present in the response is **not** sufficient to block — the
+  two-token conjunction requirement eliminates false positives from documentation or
+  log output that incidentally contains one of the tokens.
+- This is the only DFA module that acts as a **data-loss-prevention (DLP) filter**:
+  it blocks the upstream *response* before the sensitive data reaches the attacker,
+  rather than blocking the attacker's request.
+- `PASSWD_TOKENS` is checked before `SHADOW_TOKENS`; if the passwd check fires, the
+  shadow check is skipped (short-circuit evaluation).
+- When `--enable-vectorscan` is active, both token lists are compiled into a Hyperscan
+  `BlockDatabase` with `Flag::SINGLEMATCH`; matched pattern IDs are collected in the
+  scan callback and counted without a premature `Scan::Terminate`.
+- Activated via `Anti_passwd_leak: true` in the DFA config YAML.
+- `src/dfa/mod.rs`: `inspect_response_body(body: &str)` entry-point added to
+  `DfaManager`; `anti_passwd_leak_detect` field added to `DfaConfig`; YAML key
+  `Anti_passwd_leak` wired in `from_map()`.
+- `src/waf/engine.rs`: `inspect_response_body()` hooked into `inspect_response()`
+  after the existing keyword/regex body checks, operating on the raw (non-URL-decoded)
+  response body.
+- `rules/dfa/config.yaml`: `Anti_passwd_leak: true` added to the default config.
+- `src/bin/demo_server.rs`: two new routes added:
+  - `GET /leak/passwd` — returns a realistic 4-line `/etc/passwd` dump.
+  - `GET /leak/shadow` — returns a realistic 3-line `/etc/shadow` dump.
+- `src/bin/attack.rs`: `PASSWD_LEAK_PATHS` list (`/leak/passwd`, `/leak/shadow`) and
+  `sweep_leak_paths()` function added; the sweep makes direct GET requests and expects
+  403 (WAF blocks the response).
+- `tests/server_real_test.rs`: four new integration tests:
+  `dfa_anti_passwd_leak_response_is_blocked`, `dfa_anti_shadow_leak_response_is_blocked`,
+  `dfa_anti_passwd_leak_normal_response_allowed`,
+  `dfa_anti_passwd_leak_disabled_allows_response`.
+  The test backend gains `/leak/passwd` and `/leak/shadow` routes.
+- `src/dfa/anti_passwd_leak.rs` ships 9 unit tests covering: realistic dump detection
+  for both file types, single-token below-threshold cases, benign body pass-through,
+  passwd-takes-priority ordering, and shadow-only content classification.
+- `docs/dfa/anti_passwd_leak.md`: full documentation (behaviour, token tables,
+  engine selection, config, examples, false-positive guidance, performance notes).
+- `docs/dfa/schema.md`: module catalogue updated with `Anti_passwd_leak` entry and
+  `inspect_response_body()` entry-point documented; DLP nature of the module noted.
+- `README.md`: DFA bullet list and YAML config snippet updated.
+- Detection finding: severity **Critical**, CWE-538, OWASP Sensitive Data Exposure.
+
+---
+
 ## [2.15.0] - 2026-05-10
 
 ### Added
