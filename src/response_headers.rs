@@ -8,6 +8,8 @@ pub struct ResponseHeaderPolicy {
 }
 
 impl ResponseHeaderPolicy {
+    /// # Errors
+    /// Returns an error if the file cannot be read or contains malformed header entries.
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read response header policy {}", path.display()))?;

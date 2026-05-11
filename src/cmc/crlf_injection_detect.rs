@@ -15,10 +15,13 @@ impl CrlfMatch {
 }
 
 impl CrlfInjectionCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
 
+    #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn build(self) -> CrlfInjectionCmc {
         CrlfInjectionCmc
     }
@@ -116,6 +119,7 @@ const ESCAPED_BREAKS: &[&str] = &[
 const DECODED_UNICODE_BREAKS: &[&str] = &["嘊", "嘍", "č", "Ċ", "\u{2028}", "\u{2029}"];
 
 impl CrlfInjectionCmc {
+    #[allow(clippy::unused_self)]
     pub fn detect(&self, input: &str) -> Option<CrlfMatch> {
         if has_control_line_injection(input) {
             return Some(CrlfMatch {

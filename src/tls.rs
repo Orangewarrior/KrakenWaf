@@ -18,6 +18,8 @@ pub struct SniEntry {
     pub is_default: bool,
 }
 
+/// # Errors
+/// Returns an error if the SNI CSV cannot be read or any certificate/key file fails to load.
 pub fn build_tls_config(sni_csv: &Path) -> Result<Arc<ServerConfig>> {
     let entries = load_sni_entries(sni_csv)?;
     let mut resolver = ResolvesServerCertUsingSni::new();
@@ -93,25 +95,19 @@ impl ResolvesServerCert for FallbackResolver {
     fn resolve(&self, ch: ClientHello<'_>) -> Option<Arc<CertifiedKey>> {
         // Extract SNI before moving ch into the resolver (borrow ends after map).
         let sni = ch.server_name().map(str::to_owned);
-        match self.resolver.resolve(ch) {
-            Some(cert) => Some(cert),
-            None => {
-                // Serve the default certificate but always log: in multi-tenant deployments
-                // this may expose the wrong cert to a client — operators must know it happened.
-                match &sni {
-                    Some(name) => warn!(
-                        target: "krakenwaf",
-                        sni = %name,
-                        "TLS: SNI not found in sni_map, serving default certificate — \
-                         add an entry for this hostname to silence this warning"
-                    ),
-                    None => warn!(
-                        target: "krakenwaf",
-                        "TLS: ClientHello carries no SNI, serving default certificate"
-                    ),
-                }
-                Some(self.default.clone())
-            }
+        if let Some(cert) = self.resolver.resolve(ch) { Some(cert) } else {
+            // Serve the default certificate but always log: in multi-tenant deployments
+            // this may expose the wrong cert to a client — operators must know it happened.
+            if let Some(name) = &sni { warn!(
+                target: "krakenwaf",
+                sni = %name,
+                "TLS: SNI not found in sni_map, serving default certificate — \
+                 add an entry for this hostname to silence this warning"
+            ); } else { warn!(
+                target: "krakenwaf",
+                "TLS: ClientHello carries no SNI, serving default certificate"
+            ); }
+            Some(self.default.clone())
         }
     }
 }

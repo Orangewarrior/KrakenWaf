@@ -1,9 +1,9 @@
-//! KrakenWAF attack tool — sends XSS, SQLi and scanner-UA payloads to the WAF
+//! `KrakenWAF` attack tool — sends XSS, `SQLi` and scanner-UA payloads to the WAF
 //! and reports which were blocked and which bypassed.
 //!
 //! Usage
 //! -----
-//!   cargo run --bin attack                                     # target http://127.0.0.1:8080
+//!   cargo run --bin attack                                     # target <http://127.0.0.1:8080>
 //!   cargo run --bin attack -- --target http://... --verbose
 //!   cargo run --bin attack -- --concurrency 50                 # 50 requests in-flight at once
 
@@ -217,14 +217,14 @@ const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
 const NOSQL_INJECTION_PAYLOADS: &[&str] = &[
     r#"{"user":{"$gt":""},"pass":"admin"}"#,
     r#"{"password":{"$ne":null},"$where":"this.password.match(/admin/)"}"#,
-    r#"selector[$where]=this.password.match(/admin/)"#,
+    r"selector[$where]=this.password.match(/admin/)",
     r#"{"$or":[{"user":"admin"},{"pass":"root"}]}"#,
     r#"{"$and":[{"user":"admin"},{"pass":{"$exists":true}}]}"#,
     r#"{"$where":"sleep(5000) || true"}"#,
     r#"{"$nin":["admin","root"],"user":"undefined"}"#,
     r#"{"$in":["admin","user"],"success":true}"#,
     r#"{"$comment":"login admin pass"}"#,
-    r#"db.stores.mapReduce(function(){return true},function(){})"#,
+    r"db.stores.mapReduce(function(){return true},function(){})",
     r#"db.injection.insert({user:"admin",pass:null})"#,
     r#"{"$remove":"logins","admin":true}"#,
     r#"{"$save":{"user":"root"},"Date":"new%20Date()"}"#,
@@ -251,7 +251,7 @@ const XXE_ATTACK_PAYLOADS: &[&str] = &[
 ];
 
 /// URI paths that end with a known backup/temp/config-leak extension.
-/// All of these should be blocked as GET requests when Anti_exposed_backup is enabled.
+/// All of these should be blocked as GET requests when `Anti_exposed_backup` is enabled.
 const BACKUP_URI_PAYLOADS: &[&str] = &[
     "/wp-config.php.bak",
     "/database.sql.bak",
@@ -275,7 +275,7 @@ const BACKUP_URI_PAYLOADS: &[&str] = &[
     "/.htpasswd.bak",
 ];
 
-/// Java deserialization payloads — all should be blocked by Java_deserialize_detect.
+/// Java deserialization payloads — all should be blocked by `Java_deserialize_detect`.
 /// Each payload carries at least 2 signals (A+C or A+B+C) so untrust=60 blocks them.
 const JAVA_DESER_PAYLOADS: &[&str] = &[
     // rO0A fires both signal A (text magic) and signal C (encoded prefix) → 2 signals → block
@@ -387,7 +387,7 @@ fn parse_args() -> Config {
             "--target" | "-t" => {
                 i += 1;
                 if let Some(v) = args.get(i) {
-                    target = v.clone();
+                    target.clone_from(v);
                 }
             }
             "--verbose" | "-v" => {
@@ -505,7 +505,7 @@ async fn sweep_post(
         let sem = sem.clone();
         let payload = payload.to_string();
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("semaphore");
             let outcome = match client
                 .post(url.as_str())
                 .form(&[("payload_test", &payload)])
@@ -546,7 +546,7 @@ async fn sweep_get(
         let sem = sem.clone();
         let payload = payload.to_string();
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("semaphore");
             let outcome = match client
                 .get(url.as_str())
                 .query(&[("payload_test", &payload)])
@@ -633,7 +633,7 @@ async fn sweep_ua(
         let ua = ua.to_string();
         let label = format!("{name} ({ua})");
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("semaphore");
             let outcome = match client
                 .get(url.as_str())
                 .query(&[("payload_test", "hello")])
@@ -654,7 +654,7 @@ async fn sweep_ua(
 
 /// Sweep backup URI paths: sends a GET request directly to each path (the path
 /// IS the payload, not a query parameter).  Expects 403 from a WAF with
-/// Anti_exposed_backup enabled; any other status counts as a bypass.
+/// `Anti_exposed_backup` enabled; any other status counts as a bypass.
 async fn sweep_backup_uris(
     client: &reqwest::Client,
     base: &str,
@@ -670,7 +670,7 @@ async fn sweep_backup_uris(
         let sem = sem.clone();
         let label = path.to_string();
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("semaphore");
             let outcome = match client.get(&url).send().await {
                 Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
                 Ok(r) => Outcome::Bypassed(r.status()),
@@ -702,7 +702,7 @@ async fn sweep_java_deser(
         let sem = sem.clone();
         let payload = payload.to_string();
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("semaphore");
             let outcome = match client
                 .post(url.as_str())
                 // Signal-B: Content-Type header for Java serialized objects.
@@ -739,7 +739,7 @@ async fn sweep_leak_paths(
         let sem = sem.clone();
         let label = path.to_string();
         set.spawn(async move {
-            let _permit = sem.acquire().await.unwrap();
+            let _permit = sem.acquire().await.expect("semaphore");
             let outcome = match client.get(&url).send().await {
                 Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
                 Ok(r) => Outcome::Bypassed(r.status()),
@@ -767,6 +767,7 @@ async fn collect_ordered(set: &mut JoinSet<(usize, SweepResult)>, len: usize) ->
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() {
     let cfg = parse_args();
 

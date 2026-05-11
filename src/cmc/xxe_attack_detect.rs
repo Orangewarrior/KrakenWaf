@@ -60,15 +60,18 @@ impl XxeAttackMatch {
 }
 
 impl XxeAttackCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use] 
     pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
         self.vectorscan_enabled = enabled;
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> XxeAttackCmc {
         XxeAttackCmc {
             list_a: LiteralMatcher::new(LIST_A, self.vectorscan_enabled),
@@ -180,6 +183,7 @@ fn has_utf16_nul_shape(bytes: &[u8]) -> bool {
 }
 
 fn has_embedded_utf16_nuls(bytes: &[u8]) -> bool {
+    #[allow(clippy::naive_bytecount)]
     if bytes.iter().filter(|&&b| b == 0).count() < 4 {
         return false;
     }
@@ -266,7 +270,7 @@ mod tests {
             .is_some());
 
         assert!(cmc.detect(r#"<!ENTITY harmless "value">"#).is_none());
-        assert!(cmc.detect(r#"<data>file:///etc/passwd</data>"#).is_none());
+        assert!(cmc.detect(r"<data>file:///etc/passwd</data>").is_none());
     }
 
     #[test]

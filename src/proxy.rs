@@ -24,7 +24,7 @@ use uuid::Uuid;
 const STREAM_OVERLAP_BYTES: usize = 16 * 1024;
 
 /// Hard ceiling on the number of headers forwarded upstream and embedded into the
-/// inspection prefix. Defends against header-amplification DoS and request smuggling
+/// inspection prefix. Defends against header-amplification `DoS` and request smuggling
 /// surface. Browsers send ~20-30 headers in practice.
 const MAX_FORWARDED_HEADERS: usize = 100;
 
@@ -59,7 +59,7 @@ impl std::fmt::Display for BodyInspectionError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::TooLarge { limit } => {
-                write!(f, "request body exceeded route limit of {} bytes", limit)
+                write!(f, "request body exceeded route limit of {limit} bytes")
             }
             Self::Blocked { .. } => write!(f, "request blocked during streaming inspection"),
             Self::Timeout => write!(
@@ -75,6 +75,8 @@ impl std::fmt::Display for BodyInspectionError {
 impl std::error::Error for BodyInspectionError {}
 
 impl ProxyClient {
+    /// # Errors
+    /// Returns an error if the upstream URL is invalid or the HTTP client cannot be built.
     pub fn new(
         upstream: &str,
         timeout_secs: u64,
@@ -126,6 +128,7 @@ impl ProxyClient {
         resp
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn dispatch(
         &self,
         state: &AppState,
@@ -255,6 +258,7 @@ impl ProxyClient {
 
     /// Log the detection event and, in `Block` mode, return a 403 response.
     /// Returns `None` in `Silent` or `DetectOnly` mode so the caller continues forwarding.
+    #[allow(clippy::unused_async)]
     async fn log_and_enforce(
         &self,
         state: &AppState,
@@ -316,7 +320,7 @@ impl ProxyClient {
 
         let mut forwarded_count: usize = 0;
         let mut forwarded_bytes: usize = 0;
-        for (name, value) in headers.iter() {
+        for (name, value) in headers {
             if is_hop_by_hop(name) || name == HOST {
                 continue;
             }
@@ -347,7 +351,7 @@ impl ProxyClient {
         let status =
             StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
         let mut response_builder = Response::builder().status(status);
-        for (name, value) in response.headers().iter() {
+        for (name, value) in response.headers() {
             if !is_hop_by_hop(name) {
                 response_builder = response_builder.header(name, value);
             }
@@ -573,10 +577,8 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
                             };
                             if is_local {
                                 anyhow::bail!(
-                                    "upstream {} resolved to private/local address {}; \
-                                     refuse to start without --allow-private-upstream",
-                                    domain,
-                                    ip
+                                    "upstream {domain} resolved to private/local address {ip}; \
+                                     refuse to start without --allow-private-upstream"
                                 );
                             }
                         }
@@ -610,7 +612,7 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
 fn exceeds_header_limits(headers: &HeaderMap) -> bool {
     let mut count = 0usize;
     let mut bytes = 0usize;
-    for (name, value) in headers.iter() {
+    for (name, value) in headers {
         count += 1;
         bytes += name.as_str().len() + value.as_bytes().len();
         if count > MAX_FORWARDED_HEADERS || bytes > MAX_FORWARDED_HEADER_BYTES {
@@ -624,7 +626,7 @@ fn flatten_headers(headers: &HeaderMap) -> String {
     let mut out = String::new();
     let mut count = 0usize;
     let mut bytes = 0usize;
-    for (name, value) in headers.iter() {
+    for (name, value) in headers {
         count += 1;
         bytes += name.as_str().len() + value.as_bytes().len();
         if count > MAX_FORWARDED_HEADERS || bytes > MAX_FORWARDED_HEADER_BYTES {
@@ -649,7 +651,7 @@ fn build_upstream_target(upstream: &Url, uri: &Uri) -> Url {
     let mut target = upstream.clone();
     let raw_path = uri.path();
     let trimmed = raw_path.trim_start_matches('/');
-    let safe_path = format!("/{}", trimmed);
+    let safe_path = format!("/{trimmed}");
     target.set_path(&safe_path);
     target.set_query(uri.query());
     target.set_fragment(None);
@@ -702,6 +704,7 @@ fn block_content_response(
     response
 }
 
+#[must_use] 
 pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
     // All header names/values are static literals so the builder cannot actually fail.
     // Falling back to a bare Response::new keeps the request path infallible if the
@@ -728,9 +731,8 @@ fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Optio
 
 fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppState) -> String {
     use std::net::IpAddr;
-    let peer = match peer_ip.parse::<IpAddr>() {
-        Ok(ip) => ip,
-        Err(_) => return peer_ip.to_string(),
+    let Ok(peer) = peer_ip.parse::<IpAddr>() else {
+        return peer_ip.to_string();
     };
     let trusted_nets: Vec<ipnet::IpNet> = state
         .cli
@@ -745,9 +747,8 @@ fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppStat
         Some(h) if !h.trim().is_empty() => h.trim(),
         _ => return peer_ip.to_string(),
     };
-    let raw = match header_value_case_insensitive(headers, header_name) {
-        Some(v) => v,
-        None => return peer_ip.to_string(),
+    let Some(raw) = header_value_case_insensitive(headers, header_name) else {
+        return peer_ip.to_string();
     };
     let candidate = if header_name.eq_ignore_ascii_case("x-forwarded-for") {
         // Rightmost-trusted algorithm (RFC 7239 §5.3): walk right-to-left, skip IPs that

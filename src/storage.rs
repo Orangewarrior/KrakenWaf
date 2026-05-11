@@ -2,7 +2,7 @@ use crate::logging::SecurityEvent;
 use anyhow::{Context, Result};
 use sea_orm::{
     entity::prelude::*,
-    ActiveValue::Set, ConnectOptions, Database, DatabaseBackend,
+    ActiveValue, ActiveValue::Set, ConnectOptions, Database, DatabaseBackend,
     DatabaseConnection, EntityTrait, Statement,
 };
 use std::{fs, path::Path, time::Duration};
@@ -52,6 +52,8 @@ impl RelationTrait for Relation {
 impl ActiveModelBehavior for ActiveModel {}
 
 impl SqliteStore {
+    /// # Errors
+    /// Returns an error if the database directory cannot be created or the `SQLite` connection fails.
     pub async fn new(root: &Path) -> Result<Self> {
         let db_dir = root.join("logs").join("db");
         fs::create_dir_all(&db_dir)?;
@@ -198,7 +200,7 @@ async fn column_exists(db: &DatabaseConnection, table: &str, column: &str) -> Re
 async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
     db.execute(Statement::from_string(
         DatabaseBackend::Sqlite,
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS vulnerabilities (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title VARCHAR(256) NOT NULL,
@@ -217,7 +219,7 @@ async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
             request_payload TEXT NOT NULL,
             request_id VARCHAR(32) NOT NULL DEFAULT ''
         );
-        "#.to_owned(),
+        ".to_owned(),
     )).await?;
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_occurred_at ON vulnerabilities(occurred_at DESC);".to_owned())).await?;
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity);".to_owned())).await?;
@@ -234,7 +236,7 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
         create_latest_schema(db).await?;
         db.execute(Statement::from_string(
             DatabaseBackend::Sqlite,
-            r#"
+            r"
             INSERT INTO vulnerabilities (
                 id, title, severity, cwe, description, reference_url, occurred_at,
                 rule_match, rule_line_match, client_ip, http_method, request_uri,
@@ -256,7 +258,7 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
                 request_payload,
                 '' AS request_id
             FROM vulnerabilities_legacy;
-            "#.to_owned(),
+            ".to_owned(),
         )).await?;
         db.execute(Statement::from_string(DatabaseBackend::Sqlite, "DROP TABLE vulnerabilities_legacy;".to_owned())).await?;
         Ok(())
@@ -305,7 +307,7 @@ async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Resu
     }
 
     let models = events.iter().map(|event| ActiveModel {
-        id: Default::default(),
+        id: ActiveValue::default(),
         title: Set(event.title.clone()),
         severity: Set(event.severity.to_string()),
         cwe: Set(event.cwe.clone()),

@@ -72,7 +72,7 @@ async fn main() -> Result<()> {
         cli.libinjection_sqli_enabled(),
         cli.libinjection_xss_enabled(),
         cli.enable_vectorscan,
-        rate_limit_snapshot_path(&root_dir, cli.wal_mode),
+        &rate_limit_snapshot_path(&root_dir, cli.wal_mode),
         match cli.wal_mode {
             WalMode::Sqlite => PersistenceMode::Sqlite,
             WalMode::Bincode => PersistenceMode::Bincode,
@@ -137,7 +137,7 @@ fn spawn_rule_reload(state: Arc<AppState>) {
 
             while sighup.recv().await.is_some() {
                 match state.waf.reload_from_dir(&state.rules_dir).await {
-                    Ok(_) => info!(target: "krakenwaf", "rules hot-reloaded successfully"),
+                    Ok(()) => info!(target: "krakenwaf", "rules hot-reloaded successfully"),
                     Err(err) => error!(target: "krakenwaf", "rule reload failed: {err:#}"),
                 }
             }

@@ -8,12 +8,16 @@ impl Default for SqliCommentsCmcBuilder {
 }
 
 impl SqliCommentsCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self { Self::default() }
+    #[must_use] 
     pub fn threshold(mut self, threshold: usize) -> Self { self.threshold = threshold; self }
+    #[must_use] 
     pub fn build(self) -> SqliCommentsCmc { SqliCommentsCmc { threshold: self.threshold } }
 }
 
 impl SqliCommentsCmc {
+    #[allow(clippy::unused_self)]
     pub fn count_matches(&self, input: &str) -> usize {
         let bytes = input.as_bytes();
         let mut i = 0;

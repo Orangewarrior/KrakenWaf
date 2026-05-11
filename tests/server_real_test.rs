@@ -1,19 +1,19 @@
-//! End-to-end integration tests: Axum micro-backend + KrakenWAF (--no-tls).
+//! End-to-end integration tests: Axum micro-backend + `KrakenWAF` (--no-tls).
 //!
 //! Topology
 //! --------
-//!   reqwest  →  KrakenWAF :WAF_PORT (--no-tls)  →  Axum backend :9077
+//!   reqwest  →  `KrakenWAF` `:WAF_PORT` (--no-tls)  →  Axum backend :9077
 //!
 //! The backend is started once for the whole test binary via `BACKEND_ONCE`.
 //! Each test gets its own WAF port (atomically allocated) so tests can run
-//! without port collisions even when the OS puts a closed socket in TIME_WAIT.
+//! without port collisions even when the OS puts a closed socket in `TIME_WAIT`.
 //!
 //! Backend routes
 //! --------------
-//!   GET  /test_one   → HTML form (GET → /test_get)
-//!   GET  /test_get   → renders `payload_test` query param unsanitised in <h1>
-//!   GET  /test_two   → HTML form (POST → /test_post)
-//!   POST /test_post  → renders `payload_test` form field unsanitised in <h1>
+//!   GET  `/test_one`   → HTML form (`GET` → `/test_get`)
+//!   GET  `/test_get`   → renders `payload_test` query param unsanitised in `<h1>`
+//!   GET  `/test_two`   → HTML form (`POST` → `/test_post`)
+//!   POST `/test_post`  → renders `payload_test` form field unsanitised in `<h1>`
 
 use axum::{
     extract::{Form, Query},
@@ -86,7 +86,7 @@ async fn test_post(Form(p): Form<Payload>) -> Html<String> {
     Html(format!("<h1>{}</h1>", p.payload_test))
 }
 
-/// Returns a realistic /etc/passwd dump — blocked by Anti_passwd_leak.
+/// Returns a realistic /etc/passwd dump — blocked by `Anti_passwd_leak`.
 async fn leak_passwd() -> &'static str {
     "root:x:0:0:root:/root:/bin/bash\n\
      daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n\
@@ -94,7 +94,7 @@ async fn leak_passwd() -> &'static str {
      nobody:x:65534:65534:nobody:/nonexistent:/usr/sbin/nologin\n"
 }
 
-/// Returns a realistic /etc/shadow dump — blocked by Anti_passwd_leak.
+/// Returns a realistic /etc/shadow dump — blocked by `Anti_passwd_leak`.
 async fn leak_shadow() -> &'static str {
     "root:$6$salt$longhash:19000:0:99999:7:::\n\
      daemon:*:18858:0:99999:7:::\n\
@@ -109,12 +109,12 @@ async fn java_deser_endpoint() -> &'static str {
 
 fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
-        let addr: SocketAddr = backend_addr().parse().unwrap();
+        let addr: SocketAddr = backend_addr().parse().expect("test");
         std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
-                .unwrap()
+                .expect("test")
                 .block_on(async move {
                     let app = Router::new()
                         .route("/test_one", get(test_one))
@@ -124,8 +124,8 @@ fn ensure_backend() {
                         .route("/leak/passwd", get(leak_passwd))
                         .route("/leak/shadow", get(leak_shadow))
                         .route("/java-deser", post(java_deser_endpoint));
-                    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-                    axum::serve(listener, app).await.unwrap();
+                    let listener = tokio::net::TcpListener::bind(addr).await.expect("test");
+                    axum::serve(listener, app).await.expect("test");
                 });
         });
         // Allow the listener to bind before any WAF is pointed at it.
@@ -209,7 +209,7 @@ fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(5))
         .build()
-        .unwrap()
+        .expect("test")
 }
 
 // ─── Payload lists ───────────────────────────────────────────────────────────
@@ -268,7 +268,7 @@ const XSS_PAYLOADS: &[&str] = &[
     "<noscript><p title=\"</noscript><img src=x onerror=alert(1)>\">",
 ];
 
-/// 50 classic SQLi payloads — all must be blocked when sent in a GET query.
+/// 50 classic `SQLi` payloads — all must be blocked when sent in a GET query.
 const SQLI_PAYLOADS: &[&str] = &[
     "' or '1'='1",
     "' or '1'='1'--",
@@ -322,7 +322,7 @@ const SQLI_PAYLOADS: &[&str] = &[
     "' or true--",
 ];
 
-/// Scanner User-Agents sampled from rules/user_agents/scanners.txt — all must
+/// Scanner User-Agents sampled from `rules/user_agents/scanners.txt` — all must
 /// be blocked on any request, regardless of payload.
 const SCANNER_UAS: &[&str] = &[
     "nikto/2.1.6",
@@ -441,18 +441,18 @@ const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
     "POST / HTTP/1.1%0d%0aContent-Length: 3%0d%0a%0d%0aabc",
 ];
 
-/// NoSQL injection payloads covered by the CMC anomaly detector.
+/// `NoSQL` injection payloads covered by the CMC anomaly detector.
 const NOSQL_INJECTION_PAYLOADS: &[&str] = &[
     r#"{"user":{"$gt":""},"pass":"admin"}"#,
     r#"{"password":{"$ne":null},"$where":"this.password.match(/admin/)"}"#,
-    r#"selector[$where]=this.password.match(/admin/)"#,
+    r"selector[$where]=this.password.match(/admin/)",
     r#"{"$or":[{"user":"admin"},{"pass":"root"}]}"#,
     r#"{"$and":[{"user":"admin"},{"pass":{"$exists":true}}]}"#,
     r#"{"$where":"sleep(5000) || true"}"#,
     r#"{"$nin":["admin","root"],"user":"undefined"}"#,
     r#"{"$in":["admin","user"],"success":true}"#,
     r#"{"$comment":"login admin pass"}"#,
-    r#"db.stores.mapReduce(function(){return true},function(){})"#,
+    r"db.stores.mapReduce(function(){return true},function(){})",
     r#"db.injection.insert({user:"admin",pass:null})"#,
     r#"{"$remove":"logins","admin":true}"#,
     r#"{"$save":{"user":"root"},"Date":"new%20Date()"}"#,
@@ -481,7 +481,7 @@ const XXE_ATTACK_PAYLOADS: &[&str] = &[
 ];
 
 /// URI paths with backup/temp/leak extensions — must be blocked by the
-/// Anti_exposed_backup CMC on GET/HEAD; POST to the same path must pass through.
+/// `Anti_exposed_backup` CMC on GET/HEAD; POST to the same path must pass through.
 const BACKUP_URI_PATHS: &[&str] = &[
     "/wp-config.php.bak",
     "/database.sql.bak",
@@ -529,7 +529,7 @@ async fn xss_payload_sweep_post() {
     }
 }
 
-/// Sweep 50 SQLi payloads via GET query — every one must be blocked (HTTP 403).
+/// Sweep 50 `SQLi` payloads via GET query — every one must be blocked (HTTP 403).
 #[tokio::test]
 async fn sqli_payload_sweep_get() {
     ensure_backend();
@@ -607,7 +607,7 @@ async fn blocklisted_ip_is_blocked() {
         .header("X-Real-IP", "10.10.10.1")
         .send()
         .await
-        .unwrap();
+        .expect("test");
 
     assert_eq!(resp.status(), StatusCode::FORBIDDEN);
 }
@@ -627,7 +627,7 @@ async fn clean_get_passes_through() {
         .query(&[("payload_test", "hello world")])
         .send()
         .await
-        .unwrap();
+        .expect("test");
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -646,7 +646,7 @@ async fn clean_post_passes_through() {
         .form(&[("payload_test", "safe value")])
         .send()
         .await
-        .unwrap();
+        .expect("test");
 
     assert_eq!(resp.status(), StatusCode::OK);
 }
@@ -676,13 +676,13 @@ async fn cmc_crlf_does_not_block_clean_login_request() {
         .header("Cookie", "PHPSESSID=abc123")
         .send()
         .await
-        .unwrap();
+        .expect("test");
 
     assert_ne!(resp.status(), StatusCode::FORBIDDEN);
 }
 
 /// Sweep the same 50 XSS payloads via GET query — every one must be blocked (403).
-/// Mirrors xss_payload_sweep_post to confirm URI-phase rules cover the same vectors.
+/// Mirrors `xss_payload_sweep_post` to confirm URI-phase rules cover the same vectors.
 #[tokio::test]
 async fn xss_payload_sweep_get() {
     ensure_backend();
@@ -707,8 +707,8 @@ async fn xss_payload_sweep_get() {
     }
 }
 
-/// Sweep the same 50 SQLi payloads via POST body — every one must be blocked (403).
-/// Mirrors sqli_payload_sweep_get to confirm body-phase rules cover the same vectors.
+/// Sweep the same 50 `SQLi` payloads via POST body — every one must be blocked (403).
+/// Mirrors `sqli_payload_sweep_get` to confirm body-phase rules cover the same vectors.
 #[tokio::test]
 async fn sqli_payload_sweep_post() {
     ensure_backend();
@@ -1005,7 +1005,7 @@ async fn cmc_request_smuggling_header_signals_are_blocked() {
     );
 }
 
-/// CMC NoSQL injection detection must block payloads in URI and POST body.
+/// CMC `NoSQL` injection detection must block payloads in URI and POST body.
 #[tokio::test]
 async fn cmc_nosql_injection_payload_sweep_get_and_post() {
     ensure_backend();
@@ -1207,7 +1207,7 @@ async fn cmc_anti_exposed_backup_suffix_in_query_string_not_blocked() {
 
 // ─── Anti_passwd_leak CMC tests ───────────────────────────────────────────────
 
-/// passwd leak: response body containing ≥2 PASSWD_TOKENS must be blocked (403).
+/// passwd leak: response body containing ≥2 `PASSWD_TOKENS` must be blocked (403).
 #[tokio::test]
 async fn cmc_anti_passwd_leak_response_is_blocked() {
     ensure_backend();
@@ -1229,7 +1229,7 @@ async fn cmc_anti_passwd_leak_response_is_blocked() {
     );
 }
 
-/// shadow leak: response body containing ≥2 SHADOW_TOKENS must be blocked (403).
+/// shadow leak: response body containing ≥2 `SHADOW_TOKENS` must be blocked (403).
 #[tokio::test]
 async fn cmc_anti_shadow_leak_response_is_blocked() {
     ensure_backend();
@@ -1299,7 +1299,7 @@ async fn cmc_anti_passwd_leak_disabled_allows_response() {
 // ─── Java_deserialize_detect CMC tests ───────────────────────────────────────
 
 /// A POST body containing rO0A (base64 Java magic) fires 2 signals (A+C) and
-/// must be blocked at the default untrust_level=60.
+/// must be blocked at the default `untrust_level=60`.
 #[tokio::test]
 async fn cmc_java_deser_base64_body_blocked() {
     ensure_backend();

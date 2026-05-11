@@ -34,6 +34,7 @@ pub use ssti_detect::SstiCmcBuilder;
 pub use xxe_attack_detect::XxeAttackCmcBuilder;
 
 #[derive(Debug, Clone)]
+#[allow(clippy::struct_excessive_bools)]
 pub struct CmcConfig {
     pub sqli_comments_detect: bool,
     pub overflow_detect: bool,
@@ -74,6 +75,8 @@ impl Default for CmcConfig {
 }
 
 impl CmcConfig {
+    /// # Errors
+    /// Returns an error if the file cannot be read or contains invalid YAML.
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read CMC config {}", path.display()))?;
@@ -89,6 +92,7 @@ pub struct CmcManagerBuilder {
 }
 
 impl CmcManagerBuilder {
+    #[must_use] 
     pub fn new(config: CmcConfig) -> Self {
         Self {
             config,
@@ -96,11 +100,13 @@ impl CmcManagerBuilder {
         }
     }
 
+    #[must_use] 
     pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
         self.vectorscan_enabled = enabled;
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> CmcManager {
         CmcManager {
             sqli_comments: self
@@ -178,6 +184,8 @@ pub struct CmcManager {
 }
 
 impl CmcManager {
+    #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn inspect(&self, input: &str) -> Option<Finding> {
         if let Some(detector) = &self.sqli_comments {
             let total = detector.count_matches(input);
@@ -224,7 +232,7 @@ impl CmcManager {
                     "CMC repeated-character overflow detection",
                     Severity::Medium,
                     "CWE-400",
-                    &format!("Detected a repeated-character run of length {total}, which may indicate overflow, flooding or parser abuse. Character: {:?}.", ch),
+                    &format!("Detected a repeated-character run of length {total}, which may indicate overflow, flooding or parser abuse. Character: {ch:?}."),
                     "https://cwe.mitre.org/data/definitions/400.html",
                     format!("cmc::overflow_detect:repeated-char={} count={total}", ch.escape_default()),
                     "cmc/overflow_detect.rs:generated",
@@ -356,6 +364,7 @@ impl CmcManager {
     /// Inspect the request URI path. Called from `inspect_early()` so that
     /// method-gated detectors (e.g. `anti_exposed_backup`) have access to the
     /// original method and path before the full payload is assembled.
+    #[must_use] 
     pub fn inspect_uri(&self, method: &str, path: &str) -> Option<Finding> {
         if let Some(detector) = &self.anti_exposed_backup {
             if let Some(matched) = detector.detect(method, path)
@@ -385,6 +394,7 @@ impl CmcManager {
 
     /// Inspect the upstream response body for sensitive data leaks.
     /// Called from `inspect_response()` after the full response body is buffered.
+    #[must_use] 
     pub fn inspect_response_body(&self, body: &str) -> Option<Finding> {
         if let Some(detector) = &self.anti_passwd_leak {
             if let Some(matched) = detector.detect(body) {
@@ -503,6 +513,7 @@ fn finding(
     }
 }
 
+#[allow(clippy::unnecessary_wraps)]
 fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
     // Accept both integer (0/1) and YAML-boolean (true/false) values so that
     // `SSTI_detect: true` enables the engine instead of silently coercing to 0.
@@ -515,7 +526,7 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
     impl From<BoolOrInt> for i64 {
         fn from(v: BoolOrInt) -> i64 {
             match v {
-                BoolOrInt::Bool(b) => b as i64,
+                BoolOrInt::Bool(b) => i64::from(b),
                 BoolOrInt::Int(n) => n,
             }
         }
@@ -633,10 +644,10 @@ mod tests {
     #[test]
     fn parses_crlf_injection_detect_config_key() {
         let crlf = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   CRLF_injection_detect: true
-"#,
+",
         )
         .expect("parse CRLF key");
         assert!(crlf.crlf_injection_detect);
@@ -645,10 +656,10 @@ CMC-Rules:
     #[test]
     fn parses_request_smuggling_detect_config_key() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   Request_Smuggling_detect: true
-"#,
+",
         )
         .expect("parse request smuggling key");
         assert!(cfg.request_smuggling_detect);
@@ -657,10 +668,10 @@ CMC-Rules:
     #[test]
     fn parses_nosql_injection_detect_config_key() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   NOSQL_injection_detect: true
-"#,
+",
         )
         .expect("parse NoSQL injection key");
         assert!(cfg.nosql_injection_detect);
@@ -669,10 +680,10 @@ CMC-Rules:
     #[test]
     fn parses_xxe_attack_detect_config_key() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   XXE_attack_detect: true
-"#,
+",
         )
         .expect("parse XXE attack key");
         assert!(cfg.xxe_attack_detect);
@@ -681,10 +692,10 @@ CMC-Rules:
     #[test]
     fn parses_anti_exposed_backup_config_key() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   Anti_exposed_backup: true
-"#,
+",
         )
         .expect("parse Anti_exposed_backup key");
         assert!(cfg.anti_exposed_backup);
@@ -693,10 +704,10 @@ CMC-Rules:
     #[test]
     fn anti_exposed_backup_disabled_by_default() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   SQLi_comments_detect: true
-"#,
+",
         )
         .expect("parse minimal config");
         assert!(!cfg.anti_exposed_backup);
@@ -705,10 +716,10 @@ CMC-Rules:
     #[test]
     fn parses_anti_passwd_leak_config_key() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   Anti_passwd_leak: true
-"#,
+",
         )
         .expect("parse Anti_passwd_leak key");
         assert!(cfg.anti_passwd_leak_detect);
@@ -717,10 +728,10 @@ CMC-Rules:
     #[test]
     fn anti_passwd_leak_disabled_by_default() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   SQLi_comments_detect: true
-"#,
+",
         )
         .expect("parse minimal config");
         assert!(!cfg.anti_passwd_leak_detect);
@@ -729,10 +740,10 @@ CMC-Rules:
     #[test]
     fn parses_java_deserialize_detect_config_key() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   Java_deserialize_detect: true
-"#,
+",
         )
         .expect("parse Java_deserialize_detect key");
         assert!(cfg.java_deserialize_detect);
@@ -741,10 +752,10 @@ CMC-Rules:
     #[test]
     fn java_deserialize_detect_disabled_by_default() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   SQLi_comments_detect: true
-"#,
+",
         )
         .expect("parse minimal config");
         assert!(!cfg.java_deserialize_detect);
@@ -753,12 +764,12 @@ CMC-Rules:
     #[test]
     fn parses_global_options_untrust_level() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 global-options:
   Untrust: 75
 CMC-Rules:
   Java_deserialize_detect: true
-"#,
+",
         )
         .expect("parse global-options Untrust");
         assert_eq!(cfg.untrust_level, 75);
@@ -768,10 +779,10 @@ CMC-Rules:
     #[test]
     fn untrust_level_defaults_to_60() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 CMC-Rules:
   Java_deserialize_detect: true
-"#,
+",
         )
         .expect("parse without global-options");
         assert_eq!(cfg.untrust_level, 60);
@@ -780,12 +791,12 @@ CMC-Rules:
     #[test]
     fn untrust_level_clamped_to_100() {
         let cfg = parse_lenient_yaml(
-            r#"
+            r"
 global-options:
   Untrust: 150
 CMC-Rules:
   Java_deserialize_detect: true
-"#,
+",
         )
         .expect("parse clamped Untrust");
         assert_eq!(cfg.untrust_level, 100);

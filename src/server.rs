@@ -68,6 +68,9 @@ async fn wait_for_drain(in_flight: &AtomicUsize, notify: &Notify) {
 }
 
 /// Start the TLS listener (normal production mode).
+///
+/// # Errors
+/// Returns an error if the TCP listener cannot bind to the given address.
 pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor, state: Arc<AppState>) -> Result<()> {
     let listener = TcpListener::bind(listener_addr).await?;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(state.cli.max_connections));
@@ -84,12 +87,12 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
                 Ok(p) => p,
                 Err(_) => return Err(anyhow::anyhow!("connection semaphore closed")),
             },
-            _ = &mut shutdown => break,
+            () = &mut shutdown => break,
         };
 
         let (stream, peer) = tokio::select! {
             result = listener.accept() => result?,
-            _ = &mut shutdown => break,
+            () = &mut shutdown => break,
         };
 
         let acceptor = tls_acceptor.clone();
@@ -134,6 +137,9 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
 }
 
 /// Start the plain-HTTP listener (--no-tls mode — for testing or load-balancer deployments).
+///
+/// # Errors
+/// Returns an error if the TCP listener cannot bind to the given address.
 pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>) -> Result<()> {
     let listener = TcpListener::bind(listener_addr).await?;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(state.cli.max_connections));
@@ -150,12 +156,12 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
                 Ok(p) => p,
                 Err(_) => return Err(anyhow::anyhow!("connection semaphore closed")),
             },
-            _ = &mut shutdown => break,
+            () = &mut shutdown => break,
         };
 
         let (stream, peer) = tokio::select! {
             result = listener.accept() => result?,
-            _ = &mut shutdown => break,
+            () = &mut shutdown => break,
         };
 
         let state = state.clone();

@@ -83,15 +83,18 @@ impl NoSqlInjectionMatch {
 }
 
 impl NoSqlInjectionCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use] 
     pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
         self.vectorscan_enabled = enabled;
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> NoSqlInjectionCmc {
         NoSqlInjectionCmc {
             list_a: LiteralMatcher::new(LIST_A, self.vectorscan_enabled),
@@ -218,7 +221,7 @@ mod tests {
             .detect(r#"{"user":{"$gt":""},"pass":"admin"}"#)
             .is_some());
         assert!(cmc
-            .detect(r#"selector[$where]=this.password.match(/admin/)"#)
+            .detect(r"selector[$where]=this.password.match(/admin/)")
             .is_some());
         assert!(cmc.detect(r#"{"$or":[{"role":"root"}]}"#).is_some());
         assert!(cmc.detect(r#"{"$where":"sleep(5000)"}"#).is_some());

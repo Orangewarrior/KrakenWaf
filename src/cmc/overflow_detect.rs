@@ -52,13 +52,16 @@ impl Default for OverflowCmcBuilder {
 }
 
 impl OverflowCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
+    #[must_use] 
     pub fn threshold(mut self, threshold: usize) -> Self {
         self.threshold = threshold;
         self
     }
+    #[must_use] 
     pub fn build(self) -> OverflowCmc {
         OverflowCmc {
             threshold: self.threshold,
@@ -67,6 +70,7 @@ impl OverflowCmcBuilder {
 }
 
 impl OverflowCmc {
+    #[allow(clippy::unused_self)]
     pub fn detect_shellcode(&self, input: &str) -> Option<ShellcodeMatch> {
         let bytes = collect_escaped_bytes(input);
         if bytes.is_empty() {

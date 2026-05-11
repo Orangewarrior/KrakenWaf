@@ -15,7 +15,7 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
         false,
         false,
         vectorscan_enabled,
-        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build()),

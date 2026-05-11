@@ -15,7 +15,7 @@ pub enum WafMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum WalMode {
-    /// Persist rate-limiter state in SQLite (WAL journal). Slower writes
+    /// Persist rate-limiter state in `SQLite` (WAL journal). Slower writes
     /// but supports inspection via `sqlite3 cli` and partial updates.
     Sqlite,
     /// Persist as a flat bincode file (atomic rename). Much faster snapshots
@@ -26,6 +26,7 @@ pub enum WalMode {
 #[derive(Debug, Clone, Parser)]
 #[command(name = "krakenwaf")]
 #[command(author, version, about = "KrakenWaf - TLS-aware Rust WAF inspired by OctopusWAF")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     #[arg(long, default_value = "0.0.0.0:8443")]
     pub listen: SocketAddr,
@@ -132,10 +133,12 @@ pub struct Cli {
 }
 
 impl Cli {
+    #[must_use] 
     pub fn libinjection_sqli_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_sqli
     }
 
+    #[must_use] 
     pub fn libinjection_xss_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_xss
     }

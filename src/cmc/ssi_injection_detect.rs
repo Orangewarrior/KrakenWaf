@@ -6,9 +6,12 @@ pub struct SsiInjectionCmcBuilder;
 pub struct SsiInjectionCmc;
 
 impl SsiInjectionCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
+    #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn build(self) -> SsiInjectionCmc {
         SsiInjectionCmc
     }
@@ -29,7 +32,7 @@ const SSI_KEYWORDS: [(&[u8], &str); 12] = [
     (b"endif", "endif"),
 ];
 
-/// JSP / JSTL / ColdFusion server-side include/forward/execute tags.
+/// JSP / JSTL / `ColdFusion` server-side include/forward/execute tags.
 const JSP_PATTERNS: [(&[u8], &str); 5] = [
     (b"<jsp:include",  "<jsp:include"),
     (b"<jsp:forward",  "<jsp:forward"),
@@ -55,6 +58,7 @@ fn skip_ascii_ws(bytes: &[u8], mut idx: usize) -> usize {
 }
 
 impl SsiInjectionCmc {
+    #[allow(clippy::unused_self)]
     pub fn detect(&self, input: &str) -> Option<String> {
         let bytes = input.as_bytes();
 
@@ -76,7 +80,7 @@ impl SsiInjectionCmc {
             let after = &bytes[directive_idx..];
             for (kw, label) in SSI_KEYWORDS {
                 if starts_with_ci(after, kw) {
-                    return Some(format!("<!--#{}", label));
+                    return Some(format!("<!--#{label}"));
                 }
             }
         }

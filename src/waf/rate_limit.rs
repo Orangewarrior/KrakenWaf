@@ -38,7 +38,7 @@
 //!
 //! `hash_ip` usa FNV-1a (deterministico, sem sementes aleatórias) para que o
 //! mesmo IP produza o mesmo `u64` entre reinicializações, permitindo que o
-//! SQLite re-hidrate o estado corretamente.
+//! `SQLite` re-hidrate o estado corretamente.
 //! `AHashMap` usa ahash apenas para placement interno de buckets (irrelevante
 //! para roteamento externo).
 //!
@@ -46,12 +46,12 @@
 //!
 //! Dois back-ends selecionáveis em runtime:
 //!
-//! * `PersistenceMode::Sqlite` — SQLite em modo WAL. Suporta inspeção via
+//! * `PersistenceMode::Sqlite` — `SQLite` em modo WAL. Suporta inspeção via
 //!   `sqlite3 cli` e updates incrementais; cada persistência custa um INSERT
 //!   por IP dentro de uma transação.
 //! * `PersistenceMode::Bincode` — arquivo binário flat com rename atômico.
 //!   O snapshot inteiro é re-escrito a cada tick (write-tmp + fsync + rename),
-//!   tipicamente 10-50× mais rápido que SQLite para esse workload e re-hidrata
+//!   tipicamente 10-50× mais rápido que `SQLite` para esse workload e re-hidrata
 //!   em uma única leitura sequencial.
 
 use ahash::AHashMap;
@@ -62,7 +62,7 @@ use std::{
     array,
     fs::{File, OpenOptions},
     io::{Read, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
@@ -176,7 +176,7 @@ impl Shard {
         });
     }
 
-    /// Snapshot de todos os pares (ip_hash, tat_ns) para persistência.
+    /// Snapshot de todos os pares (`ip_hash`, `tat_ns`) para persistência.
     fn snapshot(&self) -> Vec<(u64, u64)> {
         let map = self.rw.read();
         map.iter()
@@ -214,7 +214,7 @@ fn evict_one(
 
 // ── Backend de persistência ───────────────────────────────────────────────────
 
-/// Encapsula o estado mutável do back-end. SQLite mantém o `Connection`
+/// Encapsula o estado mutável do back-end. `SQLite` mantém o `Connection`
 /// aberto; Bincode armazena apenas o caminho do arquivo (cada save abre,
 /// escreve, renomeia e fecha — barato comparado ao custo de uma transação).
 enum Backend {
@@ -225,7 +225,7 @@ enum Backend {
 const BINCODE_MAGIC: &[u8; 8] = b"KWAFRL01";
 
 impl Backend {
-    fn open(mode: PersistenceMode, path: &PathBuf) -> Result<Self> {
+    fn open(mode: PersistenceMode, path: &Path) -> Result<Self> {
         match mode {
             PersistenceMode::Sqlite => Ok(Backend::Sqlite(
                 open_db(path).context("failed to open rate-limiter SQLite database")?,
@@ -234,17 +234,19 @@ impl Backend {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                Ok(Backend::Bincode(path.clone()))
+                Ok(Backend::Bincode(path.to_path_buf()))
             }
         }
     }
 
-    /// Carrega entradas (ip_hash, tat_ns) cujo TAT ainda não expirou.
+    /// Carrega entradas (`ip_hash`, `tat_ns`) cujo TAT ainda não expirou.
     fn load(&self, cutoff: u64) -> Result<Vec<(u64, u64)>> {
         match self {
             Backend::Sqlite(conn) => {
                 let mut stmt = conn
                     .prepare("SELECT ip_hash, tat_ns FROM rate_counters WHERE tat_ns >= ?1")?;
+                // SQLite INTEGER is i64; we store u64 nanosecond timestamps via bitwise reinterpretation.
+                #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
                 let rows = stmt
                     .query_map(params![cutoff as i64], |row| {
                         Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64))
@@ -275,6 +277,8 @@ impl Backend {
     fn save(&self, items: &[(u64, u64)], cutoff: u64) -> Result<()> {
         match self {
             Backend::Sqlite(conn) => with_transaction(conn, |c| {
+                // SQLite INTEGER is i64; u64 timestamps are stored via bitwise reinterpretation.
+                #[allow(clippy::cast_possible_wrap)]
                 for (key, tat_ns) in items {
                     c.execute(
                         "INSERT INTO rate_counters (ip_hash, tat_ns) VALUES (?1, ?2)
@@ -282,6 +286,7 @@ impl Backend {
                         params![*key as i64, *tat_ns as i64],
                     )?;
                 }
+                #[allow(clippy::cast_possible_wrap)]
                 c.execute(
                     "DELETE FROM rate_counters WHERE tat_ns < ?1",
                     params![cutoff as i64],
@@ -326,16 +331,19 @@ impl RateLimiter {
     /// Cria o limitador com `limit` requisições por `window`.
     ///
     /// Parâmetros GCRA derivados automaticamente:
-    ///   emission_interval = window / limit
-    ///   delay_tolerance   = window − emission_interval
+    ///   `emission_interval` = window / limit
+    ///   `delay_tolerance`   = window − `emission_interval`
+    ///
+    /// # Errors
+    /// Returns an error if the persistence backend cannot be opened or initialized.
     pub fn new(
         limit: u32,
         window: Duration,
-        snapshot_path: PathBuf,
+        snapshot_path: &Path,
         mode: PersistenceMode,
     ) -> Result<Self> {
-        let window_ns = window.as_nanos() as u64;
-        let emit_ns = window_ns / limit.max(1) as u64;
+        let window_ns = u64::try_from(window.as_nanos()).unwrap_or(u64::MAX);
+        let emit_ns = window_ns / u64::from(limit.max(1));
         // tolerance = window inteiro: permite burst de exatamente `limit` requisições
         // em um instante, controlando a taxa sustentada via emit_interval.
         // (tolerance = window - emit permitiria apenas limit-1 em burst.)
@@ -343,7 +351,7 @@ impl RateLimiter {
 
         let shards: Arc<[Shard; NUM_SHARDS]> = Arc::new(array::from_fn(|_| Shard::new()));
 
-        let backend = Backend::open(mode, &snapshot_path)?;
+        let backend = Backend::open(mode, snapshot_path)?;
 
         // Re-hidrata TATs não expirados da última execução.
         let now = now_ns();
@@ -398,6 +406,7 @@ impl RateLimiter {
 
     /// Hot path. Async apenas para compatibilidade com o caller;
     /// o trabalho real é síncrono e leva ~20–30 ns para IPs existentes.
+    #[allow(clippy::unused_async)]
     pub async fn check(&self, ip: &str) -> bool {
         let key = hash_ip(ip);
         let idx = (key & SHARD_MASK) as usize;
@@ -405,6 +414,9 @@ impl RateLimiter {
     }
 
     /// Descarrega todos os TATs em memória para o back-end de persistência.
+    ///
+    /// # Errors
+    /// Returns an error if the persistence backend fails to write the snapshot.
     pub fn persist(&self) -> Result<()> {
         // Snapshot first (sem o DB lock) para minimizar tempo segurando-o.
         let mut items = Vec::with_capacity(NUM_SHARDS * 64);
@@ -419,7 +431,7 @@ impl RateLimiter {
 
 // ── SQLite ────────────────────────────────────────────────────────────────────
 
-fn open_db(path: &PathBuf) -> Result<Connection> {
+fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -457,7 +469,7 @@ fn open_db(path: &PathBuf) -> Result<Connection> {
     Ok(conn)
 }
 
-/// Executa `f` dentro de uma transação SQLite; faz rollback em caso de erro.
+/// Executa `f` dentro de uma transação `SQLite`; faz rollback em caso de erro.
 fn with_transaction(conn: &Connection, f: impl FnOnce(&Connection) -> Result<()>) -> Result<()> {
     conn.execute_batch("BEGIN")?;
     match f(conn) {
@@ -477,22 +489,25 @@ fn with_transaction(conn: &Connection, f: impl FnOnce(&Connection) -> Result<()>
 /// FNV-1a (64-bit) — hash determinístico sem sementes aleatórias.
 ///
 /// Garante que `hash_ip("1.2.3.4")` retorna o mesmo `u64` em qualquer
-/// execução do processo, permitindo re-hidratação correta do SQLite.
+/// execução do processo, permitindo re-hidratação correta do `SQLite`.
 /// Resistência a flooding por IP é irrelevante: endereços IP reais não
 /// podem ser controlados pelo atacante para colidir num shard específico.
 #[inline]
 fn hash_ip(ip: &str) -> u64 {
     const OFFSET: u64 = 14_695_981_039_346_656_037;
     const PRIME: u64 = 1_099_511_628_211;
-    ip.bytes().fold(OFFSET, |h, b| (h ^ b as u64).wrapping_mul(PRIME))
+    ip.bytes().fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME))
 }
 
-#[inline(always)]
+#[inline]
 fn now_ns() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64
+    u64::try_from(
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos(),
+    )
+    .unwrap_or(u64::MAX)
 }
 
 // ── Testes ────────────────────────────────────────────────────────────────────
@@ -501,17 +516,17 @@ fn now_ns() -> u64 {
 mod tests {
     use super::*;
 
-    /// Constrói um RateLimiter com SQLite em memória — sem I/O de disco.
+    /// Constrói um [`RateLimiter`] com `SQLite` em memória — sem I/O de disco.
     fn make_limiter(limit: u32, window_secs: u64) -> RateLimiter {
         let window_ns = window_secs * 1_000_000_000;
-        let emit_ns = window_ns / limit.max(1) as u64;
+        let emit_ns = window_ns / u64::from(limit.max(1));
         let tolerance_ns = window_ns;
 
         let conn = Connection::open_in_memory().expect("sqlite in-memory");
         conn.execute_batch(
             "CREATE TABLE rate_counters (ip_hash INTEGER PRIMARY KEY, tat_ns INTEGER NOT NULL);",
         )
-        .unwrap();
+        .expect("create test table");
 
         RateLimiter {
             shards: Arc::new(array::from_fn(|_| Shard::new())),
@@ -526,7 +541,7 @@ mod tests {
         // 5 req / 1 s → emission = 200 ms; tolerance = window = 1 s (burst = limit).
         let limit = 5u32;
         let window_ns = 1_000_000_000u64;
-        let emit_ns = window_ns / limit as u64;
+        let emit_ns = window_ns / u64::from(limit);
         let tolerance_ns = window_ns; // burst exato de limit requisições
 
         let tat = AtomicU64::new(0);
@@ -542,7 +557,7 @@ mod tests {
     fn gcra_recupera_apos_janela() {
         let limit = 3u32;
         let window_ns = 1_000_000_000u64;
-        let emit_ns = window_ns / limit as u64;
+        let emit_ns = window_ns / u64::from(limit);
         let tolerance_ns = window_ns;
 
         let tat = AtomicU64::new(0);
@@ -614,7 +629,7 @@ mod tests {
             let rl = RateLimiter::new(
                 5,
                 Duration::from_secs(60),
-                path.clone(),
+                &path,
                 PersistenceMode::Bincode,
             )
             .expect("criar limiter (bincode)");
@@ -628,7 +643,7 @@ mod tests {
         let rl = RateLimiter::new(
             5,
             Duration::from_secs(60),
-            path.clone(),
+            &path,
             PersistenceMode::Bincode,
         )
         .expect("recriar limiter (bincode)");

@@ -70,15 +70,18 @@ pub struct AntiExposedBackupCmcBuilder {
 }
 
 impl AntiExposedBackupCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use] 
     pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
         self.vectorscan_enabled = enabled;
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> AntiExposedBackupCmc {
         AntiExposedBackupCmc {
             #[cfg(feature = "vectorscan-engine")]
@@ -117,12 +120,10 @@ impl AntiExposedBackupCmc {
         // Strip query string and fragment — only the path component matters.
         let path = path
             .split_once('?')
-            .map(|(p, _)| p)
-            .unwrap_or(path);
+            .map_or(path, |(p, _)| p);
         let path = path
             .split_once('#')
-            .map(|(p, _)| p)
-            .unwrap_or(path);
+            .map_or(path, |(p, _)| p);
 
         if path.is_empty() {
             return None;
@@ -307,10 +308,10 @@ mod tests {
     #[test]
     fn matched_suffix_is_reported() {
         let d = make_cmc();
-        let m = d.detect("GET", "/db/prod.dump").unwrap();
+        let m = d.detect("GET", "/db/prod.dump").expect("should detect .dump");
         assert_eq!(m.suffix(), ".dump");
 
-        let m = d.detect("GET", "/.env").unwrap();
+        let m = d.detect("GET", "/.env").expect("should detect .env");
         assert_eq!(m.suffix(), ".env");
     }
 }

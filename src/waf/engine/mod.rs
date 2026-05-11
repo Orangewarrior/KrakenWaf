@@ -34,7 +34,7 @@ pub struct InspectionContext {
     pub headers: String,
     pub body_limit: usize,
     /// Compact UUID v4 (32 lowercase hex chars, no hyphens) generated once per
-    /// request and threaded through all log events, SQLite rows, and upstream
+    /// request and threaded through all log events, `SQLite` rows, and upstream
     /// headers so that a WAF alert can be correlated with upstream access logs.
     pub request_id: String,
 }
@@ -62,7 +62,8 @@ struct RulesSnapshot {
     matchers: EngineMatchers,
 }
 
-/// Main KrakenWaf engine containing rules and optional accelerated detectors.
+/// Main `KrakenWaf` engine containing rules and optional accelerated detectors.
+#[allow(clippy::struct_excessive_bools)]
 pub struct WafEngine {
     /// Single lock covers both rules and matchers; readers always see a
     /// consistent pair because reload replaces the whole Arc at once.
@@ -77,7 +78,9 @@ pub struct WafEngine {
 }
 
 impl WafEngine {
-    #[allow(clippy::too_many_arguments)]
+    /// # Errors
+    /// Returns an error if the rate limiter or rule matchers fail to initialize.
+    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub fn new(
         rules: Arc<RuleSet>,
         rate_limit_per_minute: u32,
@@ -85,7 +88,7 @@ impl WafEngine {
         libinjection_sqli_enabled: bool,
         libinjection_xss_enabled: bool,
         vectorscan_enabled: bool,
-        snapshot_path: std::path::PathBuf,
+        snapshot_path: &std::path::Path,
         rate_limit_persistence: PersistenceMode,
         metrics: Arc<WafMetrics>,
         cmc_manager: Arc<CmcManager>,
@@ -119,6 +122,9 @@ impl WafEngine {
         self.snapshot.read().rules.clone()
     }
 
+    /// # Errors
+    /// Returns an error if the rule files are missing or contain invalid data.
+    #[allow(clippy::unused_async)]
     pub async fn reload_from_dir(&self, root: &Path) -> Result<()> {
         let new_rules = Arc::new(RuleSet::from_dir(root)?);
         let new_matchers = build_matchers(&new_rules, self.vectorscan_enabled)?;
@@ -446,6 +452,7 @@ impl WafEngine {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::unused_self)]
     fn simple_finding(
         &self,
         title: &str,

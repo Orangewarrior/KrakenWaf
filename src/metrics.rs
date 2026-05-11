@@ -1,5 +1,6 @@
 
 use dashmap::DashMap;
+use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 /// Lightweight runtime counters exported via the `/metrics` endpoint.
@@ -71,9 +72,10 @@ impl WafMetrics {
             for (label, count) in entries {
                 // label is "engine:module" — split for Prometheus label syntax
                 let (engine, module) = label.split_once(':').unwrap_or(("unknown", &label));
-                out.push_str(&format!(
-                    "krakenwaf_module_blocks_total{{engine=\"{engine}\",module=\"{module}\"}} {count}\n"
-                ));
+                let _ = writeln!(
+                    out,
+                    "krakenwaf_module_blocks_total{{engine=\"{engine}\",module=\"{module}\"}} {count}"
+                );
             }
         }
 

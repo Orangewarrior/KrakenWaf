@@ -6,9 +6,12 @@ pub struct EsiInjectionCmcBuilder;
 pub struct EsiInjectionCmc;
 
 impl EsiInjectionCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
+    #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn build(self) -> EsiInjectionCmc {
         EsiInjectionCmc
     }
@@ -47,6 +50,7 @@ fn skip_ascii_ws(bytes: &[u8], mut idx: usize) -> usize {
 }
 
 impl EsiInjectionCmc {
+    #[allow(clippy::unused_self)]
     pub fn detect(&self, input: &str) -> Option<String> {
         let bytes = input.as_bytes();
         for idx in memchr_iter(b'<', bytes) {

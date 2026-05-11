@@ -3,10 +3,10 @@ use std::fs;
 
 #[test]
 fn loads_external_rule_tree() {
-    let tmp = tempfile::tempdir().unwrap();
-    fs::create_dir_all(tmp.path().join("regex")).unwrap();
-    fs::create_dir_all(tmp.path().join("Vectorscan")).unwrap();
-    fs::create_dir_all(tmp.path().join("addr")).unwrap();
+    let tmp = tempfile::tempdir().expect("test");
+    fs::create_dir_all(tmp.path().join("regex")).expect("test");
+    fs::create_dir_all(tmp.path().join("Vectorscan")).expect("test");
+    fs::create_dir_all(tmp.path().join("addr")).expect("test");
     fs::write(
         tmp.path().join("rules.json"),
         r#"{
@@ -23,26 +23,26 @@ fn loads_external_rule_tree() {
             "allow_paths": ["/health"],
             "body_limits": {"/upload": 2048}
         }"#,
-    ).unwrap();
-    fs::write(tmp.path().join("addr/blocklist.txt"), "203.0.113.10\n").unwrap();
+    ).expect("test");
+    fs::write(tmp.path().join("addr/blocklist.txt"), "203.0.113.10\n").expect("test");
     fs::write(
         tmp.path().join("regex/path_regex.json"),
         r#"{"rules":[{"title":"Admin path","severity":"high","cwe":"CWE-306","description":"Admin path hit","url":"https://cwe.mitre.org/data/definitions/306.html","rule_match":"(?i)/admin"}]}"#,
-    ).unwrap();
+    ).expect("test");
     fs::write(
         tmp.path().join("regex/body_regex.json"),
         r#"{"rules":[{"title":"RCE regex","severity":"critical","cwe":"CWE-78","description":"Command execution payload","url":"https://cwe.mitre.org/data/definitions/78.html","rule_match":"(?i)powershell\s+-enc"}]}"#,
-    ).unwrap();
+    ).expect("test");
     fs::write(
         tmp.path().join("regex/header_regex.json"),
         r#"{"rules":[{"title":"Scanner header regex","severity":"medium","cwe":"CWE-113","description":"Scanner header regex","url":"https://owasp.org","rule_match":"(?i)sqlmap"}]}"#,
-    ).unwrap();
+    ).expect("test");
     fs::write(
         tmp.path().join("Vectorscan/strings2block.json"),
         r#"{"rules":[{"title":"Vectorscan cmd","severity":"critical","cwe":"CWE-78","description":"Command invocation","url":"https://cwe.mitre.org/data/definitions/78.html","rule_match":"cmd.exe"}]}"#,
-    ).unwrap();
+    ).expect("test");
 
-    let rules = RuleSet::from_dir(tmp.path()).unwrap();
+    let rules = RuleSet::from_dir(tmp.path()).expect("test");
     assert_eq!(rules.blocked_ips, vec!["203.0.113.10"]);
     assert_eq!(rules.uri_keywords.len(), 1);
     assert_eq!(rules.uri_keywords[0].severity, Severity::Critical);

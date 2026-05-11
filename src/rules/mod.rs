@@ -42,17 +42,17 @@ impl fmt::Display for Severity {
     }
 }
 
-/// Fully loaded rule set used by KrakenWaf.
+/// Fully loaded rule set used by `KrakenWaf`.
 #[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct RuleSet {
     /// Exact IPs blocked from all access (from rules/addr/blocklist.txt).
     pub blocked_ips: Vec<String>,
-    /// CIDR ranges blocked (from rules.json:blocked_ip_prefixes — kept for compat).
+    /// CIDR ranges blocked (from `rules.json:blocked_ip_prefixes` — kept for compat).
     pub blocked_ip_prefixes: Vec<String>,
     /// IPs allowed to access /metrics and /__krakenwaf/health (from rules/addr/allowlist.txt).
     pub allowed_ips: Vec<String>,
-    /// Scanner/crawler user-agent substrings (from rules/user_agents/scanners.txt).
+    /// Scanner/crawler user-agent substrings (from `rules/user_agents/scanners.txt`).
     pub scanner_agents: Vec<String>,
     pub uri_keywords: Vec<DetectionRule>,
     pub header_keywords: Vec<DetectionRule>,
@@ -89,20 +89,23 @@ pub struct CompiledDetectionRule {
 }
 
 impl RuleSet {
+    /// # Errors
+    /// Returns an error if any rule file is missing, unreadable, or contains invalid data.
     pub fn from_dir(root: &Path) -> Result<Self> {
         load_rules_from_dir(root)
     }
 
+    #[must_use] 
     pub fn body_limit_for_path(&self, path: &str) -> usize {
         let normalized = normalize_url_path(path);
         self.body_limits
             .iter()
             .find(|(prefix, _)| normalized.starts_with(&normalize_url_path(prefix)))
-            .map(|(_, limit)| *limit)
-            .unwrap_or(1024 * 1024)
+            .map_or(1024 * 1024, |(_, limit)| *limit)
     }
 
     /// Returns true if the client IP is in rules/addr/allowlist.txt (may access health/metrics).
+    #[must_use] 
     pub fn is_ip_allowed(&self, ip: &str) -> bool {
         if self.allowed_ips.is_empty() {
             return true; // No allowlist configured → all IPs may access health/metrics.
@@ -117,6 +120,7 @@ impl RuleSet {
         })
     }
 
+    #[must_use] 
     pub fn is_allowlisted(&self, path: &str) -> bool {
         let normalized = normalize_url_path(path);
         self.allow_paths
@@ -126,6 +130,7 @@ impl RuleSet {
     }
 }
 
+#[must_use] 
 pub fn normalize_url_path(path: &str) -> String {
     let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
     // On Linux, std::path::Path treats `\` as a regular character, not a separator.
@@ -142,12 +147,11 @@ pub fn normalize_url_path(path: &str) -> String {
 
     for component in Path::new(to_parse).components() {
         match component {
-            Component::RootDir | Component::CurDir => {}
+            Component::RootDir | Component::CurDir | Component::Prefix(_) => {}
             Component::ParentDir => {
                 let _ = out.pop();
             }
             Component::Normal(value) => out.push(value.to_string_lossy().to_string()),
-            Component::Prefix(_) => {}
         }
     }
 

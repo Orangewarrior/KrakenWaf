@@ -96,15 +96,19 @@ pub struct SstiCmcBuilder;
 pub struct SstiCmc;
 
 impl SstiCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
+    #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn build(self) -> SstiCmc {
         SstiCmc
     }
 }
 
 impl SstiCmc {
+    #[allow(clippy::unused_self)]
     pub fn detect(&self, input: &str) -> Option<SstiRule> {
         // Check longer/more-specific patterns first to avoid prefix aliasing.
 

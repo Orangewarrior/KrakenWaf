@@ -15,16 +15,20 @@ impl RequestSmugglingMatch {
 }
 
 impl RequestSmugglingCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self
     }
 
+    #[must_use]
+    #[allow(clippy::unused_self)]
     pub fn build(self) -> RequestSmugglingCmc {
         RequestSmugglingCmc
     }
 }
 
 impl RequestSmugglingCmc {
+    #[allow(clippy::unused_self)]
     pub fn detect(&self, input: &str) -> Option<RequestSmugglingMatch> {
         if has_header_value(input, "transfer-encoding", "chunked") {
             return Some(RequestSmugglingMatch {
