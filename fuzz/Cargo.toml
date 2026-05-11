@@ -1,0 +1,37 @@
+[package]
+name = "krakenwaf-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+krakenwaf = { path = ".." }
+tempfile = "3"
+
+# Disable release-profile optimisations that can interfere with coverage
+# instrumentation used by cargo-fuzz / libFuzzer.
+[profile.release]
+debug = true
+opt-level = 3
+
+[[bin]]
+name = "cmc_inspect"
+path = "fuzz_targets/cmc_inspect.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "url_decode"
+path = "fuzz_targets/url_decode.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "parse_rules"
+path = "fuzz_targets/parse_rules.rs"
+test = false
+doc = false

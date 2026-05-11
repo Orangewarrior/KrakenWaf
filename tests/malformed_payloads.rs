@@ -1,5 +1,5 @@
 use krakenwaf::{
-    dfa::{DfaConfig, DfaManagerBuilder},
+    cmc::{CmcConfig, CmcManagerBuilder},
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
     waf::{rate_limit::PersistenceMode, Decision, ResponseContext, WafEngine},
@@ -7,8 +7,8 @@ use krakenwaf::{
 use regex::Regex;
 use std::{collections::HashMap, sync::Arc};
 
-fn empty_dfa_manager() -> Arc<krakenwaf::dfa::DfaManager> {
-    Arc::new(DfaManagerBuilder::new(DfaConfig::default()).build())
+fn empty_cmc_manager() -> Arc<krakenwaf::cmc::CmcManager> {
+    Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build())
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn blocks_malformed_traversal_payload() {
         tempfile::tempdir().unwrap().path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
     .unwrap();
     let decision = engine.inspect_body_chunk(br"../../../../etc/passwd");
@@ -101,7 +101,7 @@ fn blocks_regex_based_rce_pattern() {
         tempfile::tempdir().unwrap().path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
     .unwrap();
     let decision = engine.inspect_body_chunk(br"powershell -enc AAAA");
@@ -183,7 +183,7 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
         tempfile::tempdir().unwrap().path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
     .unwrap();
 
@@ -267,7 +267,7 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
         tempfile::tempdir().unwrap().path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
     .unwrap();
 

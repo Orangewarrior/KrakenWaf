@@ -144,8 +144,8 @@ fn infer_engine(rule_line_match: &str, rule_match: &str) -> String {
         "vectorscan".to_string()
     } else if rule_line_match.starts_with("regex/") {
         "regex".to_string()
-    } else if rule_line_match.starts_with("dfa/") || rule_match.starts_with("dfa::") {
-        "dfa".to_string()
+    } else if rule_line_match.starts_with("cmc/") || rule_match.starts_with("cmc::") {
+        "cmc".to_string()
     } else {
         "keyword".to_string()
     }

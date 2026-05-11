@@ -254,13 +254,16 @@ impl ProxyClient {
     }
 
     /// Log the detection event and, in `Block` mode, return a 403 response.
-    /// Returns `None` in `Silent` mode so the caller can continue forwarding the request.
+    /// Returns `None` in `Silent` or `DetectOnly` mode so the caller continues forwarding.
     async fn log_and_enforce(
         &self,
         state: &AppState,
         event: SecurityEvent,
     ) -> Option<Response<Full<Bytes>>> {
         state.metrics.inc_blocked();
+        // Per-engine:module counter derived from the security event label.
+        let module_label = derive_module_label(&event.engine, &event.rule_match);
+        state.metrics.inc_blocked_by_label(&module_label);
 
         info!(
             target: "krakenwaf",
@@ -283,7 +286,7 @@ impl ProxyClient {
         write_critical(&state.logging, &event);
         state.store.enqueue(event);
 
-        if state.mode == WafMode::Silent {
+        if state.mode == WafMode::Silent || state.mode == WafMode::DetectOnly {
             return None;
         }
 
@@ -768,5 +771,28 @@ fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppStat
         candidate
     } else {
         peer_ip.to_string()
+    }
+}
+
+/// Derive an `"engine:module"` label for the per-module Prometheus counter.
+/// For CMC findings the `rule_match` is `"cmc::module_name:..."`, so we extract
+/// the module name. For other engines we use a sensible short label.
+fn derive_module_label(engine: &str, rule_match: &str) -> String {
+    if engine == "cmc" {
+        // rule_match format: "cmc::sqli_comments_detect:evidence"
+        let module = rule_match
+            .strip_prefix("cmc::")
+            .and_then(|s| s.split(':').next())
+            .unwrap_or("unknown");
+        format!("cmc:{module}")
+    } else if engine == "libinjection" {
+        // rule_match format: "libinjection::sqli:fingerprint"
+        let variant = rule_match
+            .strip_prefix("libinjection::")
+            .and_then(|s| s.split(':').next())
+            .unwrap_or("unknown");
+        format!("libinjection:{variant}")
+    } else {
+        engine.to_string()
     }
 }

@@ -803,8 +803,8 @@ async fn main() {
 
     // ─── Score-engine validation ────────────────────────────────────────
     //
-    // Score-engine tests must run BEFORE the DFA sweeps so they see a clean
-    // per-IP rate-limit window.  The DFA sweeps fire several hundred requests
+    // Score-engine tests must run BEFORE the CMC sweeps so they see a clean
+    // per-IP rate-limit window.  The CMC sweeps fire several hundred requests
     // from the same source address; with the default `--rate-limit-per-minute`
     // budget (240), late requests are rejected with HTTP 403 by the
     // rate-limiter rather than evaluated by the score engine.  An "allow"
@@ -917,7 +917,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "Overflow DFA — GET /test_get ({} payloads)",
+            "Overflow CMC — GET /test_get ({} payloads)",
             OVERFLOW_PAYLOADS.len()
         ),
         sweep_get(
@@ -930,7 +930,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "Overflow DFA — POST /test_post ({} payloads)",
+            "Overflow CMC — POST /test_post ({} payloads)",
             OVERFLOW_PAYLOADS.len()
         ),
         sweep_post(
@@ -943,7 +943,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "SSTI DFA — GET /test_get ({} payloads)",
+            "SSTI CMC — GET /test_get ({} payloads)",
             SSTI_PAYLOADS.len()
         ),
         sweep_get(
@@ -956,7 +956,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "SSTI DFA — POST /test_post ({} payloads)",
+            "SSTI CMC — POST /test_post ({} payloads)",
             SSTI_PAYLOADS.len()
         ),
         sweep_post(
@@ -968,7 +968,7 @@ async fn main() {
         )
     );
     run_sweep!(
-        format!("SSI DFA — GET /test_get ({} payloads)", SSI_PAYLOADS.len()),
+        format!("SSI CMC — GET /test_get ({} payloads)", SSI_PAYLOADS.len()),
         sweep_get(
             &client,
             &cfg.target,
@@ -979,7 +979,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "SSI DFA — POST /test_post ({} payloads)",
+            "SSI CMC — POST /test_post ({} payloads)",
             SSI_PAYLOADS.len()
         ),
         sweep_post(
@@ -991,7 +991,7 @@ async fn main() {
         )
     );
     run_sweep!(
-        format!("ESI DFA — GET /test_get ({} payloads)", ESI_PAYLOADS.len()),
+        format!("ESI CMC — GET /test_get ({} payloads)", ESI_PAYLOADS.len()),
         sweep_get(
             &client,
             &cfg.target,
@@ -1002,7 +1002,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "ESI DFA — POST /test_post ({} payloads)",
+            "ESI CMC — POST /test_post ({} payloads)",
             ESI_PAYLOADS.len()
         ),
         sweep_post(
@@ -1015,7 +1015,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "CRLF DFA — GET /test_get ({} payloads)",
+            "CRLF CMC — GET /test_get ({} payloads)",
             CRLF_PAYLOADS.len()
         ),
         sweep_get(
@@ -1028,7 +1028,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "CRLF DFA — POST /test_post ({} payloads)",
+            "CRLF CMC — POST /test_post ({} payloads)",
             CRLF_PAYLOADS.len()
         ),
         sweep_post(
@@ -1041,7 +1041,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "Request smuggling DFA — GET /test_get ({} payloads)",
+            "Request smuggling CMC — GET /test_get ({} payloads)",
             REQUEST_SMUGGLING_PAYLOADS.len()
         ),
         sweep_get(
@@ -1054,7 +1054,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "Request smuggling DFA — POST /test_post ({} payloads)",
+            "Request smuggling CMC — POST /test_post ({} payloads)",
             REQUEST_SMUGGLING_PAYLOADS.len()
         ),
         sweep_post(
@@ -1067,7 +1067,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "NoSQL injection DFA — GET /test_get ({} payloads)",
+            "NoSQL injection CMC — GET /test_get ({} payloads)",
             NOSQL_INJECTION_PAYLOADS.len()
         ),
         sweep_get(
@@ -1080,7 +1080,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "NoSQL injection DFA — POST /test_post ({} payloads)",
+            "NoSQL injection CMC — POST /test_post ({} payloads)",
             NOSQL_INJECTION_PAYLOADS.len()
         ),
         sweep_post(
@@ -1093,7 +1093,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "XXE attack DFA — GET /test_get ({} payloads)",
+            "XXE attack CMC — GET /test_get ({} payloads)",
             XXE_ATTACK_PAYLOADS.len()
         ),
         sweep_get(
@@ -1106,7 +1106,7 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "XXE attack DFA — POST /test_post ({} payloads)",
+            "XXE attack CMC — POST /test_post ({} payloads)",
             XXE_ATTACK_PAYLOADS.len()
         ),
         sweep_post(
@@ -1123,21 +1123,21 @@ async fn main() {
     );
     run_sweep!(
         format!(
-            "Exposed backup DFA — GET (backup URIs) ({} payloads)",
+            "Exposed backup CMC — GET (backup URIs) ({} payloads)",
             BACKUP_URI_PAYLOADS.len()
         ),
         sweep_backup_uris(&client, &cfg.target, BACKUP_URI_PAYLOADS, cfg.concurrency)
     );
     run_sweep!(
         format!(
-            "Anti passwd/shadow leak DFA — response ({} paths)",
+            "Anti passwd/shadow leak CMC — response ({} paths)",
             PASSWD_LEAK_PATHS.len()
         ),
         sweep_leak_paths(&client, &cfg.target, PASSWD_LEAK_PATHS, cfg.concurrency)
     );
     run_sweep!(
         format!(
-            "Java deserialization DFA — POST /java-deser ({} payloads)",
+            "Java deserialization CMC — POST /java-deser ({} payloads)",
             JAVA_DESER_PAYLOADS.len()
         ),
         sweep_java_deser(&client, &cfg.target, JAVA_DESER_PAYLOADS, cfg.concurrency)

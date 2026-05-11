@@ -7,6 +7,10 @@ pub enum WafMode {
     Block,
     /// Log detections but never block (observation mode).
     Silent,
+    /// Detect-only / shadow mode: run all inspection engines, emit findings and
+    /// increment metrics, but always return Allow. Useful for validating new rule
+    /// sets against live traffic before enabling blocking.
+    DetectOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -93,8 +97,8 @@ pub struct Cli {
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,
 
-    #[arg(long = "dfa-load")]
-    pub dfa_load: Option<String>,
+    #[arg(long = "cmc-load")]
+    pub cmc_load: Option<String>,
 
     #[arg(long = "real-ip-header")]
     pub real_ip_header: Option<String>,
@@ -102,8 +106,10 @@ pub struct Cli {
     #[arg(long = "trusted-proxy-cidrs", value_delimiter = ',')]
     pub trusted_proxy_cidrs: Vec<String>,
 
-    /// WAF enforcement mode. `block` (default) blocks matching requests; `silent` logs
-    /// detections without blocking, useful for tuning rule sets in production.
+    /// WAF enforcement mode.
+    /// `block` (default) — block matching requests.
+    /// `silent` — log detections but never block.
+    /// `detect-only` — run all engines, emit findings and metrics, always allow.
     #[arg(long, value_enum, default_value = "block")]
     pub mode: WafMode,
 

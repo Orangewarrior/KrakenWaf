@@ -4,7 +4,7 @@ mod app;
 mod banner;
 mod cli;
 mod error;
-mod dfa;
+mod cmc;
 mod ffi;
 mod logging;
 mod metrics;
@@ -22,7 +22,7 @@ use bytes::Bytes;
 use clap::Parser;
 use cli::{Cli, WalMode};
 use waf::rate_limit::PersistenceMode;
-use dfa::{DfaConfig, DfaManagerBuilder};
+use cmc::{CmcConfig, CmcManagerBuilder};
 use metrics::WafMetrics;
 use response_headers::ResponseHeaderPolicy;
 use std::{path::PathBuf, sync::Arc};
@@ -55,12 +55,12 @@ async fn main() -> Result<()> {
     let metrics = Arc::new(WafMetrics::default());
     let rules_root = PathBuf::from(&cli.rules_dir);
     let rules = Arc::new(rules::RuleSet::from_dir(&rules_root)?);
-    let dfa_config = match cli.dfa_load.as_deref() {
-        Some(path) => DfaConfig::from_file(&PathBuf::from(path))?,
-        None => DfaConfig::default(),
+    let cmc_config = match cli.cmc_load.as_deref() {
+        Some(path) => CmcConfig::from_file(&PathBuf::from(path))?,
+        None => CmcConfig::default(),
     };
-    let dfa_manager = Arc::new(
-        DfaManagerBuilder::new(dfa_config)
+    let cmc_manager = Arc::new(
+        CmcManagerBuilder::new(cmc_config)
             .vectorscan_enabled(cli.enable_vectorscan)
             .build(),
     );
@@ -78,7 +78,7 @@ async fn main() -> Result<()> {
             WalMode::Bincode => PersistenceMode::Bincode,
         },
         metrics.clone(),
-        dfa_manager.clone(),
+        cmc_manager.clone(),
     )?);
     let proxy = Arc::new(proxy::ProxyClient::new(
         &cli.upstream,
@@ -111,7 +111,7 @@ async fn main() -> Result<()> {
 
     spawn_rule_reload(state.clone());
 
-    info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, dfa_config_loaded=cli.dfa_load.is_some(), mode=?cli.mode, allow_paths_file=?cli.allow_paths_file, no_tls=cli.no_tls, upstream=%cli.upstream, "KrakenWaf initialized");
+    info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, cmc_config_loaded=cli.cmc_load.is_some(), mode=?cli.mode, allow_paths_file=?cli.allow_paths_file, no_tls=cli.no_tls, upstream=%cli.upstream, "KrakenWaf initialized");
 
     if cli.no_tls {
         server::run_plain(cli.listen, state).await

@@ -1,5 +1,5 @@
 use krakenwaf::{
-    dfa::{DfaConfig, DfaManagerBuilder},
+    cmc::{CmcConfig, CmcManagerBuilder},
     metrics::WafMetrics,
     rules::RuleSet,
     waf::{rate_limit::PersistenceMode, Decision, InspectionContext, WafEngine},
@@ -18,7 +18,7 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
         tempfile::tempdir().unwrap().path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        Arc::new(DfaManagerBuilder::new(DfaConfig::default()).build()),
+        Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build()),
     )
     .expect("engine")
 }
