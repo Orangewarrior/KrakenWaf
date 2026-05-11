@@ -170,8 +170,9 @@ fn build_vectorscan() -> Option<BlockDatabase> {
         .iter()
         .enumerate()
         .map(|(idx, suffix)| {
+            let literal = regex_escape_literal(suffix);
             Pattern::new(
-                suffix.as_bytes().to_vec(),
+                literal.into_bytes(),
                 Flag::CASELESS | Flag::SINGLEMATCH,
                 Some(idx as u32),
             )
@@ -179,6 +180,21 @@ fn build_vectorscan() -> Option<BlockDatabase> {
         .collect::<Vec<_>>();
 
     BlockDatabase::new(patterns).ok()
+}
+
+#[cfg(feature = "vectorscan-engine")]
+fn regex_escape_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if matches!(
+            c,
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// Scan `path` for any suffix pattern; accept a match only when it ends at the
@@ -313,5 +329,29 @@ mod tests {
 
         let m = d.detect("GET", "/.env").expect("should detect .env");
         assert_eq!(m.suffix(), ".env");
+    }
+
+    #[cfg(feature = "vectorscan-engine")]
+    #[test]
+    fn vectorscan_suffixes_are_matched_as_literals_at_path_end() {
+        let d = super::AntiExposedBackupCmcBuilder::new()
+            .vectorscan_enabled(true)
+            .build();
+        assert!(d.vectorscan.is_some(), "vectorscan database should compile");
+
+        let m = d
+            .detect("GET", "/tmp/session.tmp")
+            .expect("should detect final .tmp, not stop at /tmp");
+        assert_eq!(m.suffix(), ".tmp");
+
+        let m = d
+            .detect("GET", "/dumps/prod.dump")
+            .expect("should detect final .dump, not stop at /dump");
+        assert_eq!(m.suffix(), ".dump");
+
+        let m = d
+            .detect("GET", "/sql/migration.sql.")
+            .expect("should detect final .sql., not stop at /sql/");
+        assert_eq!(m.suffix(), ".sql.");
     }
 }
