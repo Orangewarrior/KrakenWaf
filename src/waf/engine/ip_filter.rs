@@ -9,8 +9,7 @@ pub(super) fn canonical_ip(input: &str) -> Option<IpAddr> {
         return Some(match ip {
             IpAddr::V6(v6) => v6
                 .to_ipv4_mapped()
-                .map(IpAddr::V4)
-                .unwrap_or(IpAddr::V6(v6)),
+                .map_or(IpAddr::V6(v6), IpAddr::V4),
             other @ IpAddr::V4(_) => other,
         });
     }
@@ -18,7 +17,7 @@ pub(super) fn canonical_ip(input: &str) -> Option<IpAddr> {
     if parts.len() == 4 {
         let octets = parts
             .into_iter()
-            .map(|part| part.parse::<u8>())
+            .map(str::parse::<u8>)
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         return Some(IpAddr::from([octets[0], octets[1], octets[2], octets[3]]));

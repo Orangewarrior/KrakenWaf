@@ -86,15 +86,18 @@ struct MultiMatcher {
 }
 
 impl AntiPasswdLeakCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use] 
     pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
         self.vectorscan_enabled = enabled;
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> AntiPasswdLeakCmc {
         AntiPasswdLeakCmc {
             passwd: MultiMatcher::new(PASSWD_TOKENS, 2, self.vectorscan_enabled),
@@ -193,7 +196,7 @@ impl MultiMatcher {
 
 impl AntiPasswdLeakCmc {
     /// Inspect a response body string.  Returns a `PasswdLeakMatch` when the body
-    /// contains ≥ 2 distinct PASSWD_TOKENS or ≥ 2 distinct SHADOW_TOKENS.
+    /// contains ≥ 2 distinct `PASSWD_TOKENS` or ≥ 2 distinct `SHADOW_TOKENS`.
     pub fn detect(&self, input: &str) -> Option<PasswdLeakMatch> {
         if let Some((count, token_a, token_b)) = self.passwd.count_distinct(input) {
             return Some(PasswdLeakMatch {

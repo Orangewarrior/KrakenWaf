@@ -191,20 +191,24 @@ impl Default for JavaDeserializeCmcBuilder {
 }
 
 impl JavaDeserializeCmcBuilder {
+    #[must_use] 
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use] 
     pub fn untrust_level(mut self, level: u8) -> Self {
         self.untrust_level = level.min(100);
         self
     }
 
+    #[must_use] 
     pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
         self.vectorscan_enabled = enabled;
         self
     }
 
+    #[must_use] 
     pub fn build(self) -> JavaDeserializeCmc {
         JavaDeserializeCmc {
             signal_a: SingleMatcher::new(
@@ -257,7 +261,7 @@ impl JavaDeserializeCmc {
         let (signal_b, ev_b) = self.check_signal_b(text);
         let (signal_c, ev_c) = self.check_signal_c(text);
 
-        let count = signal_a as u8 + signal_b as u8 + signal_c as u8;
+        let count = u8::from(signal_a) + u8::from(signal_b) + u8::from(signal_c);
 
         if count == 0 {
             return JavaDeserDecision::Clean;
@@ -314,15 +318,13 @@ impl JavaDeserializeCmc {
     fn check_signal_b(&self, text: &str) -> (bool, Option<&'static str>) {
         self.signal_b
             .first_match(text)
-            .map(|p| (true, Some(p)))
-            .unwrap_or((false, None))
+            .map_or((false, None), |p| (true, Some(p)))
     }
 
     fn check_signal_c(&self, text: &str) -> (bool, Option<&'static str>) {
         self.signal_c
             .first_match(text)
-            .map(|p| (true, Some(p)))
-            .unwrap_or((false, None))
+            .map_or((false, None), |p| (true, Some(p)))
     }
 }
 

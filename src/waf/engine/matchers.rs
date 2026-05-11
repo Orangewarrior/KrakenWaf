@@ -91,7 +91,7 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
             title: "Scanner/crawler user-agent detected".to_string(),
             severity: Severity::High,
             cwe: "CWE-200".to_string(),
-            description: format!("A known scanning tool user-agent was detected: {}", pattern),
+            description: format!("A known scanning tool user-agent was detected: {pattern}"),
             reference_url:
                 "https://owasp.org/www-project-web-security-testing-guide/".to_string(),
             rule_match: pattern.clone(),
@@ -196,7 +196,7 @@ pub(super) fn score_allows_block(rule: &DetectionRule, sum_score: &mut u32) -> b
     false
 }
 
-/// Regex match filtered by http_action phase.
+/// Regex match filtered by `http_action` phase.
 pub(super) fn regex_match_phase_scored(
     rules: &[CompiledDetectionRule],
     haystack: &str,

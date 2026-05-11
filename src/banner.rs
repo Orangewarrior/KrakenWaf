@@ -1,6 +1,7 @@
-/// Returns the startup banner printed by KrakenWaf.
+/// Returns the startup banner printed by `KrakenWaf`.
+#[must_use] 
 pub fn banner() -> &'static str {
-    r#"
+    r"
  _  __                _                __        ___    ______
 | |/ /_ __ __ _  ___ | | _____ _ __    \ \      / / \  |  ____|
 | ' /| '__/ _` |/ _ \| |/ / _ \ '_ \    \ \ /\ / / _ \ | |__
@@ -8,5 +9,5 @@ pub fn banner() -> &'static str {
 |_|\_\_|  \__,_|\___/|_|\_\___|_| |_|     \_/\_/_/   \_\_|
 
 KrakenWaf - Tokio + TLS + streaming inspection + AppSec-first logging
-"#
+"
 }
