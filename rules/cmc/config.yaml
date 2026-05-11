@@ -1,0 +1,16 @@
+global-options:
+  Untrust: 60
+
+CMC-Rules:
+  SQLi_comments_detect: true
+  Overflow_detect: true
+  SSTI_detect: true
+  SSI_injection_detect: true
+  ESI_injection_detect: true
+  CRLF_injection_detect: true
+  Request_Smuggling_detect: true
+  NOSQL_injection_detect: true
+  XXE_attack_detect: true
+  Anti_exposed_backup: true
+  Anti_passwd_leak: true
+  Java_deserialize_detect: true

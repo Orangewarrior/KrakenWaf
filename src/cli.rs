@@ -7,11 +7,15 @@ pub enum WafMode {
     Block,
     /// Log detections but never block (observation mode).
     Silent,
+    /// Detect-only / shadow mode: run all inspection engines, emit findings and
+    /// increment metrics, but always return Allow. Useful for validating new rule
+    /// sets against live traffic before enabling blocking.
+    DetectOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum WalMode {
-    /// Persist rate-limiter state in SQLite (WAL journal). Slower writes
+    /// Persist rate-limiter state in `SQLite` (WAL journal). Slower writes
     /// but supports inspection via `sqlite3 cli` and partial updates.
     Sqlite,
     /// Persist as a flat bincode file (atomic rename). Much faster snapshots
@@ -22,6 +26,7 @@ pub enum WalMode {
 #[derive(Debug, Clone, Parser)]
 #[command(name = "krakenwaf")]
 #[command(author, version, about = "KrakenWaf - TLS-aware Rust WAF inspired by OctopusWAF")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     #[arg(long, default_value = "0.0.0.0:8443")]
     pub listen: SocketAddr,
@@ -93,8 +98,8 @@ pub struct Cli {
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,
 
-    #[arg(long = "dfa-load")]
-    pub dfa_load: Option<String>,
+    #[arg(long = "cmc-load")]
+    pub cmc_load: Option<String>,
 
     #[arg(long = "real-ip-header")]
     pub real_ip_header: Option<String>,
@@ -102,8 +107,10 @@ pub struct Cli {
     #[arg(long = "trusted-proxy-cidrs", value_delimiter = ',')]
     pub trusted_proxy_cidrs: Vec<String>,
 
-    /// WAF enforcement mode. `block` (default) blocks matching requests; `silent` logs
-    /// detections without blocking, useful for tuning rule sets in production.
+    /// WAF enforcement mode.
+    /// `block` (default) — block matching requests.
+    /// `silent` — log detections but never block.
+    /// `detect-only` — run all engines, emit findings and metrics, always allow.
     #[arg(long, value_enum, default_value = "block")]
     pub mode: WafMode,
 
@@ -126,10 +133,12 @@ pub struct Cli {
 }
 
 impl Cli {
+    #[must_use] 
     pub fn libinjection_sqli_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_sqli
     }
 
+    #[must_use] 
     pub fn libinjection_xss_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_xss
     }

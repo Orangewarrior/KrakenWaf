@@ -28,6 +28,7 @@ fn collect_fingerprint(buf: &[core::ffi::c_char]) -> Option<String> {
     (!trimmed.is_empty()).then_some(trimmed.to_string())
 }
 
+#[must_use] 
 pub fn detect_sqli(input: &[u8]) -> Option<Detection> {
     let mut buf = vec![0 as core::ffi::c_char; 64];
     let matched = unsafe {
@@ -39,6 +40,7 @@ pub fn detect_sqli(input: &[u8]) -> Option<Detection> {
     })
 }
 
+#[must_use] 
 pub fn detect_xss(input: &[u8]) -> Option<Detection> {
     let mut buf = vec![0 as core::ffi::c_char; 64];
     let matched = unsafe {

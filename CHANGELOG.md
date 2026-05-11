@@ -1,8 +1,33 @@
+## [2.18.0] - 2026-05-11
+
+### Added
+
+#### CMC rename (DFA → CMC)
+- Renamed all internal modules, types, CLI flags, and YAML keys from `DFA`/`dfa` to `CMC`/`cmc` ("Custom Module Code") throughout the entire codebase — Rust structs (`CmcConfig`, `CmcManager`, `CmcManagerBuilder`), CLI (`--cmc-load`), YAML key (`CMC-Rules:`), rule match strings (`cmc::`), docs (`docs/cmc/`), rules dir (`rules/cmc/`), integration tests.
+
+#### `EngineMode::DetectOnly`
+- New `--mode detect-only` value: runs all inspection engines and emits findings + increments metrics, but always returns Allow. Intended for shadow-mode validation of new rule sets against live traffic before enabling blocking. Documented in `docs/detect_only_mode.md`.
+
+#### Engine module split
+- Broke the 1091-line `src/waf/engine.rs` into focused sub-modules: `engine/mod.rs` (public API + `WafEngine`), `engine/normalize.rs` (URL-decode pipeline), `engine/finding.rs` (`Finding` struct + helpers), `engine/ip_filter.rs` (IP canonicalization + CIDR parsing), `engine/matchers.rs` (all Aho-Corasick, Vectorscan, regex, and libinjection matchers).
+
+#### cargo-fuzz targets
+- Added `fuzz/` workspace with three `cargo-fuzz` targets: `cmc_inspect` (full CMC pipeline), `url_decode` (URL-decode normalisation), `parse_rules` (CMC YAML config parser). Documented in `docs/fuzzing.md`.
+
+#### Prometheus per-module metrics
+- New `krakenwaf_module_blocks_total{engine,module}` counter broken down by detection engine and CMC module name. Documented in `docs/observability.md`.
+
+#### Clippy pedantic lints
+- Added `[lints.clippy]` section to `Cargo.toml` with `pedantic = "warn"`, `cast_possible_truncation = "warn"`, and `unwrap_used = "warn"` as a baseline for future hardening.
+
+### Changed
+- `dashmap` added as a dependency for the per-module metrics `DashMap`.
+
 ## [2.17.0] - 2026-05-10
 
 ### Added
 
-#### DFA — Java Deserialize Detect (`Java_deserialize_detect`)
+#### CMC — Java Deserialize Detect (`Java_deserialize_detect`)
 
 A new three-signal scoring detector blocks Java deserialization attack payloads
 on both incoming requests and upstream responses.
@@ -18,25 +43,25 @@ on both incoming requests and upstream responses.
 - 2 signals + `Untrust < 60` → silent `WARN` log; no block.
 - 1 signal + `Untrust > 80` → informative `WARN` log; no block.
 
-**Global-options YAML section**: a new top-level `global-options` key in the DFA config accepts `Untrust: <0–100>` (default 60), which applies to all score-based detectors.
+**Global-options YAML section**: a new top-level `global-options` key in the CMC config accepts `Untrust: <0–100>` (default 60), which applies to all score-based detectors.
 
 **Dual-pipeline inspection**: `inspect_java_deser(&str, &[u8])` is called from both `inspect_complete_payload_with_context()` (request) and `inspect_response()` (response). The request path uses the original non-lowercased payload to preserve case-sensitive base64 magic detection.
 
 **Engine support**: Aho-Corasick (three independent automata, per-signal) with optional Vectorscan `BlockDatabase` acceleration. Signal B uses `Flag::CASELESS`; Signals A and C use `Flag::SINGLEMATCH` (case-sensitive).
 
 **New files:**
-- `src/dfa/java_deserialize_detect.rs` — detector implementation with 20 unit tests.
-- `docs/dfa/java_deserialize_detect.md` — full documentation with scoring tables, examples, and false-positive guidance.
+- `src/cmc/java_deserialize_detect.rs` — detector implementation with 20 unit tests.
+- `docs/cmc/java_deserialize_detect.md` — full documentation with scoring tables, examples, and false-positive guidance.
 
 **Modified files:**
-- `src/dfa/mod.rs` — new module, `DfaConfig.java_deserialize_detect`, `DfaConfig.untrust_level`, `DfaManager.java_deserialize`, `DfaManager::inspect_java_deser()`, updated `parse_lenient_yaml()` for `global-options`.
+- `src/cmc/mod.rs` — new module, `DfaConfig.java_deserialize_detect`, `DfaConfig.untrust_level`, `DfaManager.java_deserialize`, `DfaManager::inspect_java_deser()`, updated `parse_lenient_yaml()` for `global-options`.
 - `src/waf/engine.rs` — `inspect_java_deser` called in both request and response pipelines.
-- `rules/dfa/config.yaml` — added `global-options.Untrust: 60`, `Java_deserialize_detect: true`.
+- `rules/cmc/config.yaml` — added `global-options.Untrust: 60`, `Java_deserialize_detect: true`.
 - `src/bin/demo_server.rs` — new `/java-deser` POST endpoint.
 - `src/bin/attack.rs` — 10 Java deserialization payloads + `sweep_java_deser()` with `Content-Type` header.
 - `tests/server_real_test.rs` — 6 integration tests covering block/allow/disabled scenarios.
-- `docs/dfa/schema.md` — `global-options` section, `Java_deserialize_detect` in module catalogue and summaries.
-- `README.md` — updated DFA module list and config snippet.
+- `docs/cmc/schema.md` — `global-options` section, `Java_deserialize_detect` in module catalogue and summaries.
+- `README.md` — updated CMC module list and config snippet.
 
 ---
 
@@ -44,9 +69,9 @@ on both incoming requests and upstream responses.
 
 ### Added
 
-#### DFA — Anti-Passwd-Leak detector (`Anti_passwd_leak`)
+#### CMC — Anti-Passwd-Leak detector (`Anti_passwd_leak`)
 
-- `src/dfa/anti_passwd_leak.rs`: new **response-side** DFA module that intercepts
+- `src/cmc/anti_passwd_leak.rs`: new **response-side** CMC module that intercepts
   upstream responses whose body contains ≥ 2 distinct structural tokens from either
   `/etc/passwd` (`PASSWD_TOKENS` — 9 patterns: `root:x:0:0:`, `daemon:x:`, `bin:x:`,
   `nobody:`, `/bin/bash`, `/bin/sh`, `/bin/false`, `/usr/sbin/nologin`,
@@ -56,7 +81,7 @@ on both incoming requests and upstream responses.
 - A single token present in the response is **not** sufficient to block — the
   two-token conjunction requirement eliminates false positives from documentation or
   log output that incidentally contains one of the tokens.
-- This is the only DFA module that acts as a **data-loss-prevention (DLP) filter**:
+- This is the only CMC module that acts as a **data-loss-prevention (DLP) filter**:
   it blocks the upstream *response* before the sensitive data reaches the attacker,
   rather than blocking the attacker's request.
 - `PASSWD_TOKENS` is checked before `SHADOW_TOKENS`; if the passwd check fires, the
@@ -64,14 +89,14 @@ on both incoming requests and upstream responses.
 - When `--enable-vectorscan` is active, both token lists are compiled into a Hyperscan
   `BlockDatabase` with `Flag::SINGLEMATCH`; matched pattern IDs are collected in the
   scan callback and counted without a premature `Scan::Terminate`.
-- Activated via `Anti_passwd_leak: true` in the DFA config YAML.
-- `src/dfa/mod.rs`: `inspect_response_body(body: &str)` entry-point added to
+- Activated via `Anti_passwd_leak: true` in the CMC config YAML.
+- `src/cmc/mod.rs`: `inspect_response_body(body: &str)` entry-point added to
   `DfaManager`; `anti_passwd_leak_detect` field added to `DfaConfig`; YAML key
   `Anti_passwd_leak` wired in `from_map()`.
 - `src/waf/engine.rs`: `inspect_response_body()` hooked into `inspect_response()`
   after the existing keyword/regex body checks, operating on the raw (non-URL-decoded)
   response body.
-- `rules/dfa/config.yaml`: `Anti_passwd_leak: true` added to the default config.
+- `rules/cmc/config.yaml`: `Anti_passwd_leak: true` added to the default config.
 - `src/bin/demo_server.rs`: two new routes added:
   - `GET /leak/passwd` — returns a realistic 4-line `/etc/passwd` dump.
   - `GET /leak/shadow` — returns a realistic 3-line `/etc/shadow` dump.
@@ -83,14 +108,14 @@ on both incoming requests and upstream responses.
   `dfa_anti_passwd_leak_normal_response_allowed`,
   `dfa_anti_passwd_leak_disabled_allows_response`.
   The test backend gains `/leak/passwd` and `/leak/shadow` routes.
-- `src/dfa/anti_passwd_leak.rs` ships 9 unit tests covering: realistic dump detection
+- `src/cmc/anti_passwd_leak.rs` ships 9 unit tests covering: realistic dump detection
   for both file types, single-token below-threshold cases, benign body pass-through,
   passwd-takes-priority ordering, and shadow-only content classification.
-- `docs/dfa/anti_passwd_leak.md`: full documentation (behaviour, token tables,
+- `docs/cmc/anti_passwd_leak.md`: full documentation (behaviour, token tables,
   engine selection, config, examples, false-positive guidance, performance notes).
-- `docs/dfa/schema.md`: module catalogue updated with `Anti_passwd_leak` entry and
+- `docs/cmc/schema.md`: module catalogue updated with `Anti_passwd_leak` entry and
   `inspect_response_body()` entry-point documented; DLP nature of the module noted.
-- `README.md`: DFA bullet list and YAML config snippet updated.
+- `README.md`: CMC bullet list and YAML config snippet updated.
 - Detection finding: severity **Critical**, CWE-538, OWASP Sensitive Data Exposure.
 
 ---
@@ -99,8 +124,8 @@ on both incoming requests and upstream responses.
 
 ### Added
 
-#### DFA — Anti-Exposed-Backup detector (`Anti_exposed_backup`)
-- `src/dfa/anti_exposed_backup.rs`: new DFA module that blocks `GET` and `HEAD` requests
+#### CMC — Anti-Exposed-Backup detector (`Anti_exposed_backup`)
+- `src/cmc/anti_exposed_backup.rs`: new CMC module that blocks `GET` and `HEAD` requests
   whose URI path ends with a known backup/temporary/config-leak extension (`.bak`, `.bkp`,
   `.backup`, `.old`, `.orig`, `.save`, `.sav`, `.swp`, `.swo`, `.swn`, `.swx`, `.un~`,
   `.tmp`, `.temp`, `.wbk`, `.env`, `.sql.`, `.dump`).
@@ -111,11 +136,11 @@ on both incoming requests and upstream responses.
 - `POST`/`PUT`/`PATCH`/`DELETE` are never inspected by this module.
 - When `--enable-vectorscan` is active, all 18 patterns are compiled into a Hyperscan
   `BlockDatabase` and scanned in a single SIMD pass with end-offset filtering.
-- Activated via `Anti_exposed_backup: true` in the DFA config YAML.
-- `src/dfa/mod.rs`: `inspect_uri(method, path)` method added to `DfaManager`; called from
+- Activated via `Anti_exposed_backup: true` in the CMC config YAML.
+- `src/cmc/mod.rs`: `inspect_uri(method, path)` method added to `DfaManager`; called from
   `inspect_early()` before the full request payload is assembled — zero body-read latency.
 - `src/waf/engine.rs`: `inspect_uri()` hooked into `inspect_early()`.
-- `rules/dfa/config.yaml`: `Anti_exposed_backup: true` added to the default config.
+- `rules/cmc/config.yaml`: `Anti_exposed_backup: true` added to the default config.
 - `src/bin/demo_server.rs`: wildcard `/*path` GET route added so the attack-sweep tool
   can distinguish a WAF bypass (HTTP 200) from a WAF block (HTTP 403).
 - `src/bin/attack.rs`: `BACKUP_URI_PAYLOADS` list (20 paths) + `sweep_backup_uris()` function
@@ -124,7 +149,7 @@ on both incoming requests and upstream responses.
   `dfa_anti_exposed_backup_get_is_blocked`, `dfa_anti_exposed_backup_post_is_allowed`,
   `dfa_anti_exposed_backup_normal_paths_allowed`,
   `dfa_anti_exposed_backup_suffix_in_query_string_not_blocked`.
-- `docs/dfa/anti_exposed_backup.md`: full documentation (behaviour, config, examples,
+- `docs/cmc/anti_exposed_backup.md`: full documentation (behaviour, config, examples,
   false-positive guidance, performance notes).
 - Detection finding: severity **High**, CWE-538, OWASP Insecure Direct Object References.
 
@@ -154,10 +179,10 @@ on both incoming requests and upstream responses.
 ### Fixed
 
 #### CI — Clippy `redundant_static_lifetimes`
-- `src/dfa/overflow_detect.rs`: removed `&'static` from `X86_PATTERNS`, `X64_PATTERNS`, `ARM_PATTERNS` const type annotations. References in `const` items are always `'static` implicitly.
+- `src/cmc/overflow_detect.rs`: removed `&'static` from `X86_PATTERNS`, `X64_PATTERNS`, `ARM_PATTERNS` const type annotations. References in `const` items are always `'static` implicitly.
 
 #### CI — attack-sweep WAF start command
-- `.github/workflows/security.yml`: added `--dfa-load $GITHUB_WORKSPACE/rules/dfa/config.yaml` (activates all 9 DFA detectors) and `--rate-limit-per-minute 100000` (prevents GCRA from blocking score-engine "allow" cases at concurrency 25).
+- `.github/workflows/security.yml`: added `--cmc-load $GITHUB_WORKSPACE/rules/cmc/config.yaml` (activates all 9 CMC detectors) and `--rate-limit-per-minute 100000` (prevents GCRA from blocking score-engine "allow" cases at concurrency 25).
 
 #### CI — SCA made advisory-only
 - `cargo-audit` and `cargo-deny` jobs now use `continue-on-error: true`, matching the policy already in place for Semgrep and OSV Scanner. Findings surface in the job log and GitHub Security tab without blocking the workflow.
@@ -243,17 +268,17 @@ on both incoming requests and upstream responses.
 
 ### Added
 
-#### XXE attack DFA coverage
-- Added `src/dfa/xxe_attack_detect.rs` to detect XXE attacks by requiring at least one marker from list A (`ENTITY`, `xi:include`) and at least one marker from list B (`xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, `file`).
+#### XXE attack CMC coverage
+- Added `src/cmc/xxe_attack_detect.rs` to detect XXE attacks by requiring at least one marker from list A (`ENTITY`, `xi:include`) and at least one marker from list B (`xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, `file`).
 - Added UTF-16LE/BE recovery for NUL-interleaved request text produced after URL decoding encoded XML payload bytes.
-- The DFA can be enabled with `XXE_attack_detect: true` in `rules/dfa/config.yaml`.
+- The CMC can be enabled with `XXE_attack_detect: true` in `rules/cmc/config.yaml`.
 - When the `vectorscan-engine` feature is compiled and `--enable-vectorscan` is set, the XXE detector uses Vectorscan for literal list matching.
 - Extended `src/bin/attack.rs` with 15 XXE attack payloads and GET/POST sweeps, including a UTF-16LE percent-encoded payload.
 
 ### Tests
 
 - Added real end-to-end GET/POST XXE blocking tests against the protected WAF subprocess in `tests/server_real_test.rs`.
-- Added XXE DFA unit tests for list correlation and UTF-16LE encoded payload recovery.
+- Added XXE CMC unit tests for list correlation and UTF-16LE encoded payload recovery.
 
 ---
 
@@ -261,17 +286,17 @@ on both incoming requests and upstream responses.
 
 ### Added
 
-#### NoSQL injection DFA coverage
-- Added `src/dfa/nosql_injection_detect.rs` to detect NoSQL injection by requiring at least one marker from list A (`$gt`, `$where`, `$or`, `$and`, `selector`, `this.password.match`, `&&`, `||`, and related operators) and at least one marker from list B (`true`, `admin`, `pass`, `user`, `null`, `sleep(`, `%00`, `{}`, `.insert`, `dropDatabase(`, equality probes, and related values).
+#### NoSQL injection CMC coverage
+- Added `src/cmc/nosql_injection_detect.rs` to detect NoSQL injection by requiring at least one marker from list A (`$gt`, `$where`, `$or`, `$and`, `selector`, `this.password.match`, `&&`, `||`, and related operators) and at least one marker from list B (`true`, `admin`, `pass`, `user`, `null`, `sleep(`, `%00`, `{}`, `.insert`, `dropDatabase(`, equality probes, and related values).
 - Added support for `==[1-9]` and `== [1-9]` as list B matches.
-- The DFA can be enabled with `NOSQL_injection_detect: true` in `rules/dfa/config.yaml`.
-- When the `vectorscan-engine` feature is compiled and `--enable-vectorscan` is set, the NoSQL detector uses Vectorscan for literal list matching and keeps the numeric equality DFA check for the digit pattern.
+- The CMC can be enabled with `NOSQL_injection_detect: true` in `rules/cmc/config.yaml`.
+- When the `vectorscan-engine` feature is compiled and `--enable-vectorscan` is set, the NoSQL detector uses Vectorscan for literal list matching and keeps the numeric equality CMC check for the digit pattern.
 - Extended `src/bin/attack.rs` with 15 NoSQL injection payloads and GET/POST sweeps.
 
 ### Tests
 
 - Added real end-to-end GET/POST NoSQL injection blocking tests against the protected WAF subprocess in `tests/server_real_test.rs`.
-- Added NoSQL DFA unit tests for list correlation and numeric equality probes.
+- Added NoSQL CMC unit tests for list correlation and numeric equality probes.
 
 ---
 
@@ -279,32 +304,32 @@ on both incoming requests and upstream responses.
 
 ### Added
 
-#### DFA attack sweeps in real WAF tests
-- Added end-to-end DFA sweeps in `tests/server_real_test.rs` with `--dfa-load rules/dfa/config.yaml` enabled.
+#### CMC attack sweeps in real WAF tests
+- Added end-to-end CMC sweeps in `tests/server_real_test.rs` with `--cmc-load rules/cmc/config.yaml` enabled.
 - Added GET and POST coverage for Overflow, SSTI, SSI injection, and ESI injection payloads so URI and request body inspection are both validated through the real KrakenWAF subprocess.
-- Extended `src/bin/attack.rs` to send the same DFA-focused payload families in GET and POST attack sweeps.
+- Extended `src/bin/attack.rs` to send the same CMC-focused payload families in GET and POST attack sweeps.
 
-#### Overflow DFA shellcode detection
-- `src/dfa/overflow_detect.rs` now detects common shellcode opcode clusters in addition to repeated-character and structured overflow patterns.
+#### Overflow CMC shellcode detection
+- `src/cmc/overflow_detect.rs` now detects common shellcode opcode clusters in addition to repeated-character and structured overflow patterns.
 - Added detection for x86-32, x86-64, and ARM/Thumb payloads, including NOP sleds (`\x90`, ARM `00 00 a0 e1`, Thumb `c0 46`) and common Linux shellcode sequences such as `int 0x80`, `syscall`, `execve`, and embedded `/bin/sh`.
 - Added parsing for common byte encodings in payload text: `\xNN`, `%NN`, `0xNN`, and `\u00NN`.
-- `DfaManager` now emits a dedicated high-severity `DFA shellcode opcode detection` finding for these matches.
+- `DfaManager` now emits a dedicated high-severity `CMC shellcode opcode detection` finding for these matches.
 
-#### SSTI DFA coverage
-- `src/dfa/ssti_detect.rs` now detects additional SSTI families: `{% ... %}`, FreeMarker `<# ... >`, Velocity `#set(...)`, and `[[ ... ]]` expressions.
+#### SSTI CMC coverage
+- `src/cmc/ssti_detect.rs` now detects additional SSTI families: `{% ... %}`, FreeMarker `<# ... >`, Velocity `#set(...)`, and `[[ ... ]]` expressions.
 
-#### SSI and ESI DFA coverage
-- `src/dfa/ssi_injection_detect.rs` now detects SSI directives with spacing and case variants, including `<!-- #exec ... -->` and `<!--# set ... -->`.
-- `src/dfa/esi_injection_detect.rs` now detects additional ESI directives including `vars`, `remove`, `choose`, `when`, `otherwise`, `try`, `attempt`, `except`, `comment`, and `assign`, with case and spacing variants.
+#### SSI and ESI CMC coverage
+- `src/cmc/ssi_injection_detect.rs` now detects SSI directives with spacing and case variants, including `<!-- #exec ... -->` and `<!--# set ... -->`.
+- `src/cmc/esi_injection_detect.rs` now detects additional ESI directives including `vars`, `remove`, `choose`, `when`, `otherwise`, `try`, `attempt`, `except`, `comment`, and `assign`, with case and spacing variants.
 
-#### CRLF injection DFA coverage
-- Added `src/dfa/crlf_injection_detect.rs` to detect CRLF injection and HTTP response-splitting payloads.
-- The DFA can be enabled with `CRLF_injection_detect: true` in `rules/dfa/config.yaml`.
+#### CRLF injection CMC coverage
+- Added `src/cmc/crlf_injection_detect.rs` to detect CRLF injection and HTTP response-splitting payloads.
+- The CMC can be enabled with `CRLF_injection_detect: true` in `rules/cmc/config.yaml`.
 - Added coverage for raw CR/LF, URL-encoded, double/triple-encoded, `%u000d/%u000a`, `\u000d/\u000a`, Unicode newline bypasses, and injected HTTP header/status/body patterns from the payload-box CRLF injection list.
 
-#### Request smuggling DFA coverage
-- Added `src/dfa/request_smuggling_detect.rs` to detect request smuggling indicators in headers, URI, and body content.
-- The DFA can be enabled with `Request_Smuggling_detect: true` in `rules/dfa/config.yaml`.
+#### Request smuggling CMC coverage
+- Added `src/cmc/request_smuggling_detect.rs` to detect request smuggling indicators in headers, URI, and body content.
+- The CMC can be enabled with `Request_Smuggling_detect: true` in `rules/cmc/config.yaml`.
 - Added detection for `Transfer-Encoding: chunked`, `X-Session-Hijack: true`, `Content-Length` values `<= 4`, and injected `Transfer-Encoding: chunked` patterns in request bodies or URI parameters.
 
 ### Fixed
@@ -318,7 +343,7 @@ on both incoming requests and upstream responses.
 - Added unit tests for Overflow shellcode detection, SSTI families, SSI spacing/case variants, and ESI directive variants.
 - Added real GET/POST CRLF injection sweeps using representative payloads from `payload-box/crlf-injection-payload-list`.
 - Added real GET/POST request smuggling sweeps with 10 payloads covering transfer-encoding, short content-length, and session-hijack markers.
-- Verified DFA payload sweeps block in both GET query strings and POST form bodies.
+- Verified CMC payload sweeps block in both GET query strings and POST form bodies.
 
 ---
 
@@ -373,7 +398,7 @@ on both incoming requests and upstream responses.
 
 #### `serde_yaml` → `serde_yml`
 - Replaced `serde_yaml 0.9` (backed by `unsafe-libyaml` C bindings) with `serde_yml 0.0.12`, a pure-Rust fork with an identical API.
-- Call sites in `src/allowpaths.rs` and `src/dfa/mod.rs` updated; no behaviour change.
+- Call sites in `src/allowpaths.rs` and `src/cmc/mod.rs` updated; no behaviour change.
 
 #### `rustls-pemfile` removed — PEM parsing via `rustls-pki-types`
 - `rustls-pemfile` (RUSTSEC-2025-0134 — unmaintained) removed from the dependency tree.
@@ -451,7 +476,7 @@ on both incoming requests and upstream responses.
   - `rules/Vectorscan/strings2block.json`
 - `DetectionRule` struct gains an `id: String` field populated from the JSON file.
 - IDs are sequenced per-file, starting at `00001` in each file independently.
-- Rules not present in JSON (DFA, libinjection, rate-limit, IP-block) receive the sentinel value `"00000"`.
+- Rules not present in JSON (CMC, libinjection, rate-limit, IP-block) receive the sentinel value `"00000"`.
 
 #### Rule ID in logs (Point 2)
 - `Finding` struct gains `rule_id: String` carrying the rule's file-local ID.
@@ -509,7 +534,7 @@ on both incoming requests and upstream responses.
 
 #### WAF engine
 - **H2 — `std::sync::RwLock` poisoning**: migrated WAF engine locks to `parking_lot::RwLock`, which never poisons; removed all `.unwrap_or_else(|p| p.into_inner())` fallbacks (`src/waf/engine.rs`).
-- **H5 — Hot-path `to_lowercase` allocation**: DFA lowercasing is now scoped to the DFA phase only; keyword and regex phases reuse the already-normalized buffer (`src/waf/engine.rs`).
+- **H5 — Hot-path `to_lowercase` allocation**: CMC lowercasing is now scoped to the CMC phase only; keyword and regex phases reuse the already-normalized buffer (`src/waf/engine.rs`).
 - **Issue 7 — Race condition on rules hot-reload**: introduced `RulesSnapshot` struct holding `Arc<RuleSet>` + `EngineMatchers` behind a single `RwLock<Arc<RulesSnapshot>>`; `reload_from_dir` swaps the arc atomically so in-flight requests always see a consistent rule set (`src/waf/engine.rs`).
 
 #### Storage / Persistence
@@ -518,7 +543,7 @@ on both incoming requests and upstream responses.
 - **H7 — TLS SNI logged before move**: SNI string is extracted before `ClientHello` is consumed; fallback-cert selection now logs a `WARN` with the SNI value instead of silently swallowing the event (`src/tls.rs`).
 
 #### Configuration / YAML
-- **H8 — YAML boolean coercion (`true` → 0)**: DFA config loader uses a `#[serde(untagged)] BoolOrInt` enum; `true`/`false` YAML values are mapped to `1`/`0` with a warning instead of silently disabling DFA engines (`src/dfa/mod.rs`).
+- **H8 — YAML boolean coercion (`true` → 0)**: CMC config loader uses a `#[serde(untagged)] BoolOrInt` enum; `true`/`false` YAML values are mapped to `1`/`0` with a warning instead of silently disabling CMC engines (`src/cmc/mod.rs`).
 
 #### FFI / C interop
 - **Issue 1 — FFI fingerprint buffer overflow**: `collect_fingerprint` no longer calls `CStr::from_ptr` on a C buffer that may lack a null terminator; scans for the null byte within known bounds and casts byte-by-byte (`src/ffi/libinjection/mod.rs`).
@@ -548,15 +573,15 @@ on both incoming requests and upstream responses.
 
 ### Changed
 - Replaced the placeholder compatibility shim with a real FFI wrapper built on top of libinjection 4.0.0.
-- Optimized `src/dfa/esi_injection_detect.rs` to use `memchr` + byte scanning instead of `to_lowercase()` + repeated `contains()`.
-- Optimized `src/dfa/ssi_injection_detect.rs` to use `memchr` + byte scanning instead of `to_lowercase()` + repeated `contains()`.
+- Optimized `src/cmc/esi_injection_detect.rs` to use `memchr` + byte scanning instead of `to_lowercase()` + repeated `contains()`.
+- Optimized `src/cmc/ssi_injection_detect.rs` to use `memchr` + byte scanning instead of `to_lowercase()` + repeated `contains()`.
 - Added CLI support for trusted proxy CIDRs and a configurable real-IP header:
   - `--trusted-proxy-cidrs`
   - `--real-ip-header`
 
 ### Fixed
 - Recovered safely from poisoned `RwLock` guards in the WAF engine instead of panicking.
-- Emitted explicit warnings when the lenient DFA YAML parser yields an empty/invalid configuration instead of silently disabling DFA engines.
+- Emitted explicit warnings when the lenient CMC YAML parser yields an empty/invalid configuration instead of silently disabling CMC engines.
 
 ## [2.7.22] - 2026-04-06
 
@@ -569,7 +594,7 @@ on both incoming requests and upstream responses.
 
 ## 2.7.21
 
-- cleaned up DFA integration warnings reported during build
+- cleaned up CMC integration warnings reported during build
 - removed unused `SstiRule` re-export
 - removed unused `dfa_manager` field from `AppState`
 - removed unused `DfaManager::enabled()` helper
@@ -577,10 +602,10 @@ on both incoming requests and upstream responses.
 
 ## 2.7.20
 
-- added safe DFA modules under `src/dfa` for SQLi comment evasion, repeated-character overflow, SSTI, SSI injection and ESI injection
-- added lenient YAML DFA config loader with `--dfa-load` and example config at `rules/dfa/config.yaml`
-- integrated DFA findings into the normal KrakenWAF block pipeline, including JSONL, raw critical log and SQLite evidence storage
-- documented DFA schema and runtime behavior in `docs/dfa/schema.md`
+- added safe CMC modules under `src/cmc` for SQLi comment evasion, repeated-character overflow, SSTI, SSI injection and ESI injection
+- added lenient YAML CMC config loader with `--cmc-load` and example config at `rules/cmc/config.yaml`
+- integrated CMC findings into the normal KrakenWAF block pipeline, including JSONL, raw critical log and SQLite evidence storage
+- documented CMC schema and runtime behavior in `docs/cmc/schema.md`
 
 
 ## 2.7.19
@@ -867,7 +892,7 @@ on both incoming requests and upstream responses.
 
 
 ## 2.7.28.8
-- Fixed request-scope inspection bug for DFA and libinjection.
+- Fixed request-scope inspection bug for CMC and libinjection.
 - KrakenWaf now inspects a synthesized full-request payload composed of method, URI, headers, and body bytes.
 - Removed query-only inspection path and replaced it with full-request inspection after body assembly.
 - Streaming body inspection now evaluates a rolling full-request window, improving POST / REST payload detection before forwarding upstream.
@@ -876,13 +901,13 @@ on both incoming requests and upstream responses.
 
 ## 2.7.29
 - Fixed warning in `src/waf/engine.rs` by annotating the currently-unused `inspect_body_chunk` method with `#[allow(dead_code)]`.
-- Preserved the full-request inspection fix so DFA and libinjection evaluate GET, POST, REST-style requests, including body payloads.
+- Preserved the full-request inspection fix so CMC and libinjection evaluate GET, POST, REST-style requests, including body payloads.
 - Consolidated this release after the recent libinjection FFI, vectorscan constructor, proxy iterator, linker, and warning cleanup fixes.
 
 
 ## 2.7.30
 - Added GET request URL decoding before inspection
-- Unified inspection pipeline for DFA, libinjection, vectorscan
+- Unified inspection pipeline for CMC, libinjection, vectorscan
 - Improved detection for URL-encoded attacks
 
 
@@ -890,9 +915,9 @@ on both incoming requests and upstream responses.
 - Fixed request inspection precedence so normalization happens before detector evaluation.
 - Added unified `inspect_complete_payload_with_context(...)` path and routed proxy body/full-request inspection through it.
 - Reintroduced libinjection runtime flags into `WafEngine` and wired FFI detections into the active inspection pipeline.
-- Normalized GET requests with URL decoding before DFA, vectorscan, libinjection and regex/keyword rule evaluation.
+- Normalized GET requests with URL decoding before CMC, vectorscan, libinjection and regex/keyword rule evaluation.
 - Left POST request bodies undecoded so body payloads are inspected as-sent.
-- Evaluated DFA/libinjection/vectorscan before keyword/regex rules, keeping rule filters as the last stage.
+- Evaluated CMC/libinjection/vectorscan before keyword/regex rules, keeping rule filters as the last stage.
 - Disabled SSRF regex rules by default in bundled rule files to allow localhost/127.0.0.1 testing.
 - Updated integration tests for the current `WafEngine::new(...)` signature.
 

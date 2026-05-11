@@ -35,6 +35,7 @@ pub struct SecurityEvent {
 }
 
 impl SecurityEvent {
+    #[must_use] 
     pub fn from_finding(finding: &Finding, ctx: &InspectionContext, request_payload: String) -> Self {
         Self {
             timestamp: finding.timestamp.clone(),
@@ -57,6 +58,8 @@ impl SecurityEvent {
     }
 }
 
+/// # Errors
+/// Returns an error if log directories cannot be created or file appenders fail to initialize.
 pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
     fs::create_dir_all(root.join("logs/json"))?;
     fs::create_dir_all(root.join("logs/raw"))?;
@@ -97,6 +100,7 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
     Ok(LoggingHandles { raw_guard, json_guard, critical_writer, critical_guard })
 }
 
+#[must_use] 
 pub fn sanitize_for_log(s: &str) -> String {
     // Strip control characters (except the three we translate), then escape
     // characters that could break the key="value" format used by write_critical:
@@ -144,8 +148,8 @@ fn infer_engine(rule_line_match: &str, rule_match: &str) -> String {
         "vectorscan".to_string()
     } else if rule_line_match.starts_with("regex/") {
         "regex".to_string()
-    } else if rule_line_match.starts_with("dfa/") || rule_match.starts_with("dfa::") {
-        "dfa".to_string()
+    } else if rule_line_match.starts_with("cmc/") || rule_match.starts_with("cmc::") {
+        "cmc".to_string()
     } else {
         "keyword".to_string()
     }

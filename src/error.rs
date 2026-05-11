@@ -1,6 +1,6 @@
 use thiserror::Error;
 
-/// Top-level error type used by KrakenWaf.
+/// Top-level error type used by `KrakenWaf`.
 #[derive(Debug, Error)]
 pub enum KrakenError {
     /// Returned when a request body exceeds the configured route limit.

@@ -1,17 +1,17 @@
-//! Intentionally vulnerable demo backend — used to demonstrate KrakenWAF.
+//! Intentionally vulnerable demo backend — used to demonstrate `KrakenWAF`.
 //!
 //! Usage
 //! -----
-//!   cargo run --bin demo_server            # listens on 0.0.0.0:9077
-//!   cargo run --bin demo_server -- 9999    # custom port
+//!   cargo run --bin `demo_server`            # listens on 0.0.0.0:9077
+//!   cargo run --bin `demo_server` -- 9999    # custom port
 //!
-//! Then start KrakenWAF in front of it:
+//! Then start `KrakenWAF` in front of it:
 //!   cargo run -- --no-tls --allow-private-upstream \
 //!                --listen 0.0.0.0:8080    \
-//!                --upstream http://127.0.0.1:9077
+//!                --upstream <http://127.0.0.1:9077>
 //!
 //! Finally run the attack tool against the WAF:
-//!   cargo run --bin attack -- --target http://127.0.0.1:8080
+//!   cargo run --bin attack -- --target <http://127.0.0.1:8080>
 
 use axum::{
     extract::{Form, Path, Query},
@@ -80,7 +80,7 @@ async fn java_deser_endpoint() -> Html<&'static str> {
 }
 
 /// Simulates a server leaking /etc/passwd content in the response body.
-/// Used by the attack sweep to verify that Anti_passwd_leak blocks the
+/// Used by the attack sweep to verify that `Anti_passwd_leak` blocks the
 /// response before it reaches the attacker.
 async fn leak_passwd() -> &'static str {
     "root:x:0:0:root:/root:/bin/bash\n\
@@ -131,12 +131,12 @@ async fn main() {
         // Axum 0.8+ requires the `{*name}` syntax for wildcard capture.
         .route("/{*path}", get(backup_file));
 
-    let addr: SocketAddr = format!("0.0.0.0:{port}").parse().unwrap();
+    let addr: SocketAddr = format!("0.0.0.0:{port}").parse().expect("valid socket addr");
     println!("Demo backend listening on http://{addr}");
     println!("Routes: GET /test_get?payload_test=...  |  POST /test_post (form)");
     println!("Start KrakenWAF: cargo run -- --no-tls --allow-private-upstream \\");
     println!("                   --listen 0.0.0.0:8080 --upstream http://127.0.0.1:{port}");
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
-    axum::serve(listener, app).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
+    axum::serve(listener, app).await.expect("serve");
 }

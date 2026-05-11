@@ -1,5 +1,5 @@
 use krakenwaf::{
-    dfa::{DfaConfig, DfaManagerBuilder},
+    cmc::{CmcConfig, CmcManagerBuilder},
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
     waf::{rate_limit::PersistenceMode, Decision, ResponseContext, WafEngine},
@@ -7,8 +7,8 @@ use krakenwaf::{
 use regex::Regex;
 use std::{collections::HashMap, sync::Arc};
 
-fn empty_dfa_manager() -> Arc<krakenwaf::dfa::DfaManager> {
-    Arc::new(DfaManagerBuilder::new(DfaConfig::default()).build())
+fn empty_cmc_manager() -> Arc<krakenwaf::cmc::CmcManager> {
+    Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build())
 }
 
 #[test]
@@ -48,12 +48,12 @@ fn blocks_malformed_traversal_payload() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
-    .unwrap();
+    .expect("test");
     let decision = engine.inspect_body_chunk(br"../../../../etc/passwd");
     assert!(matches!(decision, Decision::Block(_)));
 }
@@ -85,7 +85,7 @@ fn blocks_regex_based_rce_pattern() {
                 source: "regex/body_regex.json".into(),
                 http_action: HttpAction::Request,
             },
-            compiled: Regex::new(r"(?i)(cmd(\.exe)?\s+/c|powershell\s+-enc)").unwrap(),
+            compiled: Regex::new(r"(?i)(cmd(\.exe)?\s+/c|powershell\s+-enc)").expect("test"),
         }],
         header_regex: vec![],
         vectorscan_keywords: vec![],
@@ -98,12 +98,12 @@ fn blocks_regex_based_rce_pattern() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
-    .unwrap();
+    .expect("test");
     let decision = engine.inspect_body_chunk(br"powershell -enc AAAA");
     assert!(matches!(decision, Decision::Block(_)));
 }
@@ -124,7 +124,7 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
             source: "regex/body_regex.json".into(),
             http_action: HttpAction::Request,
         },
-        compiled: Regex::new("kwaf-score-low-a").unwrap(),
+        compiled: Regex::new("kwaf-score-low-a").expect("test"),
     };
     let low_two = CompiledDetectionRule {
         meta: DetectionRule {
@@ -140,7 +140,7 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
             source: "regex/body_regex.json".into(),
             http_action: HttpAction::Request,
         },
-        compiled: Regex::new("kwaf-score-low-b").unwrap(),
+        compiled: Regex::new("kwaf-score-low-b").expect("test"),
     };
     let low_three = CompiledDetectionRule {
         meta: DetectionRule {
@@ -156,7 +156,7 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
             source: "regex/body_regex.json".into(),
             http_action: HttpAction::Request,
         },
-        compiled: Regex::new("kwaf-score-low-c").unwrap(),
+        compiled: Regex::new("kwaf-score-low-c").expect("test"),
     };
 
     let engine = WafEngine::new(
@@ -180,12 +180,12 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
-    .unwrap();
+    .expect("test");
 
     assert!(matches!(
         engine.inspect_body_chunk(b"payload_test=kwaf-score-low-a"),
@@ -239,7 +239,7 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
             source: "regex/body_regex.json".into(),
             http_action: HttpAction::Response,
         },
-        compiled: Regex::new(marker).unwrap(),
+        compiled: Regex::new(marker).expect("test"),
     })
     .collect::<Vec<_>>();
 
@@ -264,12 +264,12 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
         false,
         false,
         false,
-        tempfile::tempdir().unwrap().path().join("rate_limit.db"),
+        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
-        empty_dfa_manager(),
+        empty_cmc_manager(),
     )
-    .unwrap();
+    .expect("test");
 
     let ctx = ResponseContext {
         status: 200,

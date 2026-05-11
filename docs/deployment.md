@@ -14,4 +14,4 @@ Only requests whose TCP peer IP belongs to a configured trusted CIDR will be all
 
 ## Request inspection scope
 
-DFA, regex, vectorscan, and libinjection inspection run against a synthesized full-request payload made from the HTTP method, URI, flattened headers, and body bytes. Streaming body inspection also evaluates a rolling full-request window so POST and REST payload detections are not limited to query-string inspection alone.
+CMC, regex, vectorscan, and libinjection inspection run against a synthesized full-request payload made from the HTTP method, URI, flattened headers, and body bytes. Streaming body inspection also evaluates a rolling full-request window so POST and REST payload detections are not limited to query-string inspection alone.

@@ -20,6 +20,8 @@ pub struct AllowPathConfig {
 }
 
 impl AllowPathConfig {
+    /// # Errors
+    /// Returns an error if the file cannot be read or contains invalid YAML.
     pub fn from_file(path: &Path) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read allow-paths file {}", path.display()))?;
@@ -42,18 +44,22 @@ impl AllowPathConfig {
     }
 
     /// Returns true if the given URI path matches any allow-path entry.
+    #[must_use] 
     pub fn is_allowed(&self, uri_path: &str) -> Option<&AllowPathEntry> {
         let normalized = crate::rules::normalize_url_path(uri_path);
         self.entries.iter().find(|entry| {
             entry.paths.iter().any(|p| {
                 let allowed = crate::rules::normalize_url_path(p);
-                normalized == allowed || normalized.starts_with(&format!("{}/", allowed))
+                normalized == allowed || normalized.starts_with(&format!("{allowed}/"))
             })
         })
     }
 }
 
 /// Validate and load an allow-paths YAML file, returning a descriptive error on failure.
+///
+/// # Errors
+/// Returns an error if the file cannot be read, parsed, or contains invalid entries.
 pub fn load_and_validate(path: &Path) -> Result<AllowPathConfig> {
     let config = AllowPathConfig::from_file(path)?;
     for entry in &config.entries {

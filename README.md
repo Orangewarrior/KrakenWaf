@@ -1,4 +1,4 @@
-# KrakenWaf v2.17.0
+# KrakenWaf v2.18.0
 
 ## 🚀 Overview
 
@@ -15,7 +15,7 @@ KrakenWaf is built on:
 - **Reverse proxy model** → sits in front of your application
 - **Streaming inspection pipeline** → analyzes requests in chunks
 - **Modular WAF engine** → rule-based + advanced detection engines
-- **Modular custom DFA** → to detect anomalys
+- **Modular custom CMC** → to detect anomalys
 
 ### Flow
 
@@ -38,24 +38,24 @@ KrakenWaf supports multiple detection layers:
 - Extremely fast multi-pattern matching
 - Used in tools such as Suricata for high-speed pattern matching
 
-### 🔹 Custom DFA (deterministic finite automaton)
+### 🔹 Custom CMC (deterministic finite automaton)
 
 Single-pass, zero-allocation Rust scanners — each module is individually togglable
-via `rules/dfa/config.yaml`.  See [docs/dfa/schema.md](docs/dfa/schema.md) for the
+via `rules/cmc/config.yaml`.  See [docs/cmc/schema.md](docs/cmc/schema.md) for the
 full module catalogue.
 
-- [SQLi comments evasion](docs/dfa/sqli_comments_detect.md) — counts `/* */` block-comment pairs used to break up SQL keywords (CWE-89)
-- [Overflow detect](docs/dfa/overflow_detect.md) — shellcode opcode clusters (x86/x64/ARM) + repeated-character flooding (CWE-94 / CWE-400)
-- [SSTI detect](docs/dfa/ssti_detect.md) — 22 template-engine families (Jinja2, Twig, Velocity, Freemarker, ERB, Thymeleaf, …) (CWE-1336)
-- [SSI injection detect](docs/dfa/ssi_injection_detect.md) — Apache `<!--#…-->` directives + JSP/JSTL/ColdFusion include tags (CWE-97)
-- [ESI injection detect](docs/dfa/esi_injection_detect.md) — `<esi:…>` tags processed by Varnish, Squid, Akamai, Fastly (CWE-94)
-- [CRLF injection detect](docs/dfa/crlf_injection_detect.md) — control chars + 26 escape forms + 6 Unicode surrogates, with smart HTTP-framing bypass resistance (CWE-93)
-- [Request smuggling detect](docs/dfa/request_smuggling_detect.md) — TE.CL / CL.0 desync indicators (CWE-444)
-- [NoSQL injection detect](docs/dfa/nosql_injection_detect.md) — two-list conjunction (operators ∩ values), Aho-Corasick / Vectorscan (CWE-943)
-- [XXE attack detect](docs/dfa/xxe_attack_detect.md) — two-list conjunction with UTF-16 LE/BE evasion bypass (CWE-611)
-- [Anti exposed backup](docs/dfa/anti_exposed_backup.md) — backup-file suffixes and editor artefacts in request paths (CWE-538)
-- [Anti passwd/shadow leak](docs/dfa/anti_passwd_leak.md) — blocks upstream **responses** leaking `/etc/passwd` or `/etc/shadow` content (CWE-538, Critical)
-- [Java deserialize detect](docs/dfa/java_deserialize_detect.md) — three-signal scoring (magic bytes + header + encoded prefix) for Java deserialization gadget chains; inspects both requests and responses (CWE-502, Critical)
+- [SQLi comments evasion](docs/cmc/sqli_comments_detect.md) — counts `/* */` block-comment pairs used to break up SQL keywords (CWE-89)
+- [Overflow detect](docs/cmc/overflow_detect.md) — shellcode opcode clusters (x86/x64/ARM) + repeated-character flooding (CWE-94 / CWE-400)
+- [SSTI detect](docs/cmc/ssti_detect.md) — 22 template-engine families (Jinja2, Twig, Velocity, Freemarker, ERB, Thymeleaf, …) (CWE-1336)
+- [SSI injection detect](docs/cmc/ssi_injection_detect.md) — Apache `<!--#…-->` directives + JSP/JSTL/ColdFusion include tags (CWE-97)
+- [ESI injection detect](docs/cmc/esi_injection_detect.md) — `<esi:…>` tags processed by Varnish, Squid, Akamai, Fastly (CWE-94)
+- [CRLF injection detect](docs/cmc/crlf_injection_detect.md) — control chars + 26 escape forms + 6 Unicode surrogates, with smart HTTP-framing bypass resistance (CWE-93)
+- [Request smuggling detect](docs/cmc/request_smuggling_detect.md) — TE.CL / CL.0 desync indicators (CWE-444)
+- [NoSQL injection detect](docs/cmc/nosql_injection_detect.md) — two-list conjunction (operators ∩ values), Aho-Corasick / Vectorscan (CWE-943)
+- [XXE attack detect](docs/cmc/xxe_attack_detect.md) — two-list conjunction with UTF-16 LE/BE evasion bypass (CWE-611)
+- [Anti exposed backup](docs/cmc/anti_exposed_backup.md) — backup-file suffixes and editor artefacts in request paths (CWE-538)
+- [Anti passwd/shadow leak](docs/cmc/anti_passwd_leak.md) — blocks upstream **responses** leaking `/etc/passwd` or `/etc/shadow` content (CWE-538, Critical)
+- [Java deserialize detect](docs/cmc/java_deserialize_detect.md) — three-signal scoring (magic bytes + header + encoded prefix) for Java deserialization gadget chains; inspects both requests and responses (CWE-502, Critical)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -252,7 +252,7 @@ target/release/krakenwaf \
   --enable-vectorscan \
   --enable-libinjection-sqli \
   --enable-libinjection-xss \
-  --dfa-load ./rules/dfa/config.yaml \
+  --cmc-load ./rules/cmc/config.yaml \
   --real-ip-header X-Forwarded-For \
   --trusted-proxy-cidrs 127.0.0.1/32
 ```
@@ -356,7 +356,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--blockmsg` | — | Path to a custom HTML or text file returned when a request is blocked |
 | `--verbose` | `false` | Enable debug-level logging |
 | `--header-protection-injection` | — | Path to a YAML file that injects custom security headers into all responses; see examples in `rules/headers_http/` |
-| `--dfa-load` | — | Path to DFA config YAML enabling/disabling each DFA detector — see [docs/dfa/schema.md](docs/dfa/schema.md) |
+| `--cmc-load` | — | Path to CMC config YAML enabling/disabling each CMC detector — see [docs/cmc/schema.md](docs/cmc/schema.md) |
 | `--real-ip-header` | — | HTTP header containing the real client IP forwarded by a trusted proxy — see [docs/deployment.md](docs/deployment.md) |
 | `--trusted-proxy-cidrs` | — | Comma-separated list of trusted proxy CIDRs for real-IP extraction — see [docs/deployment.md](docs/deployment.md) |
 | `--help` | — | Show CLI help and exit |
@@ -442,7 +442,7 @@ KrakenWaf/
 │   ├── attack_tool.md           ← demo_server + attack binary guide
 │   ├── allowpaths.md
 │   ├── blockaddrs_allowaddrs.md
-│   ├── dfa/
+│   ├── cmc/
 │   │   └── schema.md
 │   ├── deployment.md
 │   ├── http_action.md
@@ -462,8 +462,8 @@ KrakenWaf/
 │   │   └── allowlist.txt        ← IPs allowed to reach /metrics and /health
 │   ├── allowpaths/
 │   │   └── lists.yaml           ← URI prefixes that bypass WAF inspection
-│   ├── dfa/
-│   │   └── config.yaml          ← enable/disable each DFA detector
+│   ├── cmc/
+│   │   └── config.yaml          ← enable/disable each CMC detector
 │   ├── headers_http/
 │   │   ├── strict.headers       ← maximum hardening profile
 │   │   ├── balanced.headers
@@ -487,7 +487,7 @@ KrakenWaf/
 │   │   ├── demo_server.rs       ← intentionally vulnerable demo backend
 │   │   └── attack.rs            ← standalone payload-sweep attack tool
 │   ├── cli.rs
-│   ├── dfa/
+│   ├── cmc/
 │   │   ├── crlf_injection_detect.rs
 │   │   ├── esi_injection_detect.rs
 │   │   ├── mod.rs
@@ -562,7 +562,7 @@ The same schema is used for:
 - `rules/regex/path_regex.json`
 - `rules/regex/header_regex.json`
 - `rules/Vectorscan/strings2block.json`
-- KrakenWaf have 80 rules or more with DFA...
+- KrakenWaf have 80 rules or more with CMC...
 
 ---
 
@@ -606,16 +606,16 @@ Fields:
 
 ---
 
-### DFA config — `rules/dfa/config.yaml`
+### CMC config — `rules/cmc/config.yaml`
 
-Toggles each DFA detector independently at startup.
-Loaded via `--dfa-load rules/dfa/config.yaml`.
+Toggles each CMC detector independently at startup.
+Loaded via `--cmc-load rules/cmc/config.yaml`.
 
 ```yaml
 global-options:
   Untrust: 60                   # Global paranoia level 0–100 (default 60)
 
-DFA-Rules:
+CMC-Rules:
   SQLi_comments_detect: true    # SQL comment evasion (/**/, --, #)
   Overflow_detect: true         # Buffer overflow patterns
   SSTI_detect: true             # Server-side template injection
@@ -636,7 +636,7 @@ Set any key to `false` to disable that detector without recompiling.
 
 `XXE_attack_detect` blocks when the same URI/body inspection payload contains at least one XML entity/include marker (`ENTITY` or `xi:include`) and at least one XXE context marker such as `xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, or `file`. UTF-16LE/BE payloads that arrive after URL decoding as NUL-interleaved text are decoded before XXE matching.
 
-→ Full details: [docs/dfa/schema.md](docs/dfa/schema.md)
+→ Full details: [docs/cmc/schema.md](docs/cmc/schema.md)
 
 ---
 
@@ -719,7 +719,7 @@ Actions → Monthly Release Artifacts → [run] → Artifacts
 - The primary rules format is JSON via `rules/rules.json`.
 - Vectorscan and libinjection are runtime-toggleable through CLI flags and compile-time optional through Cargo features.
 - The custom block page is optional; when omitted, KrakenWaf returns a plain text fallback block message.
-- - DOcs about DFA https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/dfa/schema.md
+- - DOcs about CMC https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/cmc/schema.md
 
 
 ## Operational notes
