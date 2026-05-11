@@ -38,7 +38,7 @@ KrakenWaf supports multiple detection layers:
 - Extremely fast multi-pattern matching
 - Used in tools such as Suricata for high-speed pattern matching
 
-### 🔹 Custom CMC 
+### 🔹CMC (Custom Module Code)
 
 Single-pass, zero-allocation Rust scanners — each module is individually togglable
 via `rules/cmc/config.yaml`.  See [docs/cmc/schema.md](docs/cmc/schema.md) for the
