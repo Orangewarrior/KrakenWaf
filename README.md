@@ -534,36 +534,7 @@ KrakenWaf/
       "url": "https://cwe.mitre.org/data/definitions/89.html",
       "rule_match": "union select"
     },
-    {
-      "enable": 1,
-      "title": "Boolean SQL injection probe",
-      "severity": "critical",
-      "cwe": "CWE-89",
-      "description": "Detects classic boolean-based SQL injection probes in the URI query string.",
-      "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "' or '1'='1"
-    },
-    {
-      "enable": 1,
-      "title": "Directory traversal probe",
-      "severity": "high",
-      "cwe": "CWE-22",
-      "description": "Detects traversal sequences in request targets.",
-      "url": "https://cwe.mitre.org/data/definitions/22.html",
-      "rule_match": "../"
-    },
-    {
-      "enable": 1,
-      "title": "Remote file inclusion probe",
-      "severity": "high",
-      "cwe": "CWE-98",
-      "description": "Detects remote include attempts in URI parameters.",
-      "url": "https://cwe.mitre.org/data/definitions/98.html",
-      "rule_match": "http://"
-    },
-    ...
-  ]
-}
+ .....
 
 ```
 
@@ -583,36 +554,7 @@ KrakenWaf/
       "url": "https://cwe.mitre.org/data/definitions/78.html",
       "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd))"
     },
-    {
-      "enable": 1,
-      "title": "Command substitution body",
-      "severity": "critical",
-      "cwe": "CWE-78",
-      "description": "Detects command substitution in body payloads.",
-      "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(?:\\$\\((?:id|whoami|uname|curl|wget|bash|sh)|`(?:id|whoami|uname|curl|wget|bash|sh))"
-    },
-    {
-      "enable": 1,
-      "title": "Shell downloader body",
-      "severity": "high",
-      "cwe": "CWE-78",
-      "description": "Detects common downloader command chains in body content.",
-      "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(?:wget\\s+https?://|curl\\s+-[fsSLoO].*https?://|powershell(?:\\.exe)?\\s+-enc|certutil(?:\\.exe)?\\s+-urlcache\\s+-split\\s+-f)"
-    },
-    {
-      "enable": 1,
-      "title": "Reverse shell body",
-      "severity": "critical",
-      "cwe": "CWE-78",
-      "description": "Detects reverse shell primitives in body content.",
-      "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(?:nc\\s+-e|bash\\s+-i\\s*>&|/dev/tcp/\\d{1,3}(?:\\.\\d{1,3}){3}/\\d+|python(?:3)?\\s+-c\\s+[\"\\'].*socket)"
-    },
-    ...
-  ]
-}
+  ....
 ```
 
 The same schema is used for:
