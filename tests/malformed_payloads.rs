@@ -16,6 +16,7 @@ fn blocks_malformed_traversal_payload() {
     let rules = Arc::new(RuleSet {
         blocked_ips: vec![],
         blocked_ip_prefixes: vec![],
+        addr_list_entries: vec![],
         uri_keywords: vec![],
         header_keywords: vec![],
         body_keywords: vec![DetectionRule {
@@ -48,7 +49,10 @@ fn blocks_malformed_traversal_payload() {
         false,
         false,
         false,
-        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
+        &tempfile::tempdir()
+            .expect("tempdir")
+            .path()
+            .join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),
@@ -63,6 +67,7 @@ fn blocks_regex_based_rce_pattern() {
     let rules = Arc::new(RuleSet {
         blocked_ips: vec![],
         blocked_ip_prefixes: vec![],
+        addr_list_entries: vec![],
         uri_keywords: vec![],
         header_keywords: vec![],
         body_keywords: vec![],
@@ -98,7 +103,10 @@ fn blocks_regex_based_rce_pattern() {
         false,
         false,
         false,
-        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
+        &tempfile::tempdir()
+            .expect("tempdir")
+            .path()
+            .join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),
@@ -163,6 +171,7 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
         Arc::new(RuleSet {
             blocked_ips: vec![],
             blocked_ip_prefixes: vec![],
+            addr_list_entries: vec![],
             uri_keywords: vec![],
             header_keywords: vec![],
             body_keywords: vec![],
@@ -180,7 +189,10 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
         false,
         false,
         false,
-        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
+        &tempfile::tempdir()
+            .expect("tempdir")
+            .path()
+            .join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),
@@ -247,6 +259,7 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
         Arc::new(RuleSet {
             blocked_ips: vec![],
             blocked_ip_prefixes: vec![],
+            addr_list_entries: vec![],
             uri_keywords: vec![],
             header_keywords: vec![],
             body_keywords: vec![],
@@ -264,7 +277,10 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
         false,
         false,
         false,
-        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
+        &tempfile::tempdir()
+            .expect("tempdir")
+            .path()
+            .join("rate_limit.db"),
         PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),

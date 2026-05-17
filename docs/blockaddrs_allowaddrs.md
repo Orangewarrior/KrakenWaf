@@ -34,6 +34,53 @@ staging the list before rolling it out to production).
 
 ---
 
+## Downloaded list directories
+
+KrakenWAF also loads every text file under these directories:
+
+- `rules/addr/blocklist/`
+- `rules/addr/spamhaus/`
+- `rules/addr/firehol/`
+
+The updater writes downloaded files there from `conf/update.yaml`:
+
+```yaml
+blocklist:
+  title: "Blocklist site"
+  lists:
+    url_file:
+      - "https://lists.blocklist.de/lists/bruteforcelogin.txt"
+      - "https://lists.blocklist.de/lists/bots.txt"
+  cron: "0 12 */3 * *"
+firehol:
+  title: "Firehol"
+  lists:
+    url_file:
+      - "https://iplists.firehol.org/files/firehol_proxies.netset"
+      - "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/c2_tracker.ipset"
+  cron: "0 12 */3 * *"
+```
+
+Run manually:
+
+```sh
+target/release/soldier_update --addr-list blocklist
+target/release/soldier_update --addr-list firehol
+```
+
+Each downloaded file receives a metadata header with the YAML `title`. When a
+client IP matches one of these files, JSON, raw, and SQLite logs include that
+title and the local source path, for example:
+
+- title: `Blocklist site`
+- rule source: `rules/addr/blocklist/bots.txt:42`
+
+The loader canonicalizes files before opening them. A symlink inside one of
+these directories is accepted only if it resolves inside the configured rules
+root; symlinks to external paths are rejected.
+
+---
+
 ## Allowlist — `rules/addr/allowlist.txt`
 
 Only IPs or CIDRs listed here may access the internal management endpoints:

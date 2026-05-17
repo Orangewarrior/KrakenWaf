@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     fmt,
+    net::IpAddr,
     path::{Component, Path},
 };
 
@@ -50,6 +51,8 @@ pub struct RuleSet {
     pub blocked_ips: Vec<String>,
     /// CIDR ranges blocked (from `rules.json:blocked_ip_prefixes` — kept for compat).
     pub blocked_ip_prefixes: Vec<String>,
+    /// IPs and CIDRs loaded from directory-based address lists under rules/addr/*.
+    pub addr_list_entries: Vec<AddrListEntry>,
     /// IPs allowed to access /metrics and /__krakenwaf/health (from rules/addr/allowlist.txt).
     pub allowed_ips: Vec<String>,
     /// Scanner/crawler user-agent substrings (from `rules/user_agents/scanners.txt`).
@@ -63,6 +66,22 @@ pub struct RuleSet {
     pub body_regex: Vec<CompiledDetectionRule>,
     pub header_regex: Vec<CompiledDetectionRule>,
     pub vectorscan_keywords: Vec<DetectionRule>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AddrListEntry {
+    pub network: ipnet::IpNet,
+    pub title: String,
+    pub list_name: String,
+    pub path: String,
+    pub line: usize,
+}
+
+impl AddrListEntry {
+    #[must_use]
+    pub fn contains(&self, ip: &IpAddr) -> bool {
+        self.network.contains(ip)
+    }
 }
 
 /// Generic metadata-backed rule loaded from external JSON files.
@@ -95,7 +114,7 @@ impl RuleSet {
         load_rules_from_dir(root)
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn body_limit_for_path(&self, path: &str) -> usize {
         let normalized = normalize_url_path(path);
         self.body_limits
@@ -105,7 +124,7 @@ impl RuleSet {
     }
 
     /// Returns true if the client IP is in rules/addr/allowlist.txt (may access health/metrics).
-    #[must_use] 
+    #[must_use]
     pub fn is_ip_allowed(&self, ip: &str) -> bool {
         if self.allowed_ips.is_empty() {
             return true; // No allowlist configured → all IPs may access health/metrics.
@@ -120,7 +139,7 @@ impl RuleSet {
         })
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn is_allowlisted(&self, path: &str) -> bool {
         let normalized = normalize_url_path(path);
         self.allow_paths
@@ -130,7 +149,7 @@ impl RuleSet {
     }
 }
 
-#[must_use] 
+#[must_use]
 pub fn normalize_url_path(path: &str) -> String {
     let decoded = percent_encoding::percent_decode_str(path).decode_utf8_lossy();
     // On Linux, std::path::Path treats `\` as a regular character, not a separator.

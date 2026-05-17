@@ -1,0 +1,26 @@
+KrakenWaf:
+  cron: "0 18 */15 * *"
+blocklist:
+  title: "Blocklist site"
+  lists:
+    url_file:
+      - "https://lists.blocklist.de/lists/bruteforcelogin.txt"
+      - "https://lists.blocklist.de/lists/bots.txt"
+  cron: "0 12 */3 * *"
+spamhaus:
+  title: "Spamhaus site"
+  lists:
+    url_file: "https://www.spamhaus.org/drop/drop.lasso"
+  DQS-key: false
+  zones:
+    - sbl
+    - xbl
+    - authbl
+  cron: "0 12 */3 * *"
+firehol:
+  title: "Firehol"
+  lists:
+    url_file:
+      - "https://iplists.firehol.org/files/firehol_proxies.netset"
+      - "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/c2_tracker.ipset"
+  cron: "0 12 */3 * *"

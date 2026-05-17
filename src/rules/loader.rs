@@ -1,5 +1,6 @@
-use super::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity};
+use super::{AddrListEntry, CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity};
 use anyhow::{Context, Result};
+use ipnet::IpNet;
 use regex::RegexBuilder;
 use serde::Deserialize;
 use serde_json::Value;
@@ -62,6 +63,7 @@ pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
     Ok(RuleSet {
         blocked_ips: load_addr_file(root, "addr/blocklist.txt")?,
         allowed_ips: load_addr_file(root, "addr/allowlist.txt")?,
+        addr_list_entries: load_addr_list_dirs(root)?,
         scanner_agents: load_scanner_agents(root, "user_agents/scanners.txt")?,
         blocked_ip_prefixes: main.blocked_ip_prefixes,
         uri_keywords: json_rules_to_detection_rules(main.uri_keywords, "rules.json:uri_keywords"),
@@ -154,7 +156,9 @@ fn validate_json_mapping(content: &str, path: &Path) -> Result<()> {
 }
 
 fn parse_json_value_with_rule_escape_repair(content: &str, path: &Path) -> Result<Value> {
-    if let Ok(value) = serde_json::from_str::<Value>(content) { Ok(value) } else {
+    if let Ok(value) = serde_json::from_str::<Value>(content) {
+        Ok(value)
+    } else {
         warn!(target: "krakenwaf", path = %path.display(), "rule file has invalid JSON string escapes — auto-repairing; fix the source file to suppress this warning");
         let repaired = repair_invalid_json_string_escapes(content);
         serde_json::from_str::<Value>(&repaired)
@@ -166,7 +170,9 @@ fn parse_json_with_rule_escape_repair<T>(content: &str, path: &Path, kind: &str)
 where
     T: for<'de> Deserialize<'de>,
 {
-    if let Ok(value) = serde_json::from_str::<T>(content) { Ok(value) } else {
+    if let Ok(value) = serde_json::from_str::<T>(content) {
+        Ok(value)
+    } else {
         warn!(target: "krakenwaf", path = %path.display(), "rule file has invalid JSON string escapes — auto-repairing; fix the source file to suppress this warning");
         let repaired = repair_invalid_json_string_escapes(content);
         serde_json::from_str::<T>(&repaired)
@@ -263,6 +269,136 @@ fn load_simple_lines(path: &Path) -> Result<Vec<String>> {
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
         .map(ToOwned::to_owned)
         .collect())
+}
+
+fn load_addr_list_dirs(root: &Path) -> Result<Vec<AddrListEntry>> {
+    let mut entries = load_addr_list_dir(root, "addr/spamhaus", "Spamhaus site")?;
+    entries.extend(load_addr_list_dir(
+        root,
+        "addr/blocklist",
+        "Blocklist site",
+    )?);
+    entries.extend(load_addr_list_dir(root, "addr/firehol", "Firehol")?);
+    Ok(entries)
+}
+
+fn load_addr_list_dir(
+    root: &Path,
+    relative: &str,
+    default_title: &str,
+) -> Result<Vec<AddrListEntry>> {
+    let dir = safe_join(root, relative)?;
+    if !dir.exists() {
+        return Ok(Vec::new());
+    }
+
+    let mut entries = Vec::new();
+    for item in fs::read_dir(&dir)
+        .with_context(|| format!("failed to read address rules dir {}", dir.display()))?
+    {
+        let item = item?;
+        let path = item.path();
+        let file_type = item
+            .file_type()
+            .with_context(|| format!("failed to read file type {}", path.display()))?;
+        if !file_type.is_file() && !file_type.is_symlink() {
+            continue;
+        }
+        let path = safe_addr_list_file(root, &path)?;
+        let list_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string();
+        let source_path = path.to_string_lossy().to_string();
+        let content = fs::read_to_string(&path)
+            .with_context(|| format!("failed to read address list {}", path.display()))?;
+        let title = extract_addr_list_title(&content).unwrap_or_else(|| default_title.to_string());
+
+        for (idx, raw) in content.lines().enumerate() {
+            let Some(value) = normalize_addr_list_line(raw) else {
+                continue;
+            };
+            if let Some(network) = parse_addr_network(value) {
+                entries.push(AddrListEntry {
+                    network,
+                    title: title.clone(),
+                    list_name: list_name.clone(),
+                    path: source_path.clone(),
+                    line: idx + 1,
+                });
+            } else {
+                warn!(
+                    target: "krakenwaf",
+                    path = %path.display(),
+                    line = idx + 1,
+                    value,
+                    "invalid address-list entry ignored"
+                );
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+fn safe_addr_list_file(root: &Path, path: &Path) -> Result<std::path::PathBuf> {
+    let canonical = path
+        .canonicalize()
+        .with_context(|| format!("cannot canonicalize address list {}", path.display()))?;
+    let root_canonical = root
+        .canonicalize()
+        .with_context(|| format!("cannot canonicalize rules root {}", root.display()))?;
+    if !canonical.starts_with(&root_canonical) {
+        anyhow::bail!(
+            "address list file {} resolved outside rules root {} — possible symlink attack",
+            canonical.display(),
+            root_canonical.display()
+        );
+    }
+    if !canonical.is_file() {
+        anyhow::bail!(
+            "address list path {} is not a regular file after canonicalization",
+            canonical.display()
+        );
+    }
+    Ok(canonical)
+}
+
+fn extract_addr_list_title(content: &str) -> Option<String> {
+    content.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("# krakenwaf-title:")
+            .map(str::trim)
+            .filter(|title| !title.is_empty())
+            .map(ToOwned::to_owned)
+    })
+}
+
+fn normalize_addr_list_line(raw: &str) -> Option<&str> {
+    let without_comment = raw
+        .split_once(';')
+        .map_or(raw, |(value, _)| value)
+        .split_once('#')
+        .map_or_else(
+            || raw.split_once(';').map_or(raw, |(value, _)| value),
+            |(value, _)| value,
+        )
+        .trim();
+    (!without_comment.is_empty()).then_some(without_comment)
+}
+
+fn parse_addr_network(value: &str) -> Option<IpNet> {
+    if let Ok(network) = value.parse::<IpNet>() {
+        return Some(network);
+    }
+    if let Ok(ip) = value.parse::<std::net::IpAddr>() {
+        return match ip {
+            std::net::IpAddr::V4(ip) => IpNet::new(ip.into(), 32).ok(),
+            std::net::IpAddr::V6(ip) => IpNet::new(ip.into(), 128).ok(),
+        };
+    }
+    None
 }
 
 fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetectionRule>> {
@@ -381,9 +517,12 @@ mod tests {
         let mut f = std::fs::File::create(&path).expect("create file");
         f.write_all(body.as_bytes()).expect("write file");
 
-        let rules =
-            load_regex_rules_json(&path, "regex/test.json").expect("loader must not abort");
-        assert_eq!(rules.len(), 1, "valid rule should still load even when a sibling rule has bad regex");
+        let rules = load_regex_rules_json(&path, "regex/test.json").expect("loader must not abort");
+        assert_eq!(
+            rules.len(),
+            1,
+            "valid rule should still load even when a sibling rule has bad regex"
+        );
         assert_eq!(rules[0].meta.id, "good-001");
     }
 }

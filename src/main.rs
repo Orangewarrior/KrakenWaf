@@ -1,10 +1,9 @@
-
 mod allowpaths;
 mod app;
 mod banner;
 mod cli;
-mod error;
 mod cmc;
+mod error;
 mod ffi;
 mod logging;
 mod metrics;
@@ -14,6 +13,8 @@ mod rules;
 mod server;
 mod storage;
 mod tls;
+#[allow(dead_code)]
+mod update;
 mod waf;
 
 use anyhow::{Context, Result};
@@ -21,17 +22,19 @@ use app::AppState;
 use bytes::Bytes;
 use clap::Parser;
 use cli::{Cli, WalMode};
-use waf::rate_limit::PersistenceMode;
 use cmc::{CmcConfig, CmcManagerBuilder};
 use metrics::WafMetrics;
 use response_headers::ResponseHeaderPolicy;
 use std::{path::PathBuf, sync::Arc};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info};
+use waf::rate_limit::PersistenceMode;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    rustls::crypto::ring::default_provider().install_default().expect("failed to install rustls CryptoProvider");
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("failed to install rustls CryptoProvider");
 
     // Ignore SIGPIPE so that a client closing its TCP socket doesn't kill the process.
     // Without this, writing to a broken pipe raises SIGPIPE → default handler terminates us.
@@ -39,7 +42,11 @@ async fn main() -> Result<()> {
     {
         use tokio::signal::unix::{signal, SignalKind};
         let mut sigpipe = signal(SignalKind::pipe()).expect("failed to register SIGPIPE handler");
-        tokio::spawn(async move { loop { sigpipe.recv().await; } });
+        tokio::spawn(async move {
+            loop {
+                sigpipe.recv().await;
+            }
+        });
     }
 
     let cli = Cli::parse();
@@ -86,11 +93,14 @@ async fn main() -> Result<()> {
         cli.allow_private_upstream,
         Some(cli.internal_header_name.clone()),
     )?);
-    let (block_response_body, block_response_content_type) = load_block_message(cli.blockmsg.as_deref(), &root_dir)?;
+    let (block_response_body, block_response_content_type) =
+        load_block_message(cli.blockmsg.as_deref(), &root_dir)?;
 
     let allow_path_config = match cli.allow_paths_file.as_deref() {
-        Some(path) => Some(allowpaths::load_and_validate(&PathBuf::from(path))
-            .with_context(|| format!("--allow-paths: failed to load '{path}'"))?),
+        Some(path) => Some(
+            allowpaths::load_and_validate(&PathBuf::from(path))
+                .with_context(|| format!("--allow-paths: failed to load '{path}'"))?,
+        ),
         None => None,
     };
 
@@ -153,7 +163,10 @@ fn rate_limit_snapshot_path(root: &std::path::Path, mode: WalMode) -> std::path:
     }
 }
 
-fn load_block_message(path: Option<&str>, root: &std::path::Path) -> Result<(Option<Bytes>, String)> {
+fn load_block_message(
+    path: Option<&str>,
+    root: &std::path::Path,
+) -> Result<(Option<Bytes>, String)> {
     match path {
         Some(raw) => {
             // Canonicalize to resolve symlinks and `../` components, then verify the
@@ -170,12 +183,12 @@ fn load_block_message(path: Option<&str>, root: &std::path::Path) -> Result<(Opt
                 root.display()
             );
             let content = std::fs::read(&canonical)?;
-            let ext = canonical.extension()
+            let ext = canonical
+                .extension()
                 .and_then(|e| e.to_str())
                 .unwrap_or_default()
                 .to_ascii_lowercase();
-            let content_type = match ext.as_str()
-            {
+            let content_type = match ext.as_str() {
                 "html" | "htm" => "text/html; charset=utf-8",
                 "json" => "application/json",
                 _ => "text/plain; charset=utf-8",

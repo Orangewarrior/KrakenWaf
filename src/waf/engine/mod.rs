@@ -7,9 +7,12 @@ pub use finding::Finding;
 
 use crate::cmc::CmcManager;
 use crate::proxy::format_request_prefix_bytes;
+use crate::update::{
+    default_config_path, load_update_config, normalized_dqs_zones, query_spamhaus_dqs,
+};
 use crate::{
     metrics::WafMetrics,
-    rules::{HttpAction, RuleSet, Severity},
+    rules::{AddrListEntry, HttpAction, RuleSet, Severity},
     waf::rate_limit::{PersistenceMode, RateLimiter},
 };
 use anyhow::Result;
@@ -18,7 +21,9 @@ use parking_lot::RwLock;
 use std::{path::Path, sync::Arc, time::Duration};
 
 use ip_filter::{canonical_ip, extract_header_value};
-use matchers::{build_matchers, keyword_match, libinjection_match, regex_match_phase_scored, EngineMatchers};
+use matchers::{
+    build_matchers, keyword_match, libinjection_match, regex_match_phase_scored, EngineMatchers,
+};
 use normalize::{inspection_views, normalize_request_bytes};
 
 #[cfg(feature = "vectorscan-engine")]
@@ -75,6 +80,13 @@ pub struct WafEngine {
     vectorscan_enabled: bool,
     metrics: Arc<WafMetrics>,
     cmc_manager: Arc<CmcManager>,
+    spamhaus_dqs: Option<SpamhausDqsConfig>,
+}
+
+#[derive(Debug, Clone)]
+struct SpamhausDqsConfig {
+    token: String,
+    zones: Vec<String>,
 }
 
 impl WafEngine {
@@ -101,6 +113,7 @@ impl WafEngine {
         )?);
         rate_limiter.clone().spawn_persistence_task();
         let matchers = build_matchers(&rules, vectorscan_enabled)?;
+        let spamhaus_dqs = load_spamhaus_dqs_config(blocklist_ip_enabled);
         Ok(Self {
             snapshot: RwLock::new(Arc::new(RulesSnapshot { rules, matchers })),
             rate_limiter,
@@ -110,6 +123,7 @@ impl WafEngine {
             vectorscan_enabled,
             metrics,
             cmc_manager,
+            spamhaus_dqs,
         })
     }
 
@@ -195,6 +209,14 @@ impl WafEngine {
                         format!("{} {}", ctx.method, ctx.uri),
                     )));
                 }
+
+                if let Some(entry) = addr_list_match(&rules.addr_list_entries, &client) {
+                    return Decision::Block(Box::new(addr_list_finding(entry, ctx)));
+                }
+
+                if let Some(finding) = self.spamhaus_dqs_finding(&client, ctx).await {
+                    return Decision::Block(Box::new(finding));
+                }
             }
         }
 
@@ -212,16 +234,14 @@ impl WafEngine {
             }
             #[cfg(not(feature = "vectorscan-engine"))]
             {
-                if let Some(finding) =
-                    keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
+                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
                 {
                     return Decision::Block(Box::new(finding));
                 }
             }
             #[cfg(feature = "vectorscan-engine")]
             if matchers.scanner_vectorscan.is_none() || !self.vectorscan_enabled {
-                if let Some(finding) =
-                    keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
+                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
                 {
                     return Decision::Block(Box::new(finding));
                 }
@@ -235,6 +255,30 @@ impl WafEngine {
 
         let early_request = format_request_prefix_bytes(ctx);
         self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
+    }
+
+    async fn spamhaus_dqs_finding(
+        &self,
+        client: &std::net::IpAddr,
+        ctx: &InspectionContext,
+    ) -> Option<Finding> {
+        let config = self.spamhaus_dqs.as_ref()?;
+        for zone in &config.zones {
+            match query_spamhaus_dqs(&client.to_string(), &config.token, zone).await {
+                Ok(Some(hit)) => return Some(spamhaus_dqs_finding(&hit.zone, hit.response, ctx)),
+                Ok(None) => {}
+                Err(err) => {
+                    tracing::warn!(
+                        target: "krakenwaf",
+                        ip = %client,
+                        zone,
+                        error = %err,
+                        "Spamhaus DQS lookup failed; request will not be blocked by this zone"
+                    );
+                }
+            }
+        }
+        None
     }
 
     #[allow(dead_code)]
@@ -479,3 +523,65 @@ impl WafEngine {
     }
 }
 
+fn load_spamhaus_dqs_config(blocklist_ip_enabled: bool) -> Option<SpamhausDqsConfig> {
+    if !blocklist_ip_enabled {
+        return None;
+    }
+    let config = load_update_config(&default_config_path()).ok()?;
+    if !config.spamhaus.dqs_key {
+        return None;
+    }
+    let token = std::env::var("SPAMHAUS_DQS_KEY").ok()?;
+    (!token.trim().is_empty()).then(|| SpamhausDqsConfig {
+        token,
+        zones: normalized_dqs_zones(&config.spamhaus.zones),
+    })
+}
+
+fn addr_list_match<'a>(
+    entries: &'a [AddrListEntry],
+    client: &std::net::IpAddr,
+) -> Option<&'a AddrListEntry> {
+    entries.iter().find(|entry| entry.contains(client))
+}
+
+fn addr_list_finding(entry: &AddrListEntry, ctx: &InspectionContext) -> Finding {
+    Finding {
+        rule_id: "00000".to_string(),
+        title: entry.title.clone(),
+        severity: Severity::High,
+        cwe: "CWE-693".to_string(),
+        description: format!(
+            "The client IP matched address list {} loaded from {}.",
+            entry.list_name, entry.path
+        ),
+        reference_url:
+            "https://docs.spamhaus.com/datasets/docs/source/10-data-type-documentation/datasets/030-datasets.html"
+                .to_string(),
+        rule_match: format!("{} {}", entry.list_name, entry.network),
+        rule_line_match: format!("{}:{}", entry.path, entry.line),
+        request_payload: format!("{} {}", ctx.method, ctx.uri),
+        timestamp: Utc::now().to_rfc3339(),
+    }
+}
+
+fn spamhaus_dqs_finding(
+    zone: &str,
+    response: std::net::IpAddr,
+    ctx: &InspectionContext,
+) -> Finding {
+    Finding {
+        rule_id: "00000".to_string(),
+        title: format!("Spamhaus DQS match: {}", zone.to_ascii_uppercase()),
+        severity: Severity::High,
+        cwe: "CWE-693".to_string(),
+        description: "The client IP matched a Spamhaus DQS DNS reputation zone.".to_string(),
+        reference_url:
+            "https://docs.spamhaus.com/datasets/docs/source/10-data-type-documentation/datasets/030-datasets.html"
+                .to_string(),
+        rule_match: format!("Spamhaus DQS zone={zone} response={response}"),
+        rule_line_match: format!("rules/addr/spamhaus/{}.txt:dqs", zone.to_ascii_uppercase()),
+        request_payload: format!("{} {}", ctx.method, ctx.uri),
+        timestamp: Utc::now().to_rfc3339(),
+    }
+}

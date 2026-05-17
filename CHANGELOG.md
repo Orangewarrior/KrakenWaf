@@ -1,3 +1,48 @@
+## [2.19.0] - 2026-05-15
+
+### Added
+
+- Added the repository default `conf/update.yaml` with scheduled update
+  sections for KrakenWaf source updates, Blocklist.de feeds, Spamhaus DROP,
+  and Firehol feeds.
+- Added Firehol address-list updates through `conf/update.yaml` and
+  `soldier_update --addr-list firehol`, downloading configured feeds into
+  `rules/addr/firehol/`.
+- Address-list downloads now allow up to 300 seconds per request so large
+  reputation feeds can complete on slower links.
+- Added `src/bin/watch_tower.rs` as the scheduler binary. It reads
+  `conf/update.yaml` by default and schedules `soldier_update` jobs for
+  KrakenWaf, Blocklist.de, Spamhaus, and Firehol when their YAML cron
+  expressions match.
+- The WAF now automatically loads `rules/addr/firehol/` alongside existing
+  downloaded blocklist and Spamhaus directories.
+- Added `docs/firehol_updates.md` and updated address-list/update docs with
+  Firehol configuration and scheduler usage.
+
+### Changed
+
+- Spamhaus `DQS-key` is now `false` in the default `conf/update.yaml`, so
+  `soldier_update --addr-list spamhaus` downloads the configured DROP file
+  without requiring `SPAMHAUS_DQS_KEY` unless DQS validation is explicitly
+  enabled.
+- Replaced the broken C2 Tracker Firehol URL with the raw Firehol
+  `blocklist-ipsets` feed:
+  `https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/c2_tracker.ipset`.
+
+### Security
+
+- Address-list directories and files are canonicalized before use, rejecting
+  symlinks that resolve outside the rules tree.
+
+### Tests
+
+- Added coverage for Firehol YAML parsing, local Firehol feed downloads,
+  scheduler job selection, WAF blocking from `rules/addr/firehol/`, and
+  symlink rejection for external address-list files.
+- Added focused Firehol tests for direct feed downloads, `c2_tracker.ipset`
+  output naming, metadata headers, and missing `firehol.lists.url_file`
+  validation.
+
 ## [2.18.0] - 2026-05-11
 
 ### Added

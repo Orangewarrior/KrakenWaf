@@ -1,0 +1,5 @@
+# Spamhaus DQS DNS zone marker
+# zone=authbl
+# test_ip=127.0.0.2
+# response=127.0.0.20
+# This is not a downloaded IP list. KrakenWaf queries this DQS zone at runtime.

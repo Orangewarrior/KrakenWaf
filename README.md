@@ -1,4 +1,4 @@
-# KrakenWaf v2.18.0
+# KrakenWaf v2.19.0
 
 ## 🚀 Overview
 
@@ -730,3 +730,64 @@ Actions → Monthly Release Artifacts → [run] → Artifacts
 - `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
 
  ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
+
+## Scheduler and auto update
+
+KrakenWaf includes two isolated update robots:
+
+- `soldier_update`: runs manual updates with `--kraken-update` or `--addr-list <name>`.
+- `watch_tower`: reads `conf/update.yaml` and runs scheduled updates using cron-style expressions.
+
+Example:
+
+```yaml
+KrakenWaf:
+  cron: "0 18 */15 * *"
+blocklist:
+  title: "Blocklist site"
+  lists:
+    url_file:
+      - "https://lists.blocklist.de/lists/bruteforcelogin.txt"
+      - "https://lists.blocklist.de/lists/bots.txt"
+  cron: "0 12 */3 * *"
+spamhaus:
+  title: "Spamhaus site"
+  lists:
+    url_file: "https://www.spamhaus.org/drop/drop.lasso"
+  DQS-key: false
+  zones:
+    - sbl
+    - xbl
+    - authbl
+  cron: "0 12 */3 * *"
+firehol:
+  title: "Firehol"
+  lists:
+    url_file:
+      - "https://iplists.firehol.org/files/firehol_proxies.netset"
+      - "https://raw.githubusercontent.com/firehol/blocklist-ipsets/master/c2_tracker.ipset"
+  cron: "0 12 */3 * *"
+```
+
+Manual commands:
+
+```bash
+cargo build --release --bin soldier_update --bin watch_tower
+target/release/soldier_update --kraken-update
+target/release/soldier_update --addr-list blocklist
+target/release/soldier_update --addr-list firehol
+target/release/soldier_update --addr-list spamhaus
+target/release/watch_tower
+```
+
+Files from `blocklist.lists.url_file` are downloaded into
+`rules/addr/blocklist/`; files from `spamhaus.lists.url_file` are downloaded
+into `rules/addr/spamhaus/`; Firehol files are downloaded into
+`rules/addr/firehol/`. Spamhaus SBL, XBL, and AuthBL are queried through
+DQS DNS at runtime only when `DQS-key: true`, `SPAMHAUS_DQS_KEY` is set, and
+`--blocklist-ip` is enabled.
+Alerts include the YAML `title`, downloaded file or DQS zone, and local source
+path in raw, JSON, and SQLite logs.
+
+See [docs/spamhaus_dqs_updates.md](docs/spamhaus_dqs_updates.md) for DQS setup,
+token handling, DQS zones, and scheduler configuration.

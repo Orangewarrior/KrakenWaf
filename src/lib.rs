@@ -1,4 +1,3 @@
-
 pub mod allowpaths;
 pub mod app;
 pub mod banner;
@@ -13,6 +12,7 @@ pub mod rules;
 pub mod server;
 pub mod storage;
 pub mod tls;
+pub mod update;
 pub mod waf;
 
 pub mod cmc;

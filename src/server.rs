@@ -4,7 +4,10 @@ use bytes::Bytes;
 use http::{Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn};
-use hyper_util::{rt::{TokioExecutor, TokioIo}, server::conn::auto::Builder};
+use hyper_util::{
+    rt::{TokioExecutor, TokioIo},
+    server::conn::auto::Builder,
+};
 use std::{
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -71,7 +74,11 @@ async fn wait_for_drain(in_flight: &AtomicUsize, notify: &Notify) {
 ///
 /// # Errors
 /// Returns an error if the TCP listener cannot bind to the given address.
-pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor, state: Arc<AppState>) -> Result<()> {
+pub async fn run(
+    listener_addr: std::net::SocketAddr,
+    tls_acceptor: TlsAcceptor,
+    state: Arc<AppState>,
+) -> Result<()> {
     let listener = TcpListener::bind(listener_addr).await?;
     let semaphore = Arc::new(tokio::sync::Semaphore::new(state.cli.max_connections));
     let in_flight = Arc::new(AtomicUsize::new(0));
@@ -113,7 +120,9 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
                     let service = service_fn(move |req: Request<Incoming>| {
                         let state = Arc::clone(&state_for_service);
                         let client_ip = client_ip.clone();
-                        async move { Ok::<_, std::convert::Infallible>(handle(req, state, client_ip).await) }
+                        async move {
+                            Ok::<_, std::convert::Infallible>(handle(req, state, client_ip).await)
+                        }
                     });
                     let conn = builder.serve_connection(io, service);
                     match timeout(Duration::from_secs(timeout_secs), conn).await {
@@ -122,7 +131,9 @@ pub async fn run(listener_addr: std::net::SocketAddr, tls_acceptor: TlsAcceptor,
                         Err(_) => error!(target: "krakenwaf", "connection timed out"),
                     }
                 }
-                Err(err) => error!(target: "krakenwaf", "TLS handshake failed for {}: {}", peer, err),
+                Err(err) => {
+                    error!(target: "krakenwaf", "TLS handshake failed for {}: {}", peer, err);
+                }
             }
             if in_flight.fetch_sub(1, Ordering::AcqRel) == 1 {
                 drain_notify.notify_waiters();
@@ -200,7 +211,11 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
     Ok(())
 }
 
-async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String) -> Response<Full<Bytes>> {
+async fn handle(
+    req: Request<Incoming>,
+    state: Arc<AppState>,
+    client_ip: String,
+) -> Response<Full<Bytes>> {
     let path = req.uri().path();
 
     // Health and metrics endpoints respect the addr allowlist.
@@ -208,12 +223,16 @@ async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String)
         let snap = state.waf.rules_snapshot();
         if !snap.is_ip_allowed(&client_ip) {
             let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-            state.response_header_policy.apply(resp.headers_mut(), false);
+            state
+                .response_header_policy
+                .apply(resp.headers_mut(), false);
             return resp;
         }
         if path == "/__krakenwaf/health" {
             let mut response = plain_response(StatusCode::OK, "KrakenWaf OK");
-            state.response_header_policy.apply(response.headers_mut(), false);
+            state
+                .response_header_policy
+                .apply(response.headers_mut(), false);
             return response;
         }
         // /metrics
@@ -222,7 +241,9 @@ async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String)
             .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
             .body(Full::new(Bytes::from(state.metrics.render_prometheus())))
             .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
-        state.response_header_policy.apply(response.headers_mut(), false);
+        state
+            .response_header_policy
+            .apply(response.headers_mut(), false);
         return response;
     }
 
