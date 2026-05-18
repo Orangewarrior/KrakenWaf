@@ -423,146 +423,13 @@ CREATE INDEX idx_vulnerabilities_request_id
     ON vulnerabilities(request_id);
 ```
 
-## Directory layout
+## Main rules local
 
-```text
-KrakenWaf/
-├── alert/
-│   └── blockalert.html
-├── Cargo.toml
-├── Cargo.lock
-├── CHANGELOG.md
-├── deny.toml
-├── LICENSE
-├── README.md
-├── certs/
-│   ├── cert.pem
-│   └── key.pem
-├── docs/
-│   ├── attack_tool.md           ← demo_server + attack binary guide
-│   ├── allowpaths.md
-│   ├── blockaddrs_allowaddrs.md
-│   ├── cmc/
-│   │   └── schema.md
-│   ├── deployment.md
-│   ├── http_action.md
-│   ├── img/
-│   ├── integration_tests.md
-│   ├── libinjection.md
-│   ├── real-ip-header-and-trusted-proxy-cidrs.md
-│   └── scanner_agents.md
-├── ffi/
-│   └── libinjection/
-│       └── vendor/
-├── rules/
-│   ├── Vectorscan/
-│   │   └── strings2block.json
-│   ├── addr/
-│   │   ├── blocklist.txt        ← blocked IPs/CIDRs
-│   │   └── allowlist.txt        ← IPs allowed to reach /metrics and /health
-│   ├── allowpaths/
-│   │   └── lists.yaml           ← URI prefixes that bypass WAF inspection
-│   ├── cmc/
-│   │   └── config.yaml          ← enable/disable each CMC detector
-│   ├── headers_http/
-│   │   ├── strict.headers       ← maximum hardening profile
-│   │   ├── balanced.headers
-│   │   ├── relax.headers
-│   │   ├── locked_down.headers
-│   │   └── api_compat.headers
-│   ├── regex/
-│   │   ├── body_regex.json
-│   │   ├── header_regex.json
-│   │   └── path_regex.json
-│   ├── user_agents/
-│   │   └── scanners.txt         ← scanner/crawler UA blocklist (OWASP CRS)
-│   ├── rules.json
-│   └── tls/
-│       └── sni_map.csv
-├── src/
-│   ├── allowpaths.rs
-│   ├── app.rs
-│   ├── banner.rs
-│   ├── bin/
-│   │   ├── demo_server.rs       ← intentionally vulnerable demo backend
-│   │   └── attack.rs            ← standalone payload-sweep attack tool
-│   ├── cli.rs
-│   ├── cmc/
-│   │   ├── crlf_injection_detect.rs
-│   │   ├── esi_injection_detect.rs
-│   │   ├── mod.rs
-│   │   ├── overflow_detect.rs
-│   │   ├── request_smuggling_detect.rs
-│   │   ├── sqli_comments_detect.rs
-│   │   ├── ssi_injection_detect.rs
-│   │   └── ssti_detect.rs
-│   ├── ffi/
-│   ├── rules/
-│   ├── waf/
-│   ├── lib.rs
-│   ├── main.rs
-│   ├── metrics.rs
-│   ├── proxy.rs
-│   ├── response_headers.rs
-│   ├── server.rs
-│   ├── storage.rs
-│   └── tls.rs
-└── tests/
-    ├── dvwa_payloads.rs
-    ├── malformed_payloads.rs
-    ├── rules_and_limits.rs
-    └── server_real_test.rs      ← end-to-end integration tests
-```
-
-## Main rules format
-
-`rules/rules.json`
-
-```json
-{
-  "blocked_ip_prefixes": [
-    "10.10.10.",
-    "192.0.2."
-  ],
-  "uri_keywords": [
-    {
-      "enable": 1,
-      "title": "SQL Injection probe",
-      "severity": "critical",
-      "cwe": "CWE-89",
-      "description": "Detects common UNION SELECT probes in the request target.",
-      "url": "https://cwe.mitre.org/data/definitions/89.html",
-      "rule_match": "union select"
-    },
- .....
-
-```
-
-## Regex format
-
-`rules/regex/body_regex.json`
-
-```json
-{
-  "rules": [
-    {
-      "enable": 1,
-      "title": "Command injection separators body",
-      "severity": "critical",
-      "cwe": "CWE-78",
-      "description": "Detects shell metacharacters combined with common execution primitives in request bodies.",
-      "url": "https://cwe.mitre.org/data/definitions/78.html",
-      "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|\\|\\|?\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd)|&&\\s*(?:wget|curl|bash|sh|python|perl|php|powershell|cmd))"
-    },
-  ....
-```
-
-The same schema is used for:
-
+- rules/
 - `rules/regex/path_regex.json`
 - `rules/regex/header_regex.json`
 - `rules/Vectorscan/strings2block.json`
-- KrakenWaf have 80 rules or more with CMC...
+- KrakenWaf have 100 rules or more with CMC...
 
 ---
 
@@ -722,15 +589,6 @@ Actions → Monthly Release Artifacts → [run] → Artifacts
 - - DOcs about CMC https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/cmc/schema.md
 
 
-## Operational notes
-
-- Rate limiting is enforced per-IP and per-process by a lock-free GCRA-sharded limiter (64 shards, ~20–30 ns admission on the hot path) with snapshots persisted to `tmp_cache/` so brief restarts do not give blocked clients a fresh budget. The on-disk format is selectable via `--wal-mode` (`sqlite` or `bincode`). For full algorithm, sharding, persistence and tuning details see [docs/rate_limit.md](docs/rate_limit.md). Clustered/global enforcement across multiple WAF instances still requires a shared backend such as Redis.
-- SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
-- Send `SIGHUP` to hot-reload rule files without restarting the process.
-- `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
-
- ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
-
 ## Scheduler and auto update
 
 KrakenWaf includes two isolated update robots:
@@ -791,3 +649,13 @@ path in raw, JSON, and SQLite logs.
 
 See [docs/spamhaus_dqs_updates.md](docs/spamhaus_dqs_updates.md) for DQS setup,
 token handling, DQS zones, and scheduler configuration.
+
+
+## Operational notes
+
+- Rate limiting is enforced per-IP and per-process by a lock-free GCRA-sharded limiter (64 shards, ~20–30 ns admission on the hot path) with snapshots persisted to `tmp_cache/` so brief restarts do not give blocked clients a fresh budget. The on-disk format is selectable via `--wal-mode` (`sqlite` or `bincode`). For full algorithm, sharding, persistence and tuning details see [docs/rate_limit.md](docs/rate_limit.md). Clustered/global enforcement across multiple WAF instances still requires a shared backend such as Redis.
+- SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
+- Send `SIGHUP` to hot-reload rule files without restarting the process.
+- `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
+
+ ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
