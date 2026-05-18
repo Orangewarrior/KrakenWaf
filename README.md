@@ -289,6 +289,7 @@ This is useful for validating:
 
 ## 📊 Metrics
 
+[Observability docs for more info, example:](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/observability.md)
 ```bash
 curl -k https://localhost/metrics
 ```
