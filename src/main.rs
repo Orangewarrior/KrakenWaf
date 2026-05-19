@@ -69,6 +69,7 @@ async fn main() -> Result<()> {
     let cmc_manager = Arc::new(
         CmcManagerBuilder::new(cmc_config)
             .vectorscan_enabled(cli.enable_vectorscan)
+            .rules_dir(rules_root.clone())
             .build(),
     );
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);

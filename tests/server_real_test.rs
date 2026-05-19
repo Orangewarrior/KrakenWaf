@@ -101,6 +101,32 @@ async fn leak_shadow() -> &'static str {
      nobody:*:18858:0:99999:7:::\n"
 }
 
+/// Simulates a `MySQL` error leak — blocked by `Detect_db_errors`.
+async fn leak_db_error_mysql() -> &'static str {
+    "You have an error in your SQL syntax; check the manual that corresponds \
+     to your MySQL server version for the right syntax to use near '\"' at line 1"
+}
+
+/// Simulates a `PostgreSQL` error leak — blocked by `Detect_db_errors`.
+async fn leak_db_error_pgsql() -> &'static str {
+    "PostgreSQL query failed: ERROR: syntax error at or near \"'\" at character 10"
+}
+
+/// Simulates an `Oracle` error leak — blocked by `Detect_db_errors`.
+async fn leak_db_error_oracle() -> &'static str {
+    "ORA-00933: SQL command not properly ended"
+}
+
+/// Simulates an `MSSQL` error leak — blocked by `Detect_db_errors`.
+async fn leak_db_error_mssql() -> &'static str {
+    "Unclosed quotation mark after the character string 'admin'."
+}
+
+/// Simulates a `MongoDB` error leak — blocked by `Detect_db_errors`.
+async fn leak_db_error_mongo() -> &'static str {
+    r#"{"error":"MongoServerError","code":2,"message":"E11000 duplicate key error collection"}"#
+}
+
 /// Java deserialization target endpoint — accepts any POST body; the WAF must
 /// block requests containing Java magic bytes before they reach this handler.
 async fn java_deser_endpoint() -> &'static str {
@@ -123,6 +149,11 @@ fn ensure_backend() {
                         .route("/test_post", post(test_post))
                         .route("/leak/passwd", get(leak_passwd))
                         .route("/leak/shadow", get(leak_shadow))
+                        .route("/leak/db-error/mysql", get(leak_db_error_mysql))
+                        .route("/leak/db-error/pgsql", get(leak_db_error_pgsql))
+                        .route("/leak/db-error/oracle", get(leak_db_error_oracle))
+                        .route("/leak/db-error/mssql", get(leak_db_error_mssql))
+                        .route("/leak/db-error/mongo", get(leak_db_error_mongo))
                         .route("/java-deser", post(java_deser_endpoint));
                     let listener = tokio::net::TcpListener::bind(addr).await.expect("test");
                     axum::serve(listener, app).await.expect("test");
@@ -1443,5 +1474,162 @@ async fn cmc_java_deser_disabled_allows_request() {
         resp.status(),
         StatusCode::OK,
         "without CMC the Java deser request must pass through"
+    );
+}
+
+// ─── Detect_db_errors CMC tests ───────────────────────────────────────────────
+
+/// `MySQL` syntax error response must be blocked (403) when `Detect_db_errors` is enabled.
+#[tokio::test]
+async fn cmc_detect_db_errors_mysql_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/db-error/mysql", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "/leak/db-error/mysql must be blocked by Detect_db_errors CMC"
+    );
+}
+
+/// `PostgreSQL` error response must be blocked (403).
+#[tokio::test]
+async fn cmc_detect_db_errors_pgsql_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/db-error/pgsql", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "/leak/db-error/pgsql must be blocked by Detect_db_errors CMC"
+    );
+}
+
+/// Oracle ORA- error response must be blocked (403).
+#[tokio::test]
+async fn cmc_detect_db_errors_oracle_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/db-error/oracle", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "/leak/db-error/oracle must be blocked by Detect_db_errors CMC"
+    );
+}
+
+/// MSSQL unclosed-quotation error must be blocked (403).
+#[tokio::test]
+async fn cmc_detect_db_errors_mssql_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/db-error/mssql", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "/leak/db-error/mssql must be blocked by Detect_db_errors CMC"
+    );
+}
+
+/// `MongoDB` error response must be blocked (403).
+#[tokio::test]
+async fn cmc_detect_db_errors_mongo_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/db-error/mongo", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "/leak/db-error/mongo must be blocked by Detect_db_errors CMC"
+    );
+}
+
+/// Normal HTML response must pass through unaffected.
+#[tokio::test]
+async fn cmc_detect_db_errors_clean_response_allowed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/test_get", waf_base(port)))
+        .query(&[("payload_test", "hello")])
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "clean response must not be blocked by Detect_db_errors"
+    );
+}
+
+/// Without CMC the DB error response passes through (200).
+#[tokio::test]
+async fn cmc_detect_db_errors_disabled_allows_response() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]); // no --cmc-load
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/leak/db-error/mysql", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "without CMC the DB error response must pass through"
     );
 }

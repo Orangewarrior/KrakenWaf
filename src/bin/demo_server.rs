@@ -96,6 +96,30 @@ async fn leak_shadow() -> &'static str {
      nobody:*:18858:0:99999:7:::\n"
 }
 
+/// Simulates a server leaking database error messages — used by
+/// `Detect_db_errors` sweep to verify that error-based injection responses
+/// are intercepted before they reach the attacker.
+async fn leak_db_error_mysql() -> &'static str {
+    "You have an error in your SQL syntax; check the manual that corresponds \
+     to your MySQL server version for the right syntax to use near '\"' at line 1"
+}
+
+async fn leak_db_error_pgsql() -> &'static str {
+    "PostgreSQL query failed: ERROR: syntax error at or near \"'\" at character 10"
+}
+
+async fn leak_db_error_oracle() -> &'static str {
+    "ORA-00933: SQL command not properly ended"
+}
+
+async fn leak_db_error_mssql() -> &'static str {
+    "Unclosed quotation mark after the character string 'admin'."
+}
+
+async fn leak_db_error_mongo() -> &'static str {
+    r#"{"error":"MongoServerError","code":2,"message":"E11000 duplicate key error collection"}"#
+}
+
 /// Catch-all GET handler used by the backup-file sweep in the attack tool.
 /// Returns 200 so that the attack tool can distinguish a WAF bypass (200) from
 /// a WAF block (403).  In a real deployment these paths would never exist on a
@@ -123,6 +147,12 @@ async fn main() {
         // passwd/shadow leak routes — used by Anti_passwd_leak sweep.
         .route("/leak/passwd", get(leak_passwd))
         .route("/leak/shadow", get(leak_shadow))
+        // DB error leak routes — used by Detect_db_errors sweep.
+        .route("/leak/db-error/mysql", get(leak_db_error_mysql))
+        .route("/leak/db-error/pgsql", get(leak_db_error_pgsql))
+        .route("/leak/db-error/oracle", get(leak_db_error_oracle))
+        .route("/leak/db-error/mssql", get(leak_db_error_mssql))
+        .route("/leak/db-error/mongo", get(leak_db_error_mongo))
         // Java deserialization target — accepts POST with any body so the
         // attack tool can test Java deserialization payloads against the WAF.
         .route("/java-deser", post(java_deser_endpoint))

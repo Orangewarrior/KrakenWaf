@@ -14,3 +14,4 @@ CMC-Rules:
   Anti_exposed_backup: true
   Anti_passwd_leak: true
   Java_deserialize_detect: true
+  Detect_db_errors: true

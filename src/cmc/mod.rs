@@ -1,11 +1,12 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
 use tracing::warn;
 
 mod anti_exposed_backup;
 mod anti_passwd_leak;
 mod crlf_injection_detect;
+pub mod detect_db_errors;
 mod esi_injection_detect;
 mod java_deserialize_detect;
 mod nosql_injection_detect;
@@ -19,6 +20,15 @@ mod xxe_attack_detect;
 use crate::rules::Severity;
 use crate::waf::Finding;
 use chrono::Utc;
+
+/// Decision emitted by CMC response-body inspection.
+/// `Block` causes the WAF to return a 403 and log the event.
+/// `Monitor` logs the event to all outputs but forwards the upstream response.
+#[derive(Debug, Clone)]
+pub enum CmcResponseDecision {
+    Block(Finding),
+    Monitor(Finding),
+}
 
 pub use anti_exposed_backup::AntiExposedBackupCmcBuilder;
 pub use anti_passwd_leak::AntiPasswdLeakCmcBuilder;
@@ -48,8 +58,11 @@ pub struct CmcConfig {
     pub anti_exposed_backup: bool,
     pub anti_passwd_leak_detect: bool,
     pub java_deserialize_detect: bool,
+    /// Scan upstream response bodies for DB error fingerprints.
+    pub detect_db_errors: bool,
     /// Global paranoia level (0–100). Controls the 2-signal block threshold
     /// and the 1-signal informative-log threshold in `java_deserialize_detect`.
+    /// At ≥ 60, `detect_db_errors` blocks matching responses; below 60 it logs only.
     /// Default: 60.
     pub untrust_level: u8,
 }
@@ -69,6 +82,7 @@ impl Default for CmcConfig {
             anti_exposed_backup: false,
             anti_passwd_leak_detect: false,
             java_deserialize_detect: false,
+            detect_db_errors: false,
             untrust_level: 60,
         }
     }
@@ -89,24 +103,34 @@ impl CmcConfig {
 pub struct CmcManagerBuilder {
     config: CmcConfig,
     vectorscan_enabled: bool,
+    /// Root directory used to resolve the DB-error pattern file
+    /// (`<rules_dir>/error_msgs/sql_errors.txt`).
+    rules_dir: Option<PathBuf>,
 }
 
 impl CmcManagerBuilder {
-    #[must_use] 
+    #[must_use]
     pub fn new(config: CmcConfig) -> Self {
         Self {
             config,
             vectorscan_enabled: false,
+            rules_dir: None,
         }
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn vectorscan_enabled(mut self, enabled: bool) -> Self {
         self.vectorscan_enabled = enabled;
         self
     }
 
-    #[must_use] 
+    #[must_use]
+    pub fn rules_dir(mut self, dir: PathBuf) -> Self {
+        self.rules_dir = Some(dir);
+        self
+    }
+
+    #[must_use]
     pub fn build(self) -> CmcManager {
         CmcManager {
             sqli_comments: self
@@ -163,11 +187,48 @@ impl CmcManagerBuilder {
                     .vectorscan_enabled(self.vectorscan_enabled)
                     .build()
             }),
+            detect_db_errors: if self.config.detect_db_errors {
+                if let Some(ref dir) = self.rules_dir {
+                    let path = dir.join("error_msgs/sql_errors.txt");
+                    match detect_db_errors::DbErrorDetector::from_file(
+                        &path,
+                        self.vectorscan_enabled,
+                    ) {
+                        Ok(d) => {
+                            tracing::info!(
+                                target: "krakenwaf",
+                                patterns = d.pattern_count(),
+                                path = %path.display(),
+                                "detect_db_errors: loaded DB error patterns"
+                            );
+                            Some(d)
+                        }
+                        Err(e) => {
+                            warn!(
+                                target: "krakenwaf",
+                                error = %e,
+                                path = %path.display(),
+                                "detect_db_errors: failed to load patterns — module disabled"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    warn!(
+                        target: "krakenwaf",
+                        "detect_db_errors: enabled in config but no rules_dir supplied — module disabled"
+                    );
+                    None
+                }
+            } else {
+                None
+            },
+            untrust_level: self.config.untrust_level,
         }
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct CmcManager {
     sqli_comments: Option<sqli_comments_detect::SqliCommentsCmc>,
     overflow: Option<overflow_detect::OverflowCmc>,
@@ -181,6 +242,29 @@ pub struct CmcManager {
     anti_exposed_backup: Option<anti_exposed_backup::AntiExposedBackupCmc>,
     anti_passwd_leak: Option<anti_passwd_leak::AntiPasswdLeakCmc>,
     java_deserialize: Option<java_deserialize_detect::JavaDeserializeCmc>,
+    detect_db_errors: Option<detect_db_errors::DbErrorDetector>,
+    untrust_level: u8,
+}
+
+impl Default for CmcManager {
+    fn default() -> Self {
+        Self {
+            sqli_comments: None,
+            overflow: None,
+            ssti: None,
+            ssi: None,
+            esi: None,
+            crlf: None,
+            request_smuggling: None,
+            nosql_injection: None,
+            xxe_attack: None,
+            anti_exposed_backup: None,
+            anti_passwd_leak: None,
+            java_deserialize: None,
+            detect_db_errors: None,
+            untrust_level: 60,
+        }
+    }
 }
 
 impl CmcManager {
@@ -392,17 +476,21 @@ impl CmcManager {
         None
     }
 
-    /// Inspect the upstream response body for sensitive data leaks.
-    /// Called from `inspect_response()` after the full response body is buffered.
-    #[must_use] 
-    pub fn inspect_response_body(&self, body: &str) -> Option<Finding> {
+    /// Inspect the upstream response body for sensitive data leaks and DB error
+    /// fingerprints. Called from `inspect_response()` after the full response
+    /// body is buffered.
+    ///
+    /// Returns `Some(CmcResponseDecision::Block(_))` to abort the response,
+    /// or `Some(CmcResponseDecision::Monitor(_))` to log without blocking.
+    #[must_use]
+    pub fn inspect_response_body(&self, body: &str) -> Option<CmcResponseDecision> {
         if let Some(detector) = &self.anti_passwd_leak {
             if let Some(matched) = detector.detect(body) {
                 let (kind_label, cwe) = match matched.kind() {
                     anti_passwd_leak::LeakKind::Passwd => ("passwd", "CWE-538"),
                     anti_passwd_leak::LeakKind::Shadow => ("shadow", "CWE-538"),
                 };
-                return Some(finding(
+                return Some(CmcResponseDecision::Block(finding(
                     "CMC passwd/shadow file leak detection",
                     Severity::Critical,
                     cwe,
@@ -424,7 +512,34 @@ impl CmcManager {
                     ),
                     "cmc/anti_passwd_leak.rs:generated",
                     &body.chars().take(256).collect::<String>(),
-                ));
+                )));
+            }
+        }
+
+        if let Some(detector) = &self.detect_db_errors {
+            if let Some(matched) = detector.detect(body) {
+                let f = finding(
+                    "CMC DB error-based attack detection",
+                    Severity::High,
+                    "CWE-209",
+                    &format!(
+                        "Upstream response body contains a database error message that may \
+                         disclose DBMS internals to an attacker, enabling error-based injection \
+                         reconnaissance. Matched pattern: '{pat}'.",
+                        pat = matched.matched_pattern(),
+                    ),
+                    "https://owasp.org/www-community/attacks/SQL_Injection",
+                    format!(
+                        "cmc::detect_db_errors:pattern={}",
+                        matched.matched_pattern()
+                    ),
+                    "cmc/detect_db_errors.rs:generated",
+                    &body.chars().take(256).collect::<String>(),
+                );
+                if self.untrust_level >= 60 {
+                    return Some(CmcResponseDecision::Block(f));
+                }
+                return Some(CmcResponseDecision::Monitor(f));
             }
         }
 
@@ -633,6 +748,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
         anti_exposed_backup: enabled("Anti_exposed_backup"),
         anti_passwd_leak_detect: enabled("Anti_passwd_leak"),
         java_deserialize_detect: enabled("Java_deserialize_detect"),
+        detect_db_errors: enabled("Detect_db_errors"),
         untrust_level: 60, // overwritten by caller when global-options is parsed
     }
 }
@@ -800,5 +916,29 @@ CMC-Rules:
         )
         .expect("parse clamped Untrust");
         assert_eq!(cfg.untrust_level, 100);
+    }
+
+    #[test]
+    fn parses_detect_db_errors_config_key() {
+        let cfg = parse_lenient_yaml(
+            r"
+CMC-Rules:
+  Detect_db_errors: true
+",
+        )
+        .expect("parse Detect_db_errors key");
+        assert!(cfg.detect_db_errors);
+    }
+
+    #[test]
+    fn detect_db_errors_disabled_by_default() {
+        let cfg = parse_lenient_yaml(
+            r"
+CMC-Rules:
+  SQLi_comments_detect: true
+",
+        )
+        .expect("parse minimal config");
+        assert!(!cfg.detect_db_errors);
     }
 }

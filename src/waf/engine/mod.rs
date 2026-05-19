@@ -56,7 +56,12 @@ pub struct ResponseContext {
 #[derive(Debug, Clone)]
 pub enum Decision {
     Allow,
+    /// Block the request/response and log to all security outputs.
     Block(Box<Finding>),
+    /// Log the finding to all security outputs but do **not** block.
+    /// Used when `untrust_level < 60` and the threat is not confirmed enough
+    /// to justify blocking the upstream response.
+    Monitor(Box<Finding>),
 }
 
 /// Immutable snapshot of rules + their pre-compiled matchers. Held behind a
@@ -475,12 +480,18 @@ impl WafEngine {
             }
         }
 
-        // CMC response-body scan: passwd/shadow leak detection.
-        if let Some(cmc_finding) = self
+        // CMC response-body scan: passwd/shadow leak + DB error detection.
+        match self
             .cmc_manager
             .inspect_response_body(body_original.as_ref())
         {
-            return Decision::Block(Box::new(cmc_finding));
+            Some(crate::cmc::CmcResponseDecision::Block(f)) => {
+                return Decision::Block(Box::new(f));
+            }
+            Some(crate::cmc::CmcResponseDecision::Monitor(f)) => {
+                return Decision::Monitor(Box::new(f));
+            }
+            None => {}
         }
 
         // Java deserialization detection on upstream responses.
