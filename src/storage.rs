@@ -11,7 +11,7 @@ use tracing::{error, warn};
 
 /// Attack-payload rows older than this are purged to bound DB size.
 const PAYLOAD_RETENTION_DAYS: i64 = 90;
-const PURGE_INTERVAL: Duration = Duration::from_secs(24 * 3600);
+const PURGE_INTERVAL: Duration = Duration::from_hours(24);
 
 #[derive(Clone)]
 pub struct SqliteStore {

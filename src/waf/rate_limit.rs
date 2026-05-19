@@ -91,7 +91,7 @@ const SHARD_MASK: u64 = NUM_SHARDS as u64 - 1;
 const MAX_PER_SHARD: usize = 4_096;
 
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
-const PERSIST_INTERVAL: Duration = Duration::from_secs(60);
+const PERSIST_INTERVAL: Duration = Duration::from_mins(1);
 const MAX_DB_BYTES: u64 = 32 * 1024 * 1024;
 
 // ── GCRA core (lock-free) ─────────────────────────────────────────────────────
@@ -437,7 +437,7 @@ fn open_db(path: &Path) -> Result<Connection> {
     }
 
     if path.exists() {
-        let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+        let size = std::fs::metadata(path).map_or(0, |m| m.len());
         if size > MAX_DB_BYTES {
             warn!(
                 target: "krakenwaf",
@@ -628,7 +628,7 @@ mod tests {
         {
             let rl = RateLimiter::new(
                 5,
-                Duration::from_secs(60),
+                Duration::from_mins(1),
                 &path,
                 PersistenceMode::Bincode,
             )
@@ -642,7 +642,7 @@ mod tests {
         // Segundo processo: estado deve ter sido recuperado — restam apenas 1 req.
         let rl = RateLimiter::new(
             5,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             &path,
             PersistenceMode::Bincode,
         )

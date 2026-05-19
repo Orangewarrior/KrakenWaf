@@ -112,7 +112,7 @@ impl WafEngine {
     ) -> Result<Self> {
         let rate_limiter = Arc::new(RateLimiter::new(
             rate_limit_per_minute,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             snapshot_path,
             rate_limit_persistence,
         )?);
