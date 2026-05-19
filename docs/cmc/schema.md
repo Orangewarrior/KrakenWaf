@@ -51,6 +51,7 @@ CMC-Rules:
   Anti_exposed_backup: true
   Anti_passwd_leak: true
   Java_deserialize_detect: true
+  Detect_db_errors: true
 ```
 
 ---
@@ -71,6 +72,7 @@ CMC-Rules:
 | `Anti_exposed_backup` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Medium | [anti_exposed_backup.md](anti_exposed_backup.md) |
 | `Anti_passwd_leak` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Critical | [anti_passwd_leak.md](anti_passwd_leak.md) |
 | `Java_deserialize_detect` | [CWE-502](https://cwe.mitre.org/data/definitions/502.html) | Critical | [java_deserialize_detect.md](java_deserialize_detect.md) |
+| `Detect_db_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | High | [detect_db_errors.md](detect_db_errors.md) |
 
 ---
 
@@ -234,6 +236,35 @@ Blocking thresholds depend on the global `Untrust` level:
 Unlike all other request-side detectors, this module also inspects the upstream
 **response** body and headers — e.g., to block a backend that accidentally echoes back
 a serialized Java object.
+
+### [`Detect_db_errors`](detect_db_errors.md)
+
+Intercepts upstream HTTP **response bodies** containing verbose DBMS error messages,
+cutting off the error-based SQL/NoSQL injection feedback loop that tools like SQLmap
+and NoSQLmap rely on.
+
+Pattern research basis: the error-fingerprint databases embedded in **SQLmap**
+(`sqlmap/data/errormessages/`) and **NoSQLmap`.  Those patterns help attackers identify
+which DBMS is running from error responses; KrakenWaf inverts that knowledge to block
+the exfiltration channel.
+
+200+ patterns covering all major SQL and NoSQL engines are compiled into a single
+`regex::RegexSet` at startup.  Per-response cost is one linear scan — no
+per-request recompilation.  Vectorscan `BlockDatabase` acceleration is used when
+`--enable-vectorscan` is active; falls back to `RegexSet` if any pattern fails
+Hyperscan compilation.
+
+Blocking thresholds:
+
+| `Untrust` | Action |
+|---|---|
+| ≥ 60 (default) | **Block** — WAF returns 403, logs to raw/JSONL/SQLite |
+| < 60 | **Monitor** — upstream response forwarded; finding logged to all outputs |
+
+Patterns are loaded from `rules/error_msgs/sql_errors.txt`.  Custom patterns can be
+appended to that file; the WAF must be restarted to pick them up.  Invalid regex
+lines are skipped with a startup warning so a single bad rule cannot disable the
+module.
 
 ---
 

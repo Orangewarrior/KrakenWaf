@@ -174,7 +174,7 @@ fn build_vectorscan() -> Option<BlockDatabase> {
             Pattern::new(
                 literal.into_bytes(),
                 Flag::CASELESS | Flag::SINGLEMATCH,
-                Some(idx as u32),
+                Some(u32::try_from(idx).expect("pattern index fits in u32")),
             )
         })
         .collect::<Vec<_>>();
@@ -207,8 +207,10 @@ fn vectorscan_suffix_find(db: &BlockDatabase, path: &str) -> Option<&'static str
     let mut found: Option<&'static str> = None;
 
     let _ = scanner.scan(bytes, |id, _from, to, _flags| {
-        if to as usize == end {
-            found = HIGH_CONFIDENCE_BACKUP_SUFFIXES.get(id as usize).copied();
+        if usize::try_from(to).is_ok_and(|to| to == end) {
+            found = usize::try_from(id)
+                .ok()
+                .and_then(|i| HIGH_CONFIDENCE_BACKUP_SUFFIXES.get(i).copied());
             Scan::Terminate
         } else {
             Scan::Continue

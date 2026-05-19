@@ -185,7 +185,7 @@ fn build_vectorscan(patterns: &[&str]) -> Option<BlockDatabase> {
             Pattern::new(
                 pattern.as_bytes().to_vec(),
                 Flag::CASELESS | Flag::SINGLEMATCH,
-                Some(idx as u32),
+                Some(u32::try_from(idx).expect("pattern index fits in u32")),
             )
         })
         .collect::<Vec<_>>();

@@ -19,7 +19,7 @@ use url::Url;
 const DEFAULT_UPDATE_CONFIG: &str = "conf/update.yaml";
 const ADDR_RULES_DIR: &str = "rules/addr";
 const ERROR_LOG: &str = "logs/console_local/errors.txt";
-const ADDR_LIST_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
+const ADDR_LIST_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct UpdateConfig {

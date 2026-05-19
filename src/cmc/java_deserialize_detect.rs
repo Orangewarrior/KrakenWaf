@@ -151,7 +151,11 @@ fn build_vs_matcher(patterns: &[&str], caseless: bool) -> Option<BlockDatabase> 
             } else {
                 Flag::SINGLEMATCH
             };
-            Pattern::new(p.as_bytes().to_vec(), flags, Some(idx as u32))
+            Pattern::new(
+                p.as_bytes().to_vec(),
+                flags,
+                Some(u32::try_from(idx).expect("pattern index fits in u32")),
+            )
         })
         .collect::<Vec<_>>();
     BlockDatabase::new(vpatterns).ok()

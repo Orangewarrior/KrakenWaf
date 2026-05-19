@@ -1,3 +1,57 @@
+## [2.20.0] - 2026-05-19
+
+### Added
+
+#### `Detect_db_errors` CMC module
+
+- New CMC module `Detect_db_errors` intercepts upstream HTTP **response bodies**
+  containing verbose DBMS error messages before they reach the client, cutting off
+  the error-based SQL/NoSQL injection feedback loop that tools like SQLmap and
+  NoSQLmap rely on to enumerate schema, data, and blind boolean conditions.
+- Patterns are loaded from `rules/error_msgs/sql_errors.txt` at WAF startup.
+  200+ PCRE-compatible regexes covering all major SQL and NoSQL engines:
+  MySQL/MariaDB/Drizzle/TiDB, PostgreSQL, Oracle, MSSQL, SQLite, IBM DB2,
+  Informix, Firebird, SAP MaxDB, Sybase, Ingres, HSQLDB/H2/Derby, MonetDB,
+  Vertica, Presto/Trino, ClickHouse, CrateDB, Snowflake, Virtuoso, Altibase,
+  FrontBase, Mimer, MongoDB/Mongoose, CouchDB, Couchbase/N1QL, Elasticsearch,
+  Redis, Memcached, and Neo4j/Cypher.
+- Pattern research basis: the same error-fingerprint databases used internally by
+  **SQLmap** (`sqlmap/data/errormessages/`) and **NoSQLmap** — those patterns help
+  attackers confirm DBMS type from error responses; KrakenWaf inverts that
+  knowledge to block the exfiltration channel.
+- All patterns are compiled into a single `regex::RegexSet` at startup — per-response
+  cost is exactly one linear scan with no per-pattern overhead.
+- Vectorscan/Hyperscan `BlockDatabase` acceleration: when `--enable-vectorscan` is
+  active a SIMD scan replaces the CPU path; falls back to `RegexSet` if any pattern
+  fails Hyperscan compilation.
+- Threshold-gated action via the global `Untrust` level:
+  - `Untrust ≥ 60` (default) → **block** response (HTTP 403) + log to raw/JSONL/SQLite.
+  - `Untrust < 60` → **monitor** — upstream response is forwarded to the client but
+    the finding is written to all log outputs (new `Decision::Monitor` engine variant).
+- Activated by adding `Detect_db_errors: true` to `rules/cmc/config.yaml`.
+  **Disabled by default** for backwards compatibility.
+- New `Decision::Monitor(Box<Finding>)` WAF engine variant (in addition to existing
+  `Allow` and `Block`) represents detections that should be logged but not blocked.
+- Added `CmcResponseDecision` enum (`Block(Finding)` | `Monitor(Finding)`) in the
+  CMC layer to propagate monitor-vs-block intent from CMC modules to the engine.
+- Added `rules/error_msgs/sql_errors.txt` with the full pattern set.
+- Added `docs/cmc/detect_db_errors.md` documenting the module, research basis,
+  detection architecture, configuration, findings format, and limitations.
+- Demo server (`src/bin/demo_server.rs`) gains five new leak routes:
+  `/leak/db-error/{mysql,pgsql,oracle,mssql,mongo}`.
+
+### Tests
+
+- 7 new integration tests in `tests/server_real_test.rs` verifying that:
+  MySQL, PostgreSQL, Oracle, MSSQL, and MongoDB error responses are blocked (HTTP 403);
+  clean responses are allowed (HTTP 200); and a disabled-CMC configuration passes
+  DB error strings through.
+- 9 unit tests in `src/cmc/detect_db_errors.rs` covering detection of all major DBMS
+  error types, clean-response non-triggering, matched pattern reporting, and
+  comment/empty-line skipping in the pattern file.
+
+---
+
 ## [2.19.0] - 2026-05-15
 
 ### Added

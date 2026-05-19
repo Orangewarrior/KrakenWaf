@@ -1,0 +1,350 @@
+# DB Error-Based Detection Patterns
+# Based on SQLMap / NoSQLMap error fingerprint research
+# Each non-empty, non-comment line is a PCRE-compatible regex.
+# The WAF compiles all patterns at startup using RegexSet for O(n) scanning.
+
+# ── MySQL / MariaDB / Drizzle / TiDB ──────────────────────────────────────────
+SQL syntax.*?MySQL
+Warning.*?\Wmysqli?_
+MySQLSyntaxErrorException
+valid MySQL result
+check the manual that (corresponds to|fits) your MySQL server version
+check the manual that (corresponds to|fits) your MariaDB server version
+check the manual that (corresponds to|fits) your Drizzle server version
+check the manual that (corresponds to|fits) your TiDB server version
+Unknown column '[^ ]+' in 'field list'
+MySqlClient\.
+com\.mysql\.jdbc
+Zend_Db_(Adapter|Statement)_Mysqli_Exception
+Pdo[./_\\]Mysql
+MySqlException
+MemSQL does not support this type of query
+is not supported by MemSQL
+unsupported nested scalar subselect
+
+# ── PostgreSQL / Npgsql ────────────────────────────────────────────────────────
+PostgreSQL.*?ERROR
+Warning.*?\Wpg_
+valid PostgreSQL result
+Npgsql\.
+PG::SyntaxError:
+org\.postgresql\.util\.PSQLException
+ERROR:\s+syntax error at or near
+ERROR: parser: parse error at or near
+PostgreSQL query failed
+org\.postgresql\.jdbc
+Pdo[./_\\]Pgsql
+PSQLException
+
+# ── Microsoft SQL Server ───────────────────────────────────────────────────────
+Driver.*? SQL[\-\_\ ]*Server
+OLE DB.*? SQL Server
+\bSQL Server[^<"]+Driver
+Warning.*?\W(mssql|sqlsrv)_
+\bSQL Server[^<"]+[0-9a-fA-F]{8}
+System\.Data\.SqlClient\.(SqlException|SqlConnection\.OnError)
+(?s)Exception.*?\bRoadhouse\.Cms\.
+Microsoft SQL Native Client error '[0-9a-fA-F]{8}
+\[SQL Server\]
+ODBC SQL Server Driver
+ODBC Driver \d+ for SQL Server
+SQLServer JDBC Driver
+com\.jnetdirect\.jsql
+macromedia\.jdbc\.sqlserver
+Zend_Db_(Adapter|Statement)_Sqlsrv_Exception
+com\.microsoft\.sqlserver\.jdbc
+Pdo[./_\\](Mssql|SqlSrv)
+SQL(Srv|Server)Exception
+Unclosed quotation mark after the character string
+
+# ── Microsoft Access ───────────────────────────────────────────────────────────
+Microsoft Access (\d+ )?Driver
+JET Database Engine
+Access Database Engine
+ODBC Microsoft Access
+Syntax error \(missing operator\) in query expression
+
+# ── Oracle ────────────────────────────────────────────────────────────────────
+\bORA-\d{5}
+Oracle error
+Oracle.*?Driver
+Warning.*?\W(oci|ora)_
+quoted string not properly terminated
+SQL command not properly ended
+macromedia\.jdbc\.oracle
+oracle\.jdbc
+Zend_Db_(Adapter|Statement)_Oracle_Exception
+Pdo[./_\\](Oracle|OCI)
+OracleException
+
+# ── IBM DB2 ───────────────────────────────────────────────────────────────────
+CLI Driver.*?DB2
+DB2 SQL error
+\bdb2_\w+\(
+SQLCODE[=:\d, -]+SQLSTATE
+com\.ibm\.db2\.jcc
+Zend_Db_(Adapter|Statement)_Db2_Exception
+Pdo[./_\\]Ibm
+DB2Exception
+ibm_db_dbi\.ProgrammingError
+
+# ── Informix ──────────────────────────────────────────────────────────────────
+Warning.*?\Wifx_
+Exception.*?Informix
+Informix ODBC Driver
+ODBC Informix driver
+com\.informix\.jdbc
+weblogic\.jdbc\.informix
+Pdo[./_\\]Informix
+IfxException
+
+# ── Firebird / InterBase ───────────────────────────────────────────────────────
+Dynamic SQL Error.{1,10}SQL error code
+Warning.*?\Wibase_
+org\.firebirdsql\.jdbc
+Pdo[./_\\]Firebird
+
+# ── SQLite ────────────────────────────────────────────────────────────────────
+SQLite/JDBCDriver
+SQLite\.Exception
+(Microsoft|System)\.Data\.SQLite\.SQLiteException
+Warning.*?\W(sqlite_|SQLite3::)
+\[SQLITE_ERROR\]
+SQLite error \d+:
+sqlite3.OperationalError:
+SQLite3::SQLException
+org\.sqlite\.JDBC
+Pdo[./_\\]Sqlite
+SQLiteException
+SqliteError:
+
+# ── SAP MaxDB / Sybase ────────────────────────────────────────────────────────
+SQL error.*?POS([0-9]+)
+Warning.*?\Wmaxdb_
+DriverSapDB
+-3014.*?Invalid end of SQL statement
+com\.sap\.db(tech)?\.jdbc
+\[-3008\].*?: Invalid keyword or missing delimiter
+Warning.*?\Wsybase_
+Sybase message
+Sybase.*?Server message
+SybSQLException
+Sybase\.Data\.AseClient
+com\.sybase\.jdbc
+
+# ── Ingres ────────────────────────────────────────────────────────────────────
+Warning.*?\Wingres_
+Ingres SQLSTATE
+Ingres\W.*?Driver
+com\.ingres\.gcf\.jdbc
+
+# ── FrontBase / HSQLDB / H2 ───────────────────────────────────────────────────
+Exception (condition )?\d+\. Transaction rollback
+com\.frontbase\.jdbc
+Syntax error 1. Missing
+(Semantic|Syntax) error [1-4]\d{2}\.
+Unexpected end of command in statement \[
+Unexpected token.*?in statement \[
+org\.hsqldb\.jdbc
+org\.h2\.jdbc
+\[42000-\d+\]
+
+# ── MonetDB ───────────────────────────────────────────────────────────────────
+![0-9]{5}![^\n]+(failed|unexpected|error|syntax|expected|violation|exception)
+\[MonetDB\]\[ODBC Driver
+nl\.cwi\.monetdb\.jdbc
+
+# ── Apache Derby ──────────────────────────────────────────────────────────────
+Syntax error: Encountered
+org\.apache\.derby
+ERROR 42X01
+
+# ── Vertica ───────────────────────────────────────────────────────────────────
+, Sqlstate: (3F|42).{3}, (Routine|Hint|Position):
+/vertica/Parser/scan
+com\.vertica\.jdbc
+org\.jkiss\.dbeaver\.ext\.vertica
+com\.vertica\.dsi\.dataengine
+
+# ── Presto / Trino ────────────────────────────────────────────────────────────
+com\.facebook\.presto\.jdbc
+io\.prestosql\.jdbc
+com\.simba\.presto\.jdbc
+UNION query has different number of fields: \d+, \d+
+line \d+:\d+: mismatched input '[^']+'. Expecting:
+
+# ── Mimer SQL ─────────────────────────────────────────────────────────────────
+com\.mimer\.jdbc
+Syntax error,[^\n]+assumed to mean
+
+# ── ClickHouse ────────────────────────────────────────────────────────────────
+Code: \d+[., ]+DB::Exception:
+Syntax error: failed at position \d+
+
+# ── CrateDB ───────────────────────────────────────────────────────────────────
+io\.crate\.client\.jdbc
+encountered after end of query
+A comparison operator is required here
+
+# ── Altibase / Raima ──────────────────────────────────────────────────────────
+Altibase\.jdbc\.driver
+-10048: Syntax error
+rdmStmtPrepare\(.+?\) returned
+
+# ── Interbase ─────────────────────────────────────────────────────────────────
+SQ074: Line \d+:
+SR185: Undefined procedure
+SQ200: No table "
+
+# ── Virtuoso ──────────────────────────────────────────────────────────────────
+Virtuoso S0002 Error
+\[(Virtuoso Driver|Virtuoso iODBC Driver)\]\[Virtuoso Server\]
+
+# ── Snowflake ─────────────────────────────────────────────────────────────────
+001003 \(42000\):
+100038 \(22018\):
+000904 \(42000\):
+SQL compilation error: (syntax )?error line \d+ at position \d+
+type.googleapis.com/zetasql.ErrorMessageModeForPayload
+
+# ── JavaScript runtime errors (common in Node/Express stacks) ─────────────────
+(?i)\bReferenceError\b
+(?i)\bSyntaxError\b
+(?i)\bILLEGAL\b
+
+# ── MongoDB / Mongoose ────────────────────────────────────────────────────────
+(?i)\bMongoError\b
+(?i)\bMongoServerError\b
+(?i)\bMongoCommandException\b
+(?i)\bMongoQueryException\b
+(?i)\bMongoWriteException\b
+(?i)\bMongoBulkWriteException\b
+(?i)\bMongoExecutionTimeoutException\b
+(?i)\bMongoSocketException\b
+(?i)\bMongoSecurityException\b
+(?i)\bMongoTimeoutException\b
+(?i)\bBSONError\b
+(?i)\bBSONTypeError\b
+(?i)\bBsonSerializationException\b
+(?i)\bCastError\b
+(?i)\bMongooseError\b
+(?i)\bValidationError\b.*\bmongoose\b
+(?i)\bE11000 duplicate key error\b
+(?i)\b\$where\b.*\bnot allowed\b
+(?i)\bJavaScript execution failed\b
+(?i)\buncaught exception\b.*\bMongo\b
+(?i)\bnot authorized\b.*\bMongoDB\b
+(?i)\bneed to login\b
+(?i)\bREST is not enabled\b
+
+# ── CouchDB ───────────────────────────────────────────────────────────────────
+(?i)\bCouchDB\b.*\berror\b
+(?i)"error"\s*:\s*"not_found"
+(?i)"error"\s*:\s*"unauthorized"
+(?i)"error"\s*:\s*"forbidden"
+(?i)"error"\s*:\s*"bad_request"
+(?i)"error"\s*:\s*"conflict"
+(?i)"error"\s*:\s*"query_parse_error"
+(?i)"error"\s*:\s*"invalid_design_doc"
+(?i)"reason"\s*:\s*"no_db_file"
+(?i)"reason"\s*:\s*"missing"
+(?i)"reason"\s*:\s*"invalid UTF-8 JSON"
+(?i)\bCouchError\b
+(?i)\bCouchDBError\b
+
+# ── Couchbase / N1QL ─────────────────────────────────────────────────────────
+(?i)\bN1QL\b.*\berror\b
+(?i)\bCouchbase\b.*\bException\b
+(?i)\bCouchbaseException\b
+
+# ── Elasticsearch ─────────────────────────────────────────────────────────────
+(?i)\bparsing_exception\b
+(?i)\belasticsearch\b.*\bparsing_exception\b
+(?i)\bquery_shard_exception\b
+(?i)\bsearch_phase_execution_exception\b
+(?i)\billegal_argument_exception\b.*\belasticsearch\b
+
+# ── Redis ─────────────────────────────────────────────────────────────────────
+(?i)\bRedisError\b
+(?i)\bReplyError\b
+(?i)\bResponseError\b
+(?i)\bRedisCommandExecutionException\b
+(?i)\bRedisSystemException\b
+(?i)\bRedisServerException\b
+(?i)\bRedisConnectionException\b
+(?i)\bStackExchange\.Redis\.RedisServerException\b
+(?i)\bJedisDataException\b
+(?i)\bJedisConnectionException\b
+(?i)\bLettuceCommandExecutionException\b
+(?i)\bERR syntax error\b
+(?i)\bERR unknown command\b
+(?i)\bERR invalid password\b
+(?i)\bNOAUTH Authentication required\b
+(?i)\bWRONGPASS invalid username-password pair\b
+(?i)\bWRONGTYPE Operation against a key holding the wrong kind of value\b
+(?i)\bBUSY Redis is busy running a script\b
+(?i)\bNOSCRIPT No matching script\b
+(?i)\bOOM command not allowed when used memory\b
+(?i)\bLOADING Redis is loading the dataset\b
+(?i)\bREADONLY You can't write against a read only replica\b
+(?i)\bMISCONF Redis is configured to save RDB snapshots\b
+(?i)\bCROSSSLOT Keys in request don't hash to the same slot\b
+(?i)\bEXECABORT Transaction discarded because of previous errors\b
+(?i)\bNOPERM this user has no permissions\b
+(?i)\bMOVED\s+\d+\s+[A-Za-z0-9_.:-]+:\d+\b
+(?i)\bASK\s+\d+\s+[A-Za-z0-9_.:-]+:\d+\b
+
+# ── Memcached ─────────────────────────────────────────────────────────────────
+(?i)\bMemcachedException\b
+(?i)\bMemcacheException\b
+(?i)\bMemcachedError\b
+(?i)\bMemcacheError\b
+(?i)\blibmemcached\b.*\berror\b
+(?i)\bCLIENT_ERROR\b
+(?i)\bSERVER_ERROR\b
+(?im)^ERROR\r?$
+(?i)\bCLIENT_ERROR bad command line format\b
+(?i)\bCLIENT_ERROR bad data chunk\b
+(?i)\bCLIENT_ERROR invalid numeric delta argument\b
+(?i)\bCLIENT_ERROR cannot increment or decrement non-numeric value\b
+(?i)\bCLIENT_ERROR object too large for cache\b
+(?i)\bSERVER_ERROR out of memory\b
+(?i)\bSERVER_ERROR object too large for cache\b
+(?i)\bSERVER_ERROR temporary failure\b
+(?i)\bSERVER HAS FAILED AND IS DISABLED UNTIL TIMED RETRY\b
+(?i)\bMEMCACHED_SERVER_TEMPORARILY_DISABLED\b
+(?i)\bMEMCACHED_CONNECTION_FAILURE\b
+(?i)\bMEMCACHED_PROTOCOL_ERROR\b
+(?i)\bMEMCACHED_CLIENT_ERROR\b
+(?i)\bMEMCACHED_SERVER_ERROR\b
+
+# ── Neo4j / Cypher ────────────────────────────────────────────────────────────
+(?i)\bNeo4jError\b
+(?i)\bCypherException\b
+(?i)\bCypherSyntaxError\b
+(?i)\bNeo4j\.Driver\.ClientException\b
+(?i)\bClientException\b.*\bCypher\b
+(?i)\borg\.neo4j\.[A-Za-z0-9_.]*Exception\b
+(?i)\bNeo\.ClientError\.Statement\.SyntaxError\b
+(?i)\bNeo\.ClientError\.Statement\.SemanticError\b
+(?i)\bNeo\.ClientError\.Statement\.ParameterMissing\b
+(?i)\bNeo\.ClientError\.Statement\.TypeError\b
+(?i)\bNeo\.ClientError\.Statement\.ArgumentError\b
+(?i)\bNeo\.ClientError\.Statement\.InvalidArguments\b
+(?i)\bNeo\.ClientError\.Statement\.RuntimeUnsupportedError\b
+(?i)\bNeo\.ClientError\.Statement\.PropertyNotFound\b
+(?i)\bNeo\.ClientError\.Statement\.EntityNotFound\b
+(?i)\bNeo\.ClientError\.Statement\.ConstraintVerificationFailed\b
+(?i)\bNeo\.ClientError\.Security\.Unauthorized\b
+(?i)\bNeo\.ClientError\.Security\.Forbidden\b
+(?i)\bNeo\.ClientError\.Procedure\.ProcedureCallFailed\b
+(?i)\bNeo\.DatabaseError\.Statement\.ExecutionFailed\b
+(?i)\bNeo\.DatabaseError\.Statement\.ExternalResourceFailed\b
+(?i)\bInvalid input\b.*\bexpected\b
+(?i)\bInvalid input\b.*\bCypher\b
+(?i)\bExpected exactly one statement per query\b
+(?i)\bVariable\s+`?[^`\s]+`?\s+not defined\b
+(?i)\bUnknown function\b
+(?i)\bUnknown procedure\b
+(?i)\bUnknown label\b
+(?i)\bThere is no procedure with the name\b

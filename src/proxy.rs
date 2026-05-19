@@ -176,7 +176,7 @@ impl ProxyClient {
 
         if !skip_inspection {
             match state.waf.inspect_early(&context).await {
-                Decision::Allow => {}
+                Decision::Allow | Decision::Monitor(_) => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, None);
                     if let Some(response) = self.log_and_enforce(state, event).await {
@@ -231,7 +231,7 @@ impl ProxyClient {
                 .waf
                 .inspect_complete_payload_with_context(&full_request, Some(&context.method))
             {
-                Decision::Allow => {}
+                Decision::Allow | Decision::Monitor(_) => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, Some(&body_bytes));
                     if let Some(response) = self.log_and_enforce(state, event).await {
@@ -301,6 +301,7 @@ impl ProxyClient {
         ))
     }
 
+    #[allow(clippy::too_many_lines)]
     async fn forward_request(
         &self,
         state: &AppState,
@@ -387,23 +388,60 @@ impl ProxyClient {
             headers: resp_headers,
             body: bytes.clone(),
         };
-        if let Decision::Block(finding) = state.waf.inspect_response(&resp_ctx) {
-            let event = crate::logging::SecurityEvent::from_finding(
-                &finding,
-                &InspectionContext {
-                    client_ip: String::new(),
-                    method: method_str.clone(),
-                    uri: uri.to_string(),
-                    path: uri.path().to_string(),
-                    headers: String::new(),
-                    body_limit: 0,
-                    request_id: request_id.to_string(),
-                },
-                finding.request_payload.clone(),
-            );
-            if let Some(response) = self.log_and_enforce(state, event).await {
-                return Ok(response);
+        let resp_decision = state.waf.inspect_response(&resp_ctx);
+        match resp_decision {
+            Decision::Block(finding) => {
+                let event = crate::logging::SecurityEvent::from_finding(
+                    &finding,
+                    &InspectionContext {
+                        client_ip: String::new(),
+                        method: method_str.clone(),
+                        uri: uri.to_string(),
+                        path: uri.path().to_string(),
+                        headers: String::new(),
+                        body_limit: 0,
+                        request_id: request_id.to_string(),
+                    },
+                    finding.request_payload.clone(),
+                );
+                if let Some(response) = self.log_and_enforce(state, event).await {
+                    return Ok(response);
+                }
             }
+            Decision::Monitor(finding) => {
+                // Log to all security outputs but forward the upstream response.
+                let event = crate::logging::SecurityEvent::from_finding(
+                    &finding,
+                    &InspectionContext {
+                        client_ip: String::new(),
+                        method: method_str.clone(),
+                        uri: uri.to_string(),
+                        path: uri.path().to_string(),
+                        headers: String::new(),
+                        body_limit: 0,
+                        request_id: request_id.to_string(),
+                    },
+                    finding.request_payload.clone(),
+                );
+                info!(
+                    target: "krakenwaf",
+                    request_id=%event.request_id,
+                    rule_id=%event.rule_id,
+                    title=%event.title,
+                    severity=%event.severity,
+                    cwe=%event.cwe,
+                    engine=%event.engine,
+                    method=%event.method,
+                    uri=%event.uri,
+                    rule=%event.rule_match,
+                    mode="monitor",
+                    "response finding — log only (untrust_level < 60)"
+                );
+                write_critical(&state.logging, &event);
+                state.store.enqueue(event);
+                // Do NOT block — fall through and return the upstream response.
+            }
+            Decision::Allow => {}
         }
 
         let mut built = response_builder
@@ -444,7 +482,7 @@ async fn consume_and_inspect_body(
                 .waf
                 .inspect_complete_payload_with_context(&request_window, Some(&ctx.method))
             {
-                Decision::Allow => {
+                Decision::Allow | Decision::Monitor(_) => {
                     acc.extend_from_slice(chunk);
                     overlap = inspection_buf
                         [inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..]
