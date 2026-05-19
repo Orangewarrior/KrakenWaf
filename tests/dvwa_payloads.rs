@@ -74,7 +74,7 @@ fn vectorscan_engine_blocks_form_urlencoded_plus_payloads() {
 fn vectorscan_engine_blocks_long_post_payload_beyond_old_overlap_window() {
     let engine = build_engine(true);
     let long_prefix = "a".repeat(5000);
-    let body = format!("txtName=test&mtxMessage={}union+select", long_prefix);
+    let body = format!("txtName=test&mtxMessage={long_prefix}union+select");
     assert!(matches!(engine.inspect_complete_payload(body.as_bytes()), Decision::Block(_)));
 }
 

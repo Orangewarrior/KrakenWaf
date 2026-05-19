@@ -369,7 +369,7 @@ fn build_vectorscan_pattern(rule: &DetectionRule, idx: usize) -> Result<Pattern>
     Ok(Pattern::new(
         literal.as_bytes().to_vec(),
         Flag::CASELESS | Flag::SINGLEMATCH,
-        Some(idx as u32),
+        Some(u32::try_from(idx).expect("pattern index fits in u32")),
     ))
 }
 
