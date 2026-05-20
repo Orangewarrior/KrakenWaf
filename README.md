@@ -58,6 +58,7 @@ full module catalogue.
 - [Java deserialize detect](docs/cmc/java_deserialize_detect.md) — three-signal scoring (magic bytes + header + encoded prefix) for Java deserialization gadget chains; inspects both requests and responses (CWE-502, Critical)
 - [Detect DB errors](docs/cmc/detect_db_errors.md) — intercepts upstream responses leaking verbose DBMS error messages, cutting off the error-based SQLi/NoSQLi feedback loop; 200+ patterns covering SQL and NoSQL engines sourced from SQLmap/NoSQLmap research (CWE-209, High)
 - [Silent SQL errors](docs/cmc/silent_sql_errors.md) — scrubs (or blocks) upstream responses leaking OWASP-CRS DBMS error fingerprints; below `Untrust=80` the matched literal is replaced with a single space and the response is forwarded with an updated `Content-Length`, above `Untrust=80` the response is blocked. memchr fast path + Vectorscan acceleration (CWE-209, Low→High)
+- [Detect bad artifacts](docs/cmc/detect_bad_artifacts.md) — blocks (or silently logs) requests whose URI path contains a sensitive file artifact: dotfiles (`.env`, `.git/`, `.ssh/`), credential files, framework config leaks (`wp-config.`, `composer.json`), `/proc` and `/sys` kernel entries, and 400+ other patterns sourced from the OWASP CRS `restricted-files.data` research; memchr fast path + Vectorscan acceleration (CWE-538, High)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
