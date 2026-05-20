@@ -305,6 +305,22 @@ const JAVA_DESER_PAYLOADS: &[&str] = &[
 /// The WAF must block the RESPONSE (not the request) and return 403.
 const PASSWD_LEAK_PATHS: &[&str] = &["/leak/passwd", "/leak/shadow"];
 
+/// URI paths that contain known sensitive artifact patterns — dotfiles, config
+/// files, /proc entries, credentials, etc.  All of these should be blocked as
+/// GET requests when `Detect_bad_artifacts` is enabled at `untrust >= 60`.
+const BAD_ARTIFACT_PATHS: &[&str] = &[
+    "/.env",
+    "/.git/config",
+    "/wp-config.php",
+    "/proc/cpuinfo",
+    "/.aws/credentials",
+    "/config.json",
+    "/.ssh/id_rsa",
+    "/debug.log",
+    "/composer.json",
+    "/.htpasswd",
+];
+
 /// Paths whose response bodies carry OWASP-CRS static DBMS error fingerprints
 /// that `Silent_sql_errors` must scrub or block. With the default config
 /// (`Untrust = 60`, both `Detect_db_errors` and `Silent_sql_errors` enabled)
@@ -1167,6 +1183,13 @@ async fn main() {
             JAVA_DESER_PAYLOADS.len()
         ),
         sweep_java_deser(&client, &cfg.target, JAVA_DESER_PAYLOADS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!(
+            "Bad artifact CMC — GET (artifact URIs) ({} paths)",
+            BAD_ARTIFACT_PATHS.len()
+        ),
+        sweep_backup_uris(&client, &cfg.target, BAD_ARTIFACT_PATHS, cfg.concurrency)
     );
 
     let grand_total = total_blocked + total_bypassed + total_errors;

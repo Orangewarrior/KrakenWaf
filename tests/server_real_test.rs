@@ -165,6 +165,52 @@ async fn leak_static_oracle_exception() -> &'static str {
     "<html><body>OracleException ORA-00942: table or view does not exist</body></html>"
 }
 
+// ─── Detect_bad_artifacts backend endpoints ───────────────────────────────────
+//
+// These endpoints serve content at sensitive URI paths. The WAF must block the
+// REQUEST at the URI phase before any of these handlers are invoked.
+// When the WAF is disabled or untrust < 60 they respond 200 normally.
+
+async fn artifact_env() -> &'static str {
+    "DB_PASSWORD=secret123\nAPI_KEY=abc"
+}
+
+async fn artifact_git_config() -> &'static str {
+    "[core]\n  repositoryformatversion = 0"
+}
+
+async fn artifact_wp_config() -> &'static str {
+    "<?php define('DB_PASSWORD','secret');"
+}
+
+async fn artifact_proc_cpuinfo() -> &'static str {
+    "processor : 0\nmodel name : Intel(R) Core(TM) i7"
+}
+
+async fn artifact_aws_credentials() -> &'static str {
+    "[default]\naws_access_key_id = AKIAIOSFODNN7"
+}
+
+async fn artifact_config_json() -> &'static str {
+    r#"{"db_password":"secret","api_key":"abc"}"#
+}
+
+async fn artifact_ssh_id_rsa() -> &'static str {
+    "-----BEGIN RSA PRIVATE KEY-----"
+}
+
+async fn artifact_debug_log() -> &'static str {
+    "[ERROR] Connection failed"
+}
+
+async fn artifact_composer_json() -> &'static str {
+    r#"{"name":"app/app","require":{}}"#
+}
+
+async fn artifact_htpasswd() -> &'static str {
+    "admin:$apr1$xyz$hash"
+}
+
 fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
         let addr: SocketAddr = backend_addr().parse().expect("test");
@@ -208,7 +254,18 @@ fn ensure_backend() {
                             "/leak/static/oracle-exception",
                             get(leak_static_oracle_exception),
                         )
-                        .route("/java-deser", post(java_deser_endpoint));
+                        .route("/java-deser", post(java_deser_endpoint))
+                        // Detect_bad_artifacts demo routes.
+                        .route("/.env", get(artifact_env))
+                        .route("/.git/config", get(artifact_git_config))
+                        .route("/wp-config.php", get(artifact_wp_config))
+                        .route("/proc/cpuinfo", get(artifact_proc_cpuinfo))
+                        .route("/.aws/credentials", get(artifact_aws_credentials))
+                        .route("/config.json", get(artifact_config_json))
+                        .route("/.ssh/id_rsa", get(artifact_ssh_id_rsa))
+                        .route("/debug.log", get(artifact_debug_log))
+                        .route("/composer.json", get(artifact_composer_json))
+                        .route("/.htpasswd", get(artifact_htpasswd));
                     let listener = tokio::net::TcpListener::bind(addr).await.expect("test");
                     axum::serve(listener, app).await.expect("test");
                 });
@@ -1906,4 +1963,217 @@ async fn silent_allows_clean_response() {
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.text().await.expect("body");
     assert!(!body.is_empty(), "clean response should pass through unchanged");
+}
+
+// ─── Detect_bad_artifacts CMC tests ──────────────────────────────────────────
+//
+// Two modes are covered:
+//   * `Untrust >= 60` → block: all requests to artifact URIs return 403.
+//   * `Untrust < 60`  → silent log: requests pass through (200).
+//   * Clean URIs at any untrust level must not be blocked.
+
+/// Write a custom CMC config that enables ONLY `Detect_bad_artifacts`.
+fn write_artifact_only_config(tmpdir: &tempfile::TempDir, untrust: u8) -> std::path::PathBuf {
+    let path = tmpdir.path().join("artifact_only.yaml");
+    let content = format!(
+        "global-options:\n  Untrust: {untrust}\n\nCMC-Rules:\n  Detect_bad_artifacts: true\n"
+    );
+    std::fs::write(&path, content).expect("write artifact_only config");
+    path
+}
+
+/// Spawn a WAF instance with only `Detect_bad_artifacts` enabled.
+fn spawn_waf_artifact_only(port: u16, untrust: u8) -> WafGuard {
+    let project_root = env!("CARGO_MANIFEST_DIR");
+    let rules_dir = format!("{project_root}/rules");
+    let listen = format!("127.0.0.1:{port}");
+    let upstream = format!("http://{}", backend_addr());
+    let tmpdir = tempfile::tempdir().expect("failed to create temp dir for WAF");
+    let cmc_config = write_artifact_only_config(&tmpdir, untrust);
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
+        .args([
+            "--no-tls",
+            "--allow-private-upstream",
+            "--listen",
+            &listen,
+            "--upstream",
+            &upstream,
+            "--rules-dir",
+            &rules_dir,
+            "--cmc-load",
+            cmc_config.to_str().expect("utf8 path"),
+        ])
+        .current_dir(tmpdir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn krakenwaf binary");
+    WafGuard {
+        child,
+        _tmpdir: tmpdir,
+    }
+}
+
+/// Helper: assert a GET to an artifact URI is blocked (403) at untrust=60.
+async fn assert_artifact_blocked(client: &reqwest::Client, waf_port: u16, path: &str) {
+    let resp = client
+        .get(format!("{}{}", waf_base(waf_port), path))
+        .send()
+        .await
+        .unwrap_or_else(|e| panic!("request failed for artifact path {path}: {e}"));
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "artifact path {path} must be blocked by Detect_bad_artifacts at untrust=60"
+    );
+}
+
+// ── Block mode (Untrust = 60): all 10 artifact paths must return 403. ─────────
+
+#[tokio::test]
+async fn cmc_bad_artifacts_env_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/.env").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_git_config_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/.git/config").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_wp_config_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/wp-config.php").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_proc_cpuinfo_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/proc/cpuinfo").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_aws_credentials_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/.aws/credentials").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_config_json_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/config.json").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_ssh_id_rsa_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/.ssh/id_rsa").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_debug_log_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/debug.log").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_composer_json_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/composer.json").await;
+}
+
+#[tokio::test]
+async fn cmc_bad_artifacts_htpasswd_blocked() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    assert_artifact_blocked(&client, port, "/.htpasswd").await;
+}
+
+// ── Silent mode (Untrust = 30): artifact paths must pass through (200). ───────
+
+#[tokio::test]
+async fn cmc_bad_artifacts_low_untrust_allows_request() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 30);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    // At untrust < 60 the module logs but does not block.
+    // Use /composer.json — it's in file_pitfalls.txt but not in any built-in
+    // regex rule, so only Detect_bad_artifacts would fire on it.
+    let resp = client
+        .get(format!("{}/composer.json", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "at untrust=30 /composer.json must NOT be blocked (Detect_bad_artifacts logs only at untrust < 60)"
+    );
+}
+
+// ── Clean URI at untrust=60 must pass through. ────────────────────────────────
+
+#[tokio::test]
+async fn cmc_bad_artifacts_clean_uri_allowed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_artifact_only(port, 60);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/api/users", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+    // Backend returns 404 for unknown routes but NOT 403 from WAF.
+    assert_ne!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "clean URI /api/users must not be blocked by Detect_bad_artifacts"
+    );
 }

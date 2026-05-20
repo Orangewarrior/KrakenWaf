@@ -6,6 +6,7 @@ use tracing::warn;
 mod anti_exposed_backup;
 mod anti_passwd_leak;
 mod crlf_injection_detect;
+pub mod detect_bad_artifacts;
 pub mod detect_db_errors;
 mod esi_injection_detect;
 mod java_deserialize_detect;
@@ -75,9 +76,14 @@ pub struct CmcConfig {
     /// the matched substring is replaced with a single space and the response
     /// is forwarded.
     pub silent_sql_errors: bool,
+    /// Block requests targeting sensitive file artifacts (dotfiles, config files,
+    /// /proc entries, credentials). Based on OWASP CRS `restricted-files.data`.
+    /// Action depends on `untrust_level`: ≥ 60 blocks, otherwise logs only.
+    pub detect_bad_artifacts: bool,
     /// Global paranoia level (0–100). Controls the 2-signal block threshold
     /// and the 1-signal informative-log threshold in `java_deserialize_detect`.
     /// At ≥ 60, `detect_db_errors` blocks matching responses; below 60 it logs only.
+    /// At ≥ 60, `detect_bad_artifacts` blocks matching requests; below 60 it logs only.
     /// At ≥ 80, `silent_sql_errors` blocks; below 80 it scrubs + low-severity log.
     /// Default: 60.
     pub untrust_level: u8,
@@ -100,6 +106,7 @@ impl Default for CmcConfig {
             java_deserialize_detect: false,
             detect_db_errors: false,
             silent_sql_errors: false,
+            detect_bad_artifacts: false,
             untrust_level: 60,
         }
     }
@@ -277,6 +284,32 @@ impl CmcManagerBuilder {
             } else {
                 None
             },
+            detect_bad_artifacts: if self.config.detect_bad_artifacts {
+                if let Some(ref dir) = self.rules_dir {
+                    let path = dir.join("artifacts/file_pitfalls.txt");
+                    match detect_bad_artifacts::BadArtifactsDetector::from_file(&path, self.vectorscan_enabled) {
+                        Ok(d) => {
+                            tracing::info!(
+                                target: "krakenwaf",
+                                patterns = d.pattern_count(),
+                                path = %path.display(),
+                                "detect_bad_artifacts: loaded artifact patterns"
+                            );
+                            Some(d)
+                        }
+                        Err(e) => {
+                            warn!(target: "krakenwaf", error = %e, path = %path.display(),
+                                "detect_bad_artifacts: failed to load patterns — module disabled");
+                            None
+                        }
+                    }
+                } else {
+                    warn!(target: "krakenwaf", "detect_bad_artifacts: enabled in config but no rules_dir supplied — module disabled");
+                    None
+                }
+            } else {
+                None
+            },
             untrust_level: self.config.untrust_level,
         }
     }
@@ -298,6 +331,7 @@ pub struct CmcManager {
     java_deserialize: Option<java_deserialize_detect::JavaDeserializeCmc>,
     detect_db_errors: Option<detect_db_errors::DbErrorDetector>,
     silent_sql_errors: Option<silent_sql_errors::SilentSqlErrorsDetector>,
+    detect_bad_artifacts: Option<detect_bad_artifacts::BadArtifactsDetector>,
     untrust_level: u8,
 }
 
@@ -318,6 +352,7 @@ impl Default for CmcManager {
             java_deserialize: None,
             detect_db_errors: None,
             silent_sql_errors: None,
+            detect_bad_artifacts: None,
             untrust_level: 60,
         }
     }
@@ -526,6 +561,35 @@ impl CmcManager {
                     "cmc/anti_exposed_backup.rs:generated",
                     &format!("{method} {path}"),
                 ));
+            }
+        }
+
+        if let Some(detector) = &self.detect_bad_artifacts {
+            if let Some(matched) = detector.scan(path.as_bytes()) {
+                if self.untrust_level >= 60 {
+                    return Some(finding(
+                        "CMC sensitive artifact access detection",
+                        Severity::High,
+                        "CWE-538",
+                        &format!(
+                            "Blocked {method} request targeting a sensitive file artifact. \
+                             URI path contains '{pat}', a known credential, configuration, \
+                             or system file pattern that should never be publicly accessible.",
+                            pat = matched.matched_pattern(),
+                        ),
+                        "https://github.com/coreruleset/coreruleset/blob/main/rules/restricted-files.data",
+                        format!("cmc::detect_bad_artifacts:pattern={}", matched.matched_pattern()),
+                        "cmc/detect_bad_artifacts.rs:generated",
+                        &format!("{method} {path}"),
+                    ));
+                }
+                // untrust < 60: log silently, don't block
+                warn!(
+                    target: "krakenwaf",
+                    pattern = %matched.matched_pattern(),
+                    path = path,
+                    "detect_bad_artifacts: untrust_level < 60 — artifact match, not blocking"
+                );
             }
         }
 
@@ -839,6 +903,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
         java_deserialize_detect: enabled("Java_deserialize_detect"),
         detect_db_errors: enabled("Detect_db_errors"),
         silent_sql_errors: enabled("Silent_sql_errors"),
+        detect_bad_artifacts: enabled("Detect_bad_artifacts"),
         untrust_level: 60, // overwritten by caller when global-options is parsed
     }
 }
@@ -1030,5 +1095,17 @@ CMC-Rules:
         )
         .expect("parse minimal config");
         assert!(!cfg.detect_db_errors);
+    }
+
+    #[test]
+    fn parses_detect_bad_artifacts_config_key() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  Detect_bad_artifacts: true\n").expect("parse");
+        assert!(cfg.detect_bad_artifacts);
+    }
+
+    #[test]
+    fn detect_bad_artifacts_disabled_by_default() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  SQLi_comments_detect: true\n").expect("parse");
+        assert!(!cfg.detect_bad_artifacts);
     }
 }
