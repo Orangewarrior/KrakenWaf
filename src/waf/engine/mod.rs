@@ -62,6 +62,14 @@ pub enum Decision {
     /// Used when `untrust_level < 60` and the threat is not confirmed enough
     /// to justify blocking the upstream response.
     Monitor(Box<Finding>),
+    /// Forward a **modified** response body where a matched substring has been
+    /// scrubbed. Used by `silent_sql_errors` when `untrust_level < 80`: the
+    /// finding is logged with low severity, the body is rewritten in place,
+    /// and the proxy must update Content-Length before forwarding.
+    SilentReplace {
+        finding: Box<Finding>,
+        body: bytes::Bytes,
+    },
 }
 
 /// Immutable snapshot of rules + their pre-compiled matchers. Held behind a
@@ -490,6 +498,12 @@ impl WafEngine {
             }
             Some(crate::cmc::CmcResponseDecision::Monitor(f)) => {
                 return Decision::Monitor(Box::new(f));
+            }
+            Some(crate::cmc::CmcResponseDecision::SilentReplace { finding, body }) => {
+                return Decision::SilentReplace {
+                    finding: Box::new(finding),
+                    body,
+                };
             }
             None => {}
         }

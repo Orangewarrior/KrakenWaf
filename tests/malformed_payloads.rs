@@ -201,7 +201,7 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
 
     assert!(matches!(
         engine.inspect_body_chunk(b"payload_test=kwaf-score-low-a"),
-        Decision::Allow | Decision::Monitor(_)
+        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. }
     ));
     assert!(matches!(
         engine

@@ -120,6 +120,44 @@ async fn leak_db_error_mongo() -> &'static str {
     r#"{"error":"MongoServerError","code":2,"message":"E11000 duplicate key error collection"}"#
 }
 
+// ─── Silent_sql_errors static fingerprint leak routes ─────────────────────────
+//
+// Each route emits a verbose DBMS error string drawn from the OWASP CRS
+// `sql-errors.data` list. Used by the `silent_sql_errors` integration tests to
+// verify the scrubber/blocker pipeline; the wrapping HTML preserves a realistic
+// "rendered error page" layout so the Content-Length update after a scrub can
+// be observed end-to-end.
+async fn leak_static_mysql_client() -> &'static str {
+    "<html><body><p>MySqlClient. could not connect</p></body></html>"
+}
+async fn leak_static_sql_client_exception() -> &'static str {
+    "<html><body>System.Data.SqlClient.SqlException raised at line 42</body></html>"
+}
+async fn leak_static_ole_db_sql_server() -> &'static str {
+    "<html><body>Microsoft OLE DB Provider for SQL Server returned 0x80040E14</body></html>"
+}
+async fn leak_static_db2_cli_driver() -> &'static str {
+    "<html><body>[IBM][CLI Driver][DB2/6000] SQL0204N undefined name</body></html>"
+}
+async fn leak_static_psql_exception() -> &'static str {
+    "<html><body>org.postgresql.util.PSQLException: ERROR relation does not exist</body></html>"
+}
+async fn leak_static_sybase_msg() -> &'static str {
+    "<html><body>Sybase message: malformed identifier in line 1</body></html>"
+}
+async fn leak_static_npgsql() -> &'static str {
+    "<html><body>Npgsql.PostgresException: connection terminated</body></html>"
+}
+async fn leak_static_sqlite_exception() -> &'static str {
+    "<html><body>SQLiteException at offset 17 unrecognized token</body></html>"
+}
+async fn leak_static_zend_mysqli() -> &'static str {
+    "<html><body>Zend_Db_Adapter_Mysqli_Exception: Access denied for user</body></html>"
+}
+async fn leak_static_oracle_exception() -> &'static str {
+    "<html><body>OracleException ORA-00942: table or view does not exist</body></html>"
+}
+
 /// Catch-all GET handler used by the backup-file sweep in the attack tool.
 /// Returns 200 so that the attack tool can distinguish a WAF bypass (200) from
 /// a WAF block (403).  In a real deployment these paths would never exist on a
@@ -153,6 +191,18 @@ async fn main() {
         .route("/leak/db-error/oracle", get(leak_db_error_oracle))
         .route("/leak/db-error/mssql", get(leak_db_error_mssql))
         .route("/leak/db-error/mongo", get(leak_db_error_mongo))
+        // Static DBMS error fingerprint leak routes — used by
+        // Silent_sql_errors integration tests + attack sweep.
+        .route("/leak/static/mysql-client", get(leak_static_mysql_client))
+        .route("/leak/static/sql-client-exception", get(leak_static_sql_client_exception))
+        .route("/leak/static/ole-db-sql-server", get(leak_static_ole_db_sql_server))
+        .route("/leak/static/db2-cli-driver", get(leak_static_db2_cli_driver))
+        .route("/leak/static/psql-exception", get(leak_static_psql_exception))
+        .route("/leak/static/sybase-msg", get(leak_static_sybase_msg))
+        .route("/leak/static/npgsql", get(leak_static_npgsql))
+        .route("/leak/static/sqlite-exception", get(leak_static_sqlite_exception))
+        .route("/leak/static/zend-mysqli", get(leak_static_zend_mysqli))
+        .route("/leak/static/oracle-exception", get(leak_static_oracle_exception))
         // Java deserialization target — accepts POST with any body so the
         // attack tool can test Java deserialization payloads against the WAF.
         .route("/java-deser", post(java_deser_endpoint))

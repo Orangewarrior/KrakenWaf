@@ -176,7 +176,9 @@ impl ProxyClient {
 
         if !skip_inspection {
             match state.waf.inspect_early(&context).await {
-                Decision::Allow | Decision::Monitor(_) => {}
+                Decision::Allow
+                | Decision::Monitor(_)
+                | Decision::SilentReplace { .. } => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, None);
                     if let Some(response) = self.log_and_enforce(state, event).await {
@@ -231,7 +233,9 @@ impl ProxyClient {
                 .waf
                 .inspect_complete_payload_with_context(&full_request, Some(&context.method))
             {
-                Decision::Allow | Decision::Monitor(_) => {}
+                Decision::Allow
+                | Decision::Monitor(_)
+                | Decision::SilentReplace { .. } => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, Some(&body_bytes));
                     if let Some(response) = self.log_and_enforce(state, event).await {
@@ -375,7 +379,7 @@ impl ProxyClient {
                 );
             }
         }
-        let bytes = body_buf.freeze();
+        let mut bytes = body_buf.freeze();
 
         // Inspect the upstream response (rules with http_action: Response).
         let resp_headers = flatten_headers(
@@ -441,6 +445,52 @@ impl ProxyClient {
                 state.store.enqueue(event);
                 // Do NOT block — fall through and return the upstream response.
             }
+            Decision::SilentReplace {
+                finding,
+                body: modified,
+            } => {
+                // Log finding (low severity by construction) to ALL outputs.
+                let event = crate::logging::SecurityEvent::from_finding(
+                    &finding,
+                    &InspectionContext {
+                        client_ip: String::new(),
+                        method: method_str.clone(),
+                        uri: uri.to_string(),
+                        path: uri.path().to_string(),
+                        headers: String::new(),
+                        body_limit: 0,
+                        request_id: request_id.to_string(),
+                    },
+                    finding.request_payload.clone(),
+                );
+                info!(
+                    target: "krakenwaf",
+                    request_id=%event.request_id,
+                    rule_id=%event.rule_id,
+                    title=%event.title,
+                    severity=%event.severity,
+                    cwe=%event.cwe,
+                    engine=%event.engine,
+                    method=%event.method,
+                    uri=%event.uri,
+                    rule=%event.rule_match,
+                    mode="silent-replace",
+                    original_len=bytes.len(),
+                    scrubbed_len=modified.len(),
+                    "response DBMS error fingerprint scrubbed (untrust_level < 80)"
+                );
+                write_critical(&state.logging, &event);
+                state.store.enqueue(event);
+                // Replace the body the client will receive with the scrubbed copy.
+                bytes = modified;
+                // Update Content-Length so the client does not see a truncated
+                // payload (or wait for bytes that will never arrive).
+                if let Some(headers) = response_builder.headers_mut() {
+                    if let Ok(val) = http::HeaderValue::from_str(&bytes.len().to_string()) {
+                        headers.insert(http::header::CONTENT_LENGTH, val);
+                    }
+                }
+            }
             Decision::Allow => {}
         }
 
@@ -482,7 +532,9 @@ async fn consume_and_inspect_body(
                 .waf
                 .inspect_complete_payload_with_context(&request_window, Some(&ctx.method))
             {
-                Decision::Allow | Decision::Monitor(_) => {
+                Decision::Allow
+                | Decision::Monitor(_)
+                | Decision::SilentReplace { .. } => {
                     acc.extend_from_slice(chunk);
                     overlap = inspection_buf
                         [inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..]

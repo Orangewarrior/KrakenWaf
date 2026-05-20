@@ -12,6 +12,7 @@ mod java_deserialize_detect;
 mod nosql_injection_detect;
 mod overflow_detect;
 mod request_smuggling_detect;
+pub mod silent_sql_errors;
 mod sqli_comments_detect;
 mod ssi_injection_detect;
 mod ssti_detect;
@@ -22,12 +23,21 @@ use crate::waf::Finding;
 use chrono::Utc;
 
 /// Decision emitted by CMC response-body inspection.
-/// `Block` causes the WAF to return a 403 and log the event.
-/// `Monitor` logs the event to all outputs but forwards the upstream response.
+///
+/// * `Block` — WAF returns a 403 and logs the event to all outputs.
+/// * `Monitor` — log the event to all outputs but forward the upstream
+///   response unchanged.
+/// * `SilentReplace` — forward a **modified** response body where the matched
+///   substring has been scrubbed; the finding is logged with low severity.
+///   Used by `silent_sql_errors` when `untrust_level < 80`.
 #[derive(Debug, Clone)]
 pub enum CmcResponseDecision {
     Block(Finding),
     Monitor(Finding),
+    SilentReplace {
+        finding: Finding,
+        body: bytes::Bytes,
+    },
 }
 
 pub use anti_exposed_backup::AntiExposedBackupCmcBuilder;
@@ -60,9 +70,15 @@ pub struct CmcConfig {
     pub java_deserialize_detect: bool,
     /// Scan upstream response bodies for DB error fingerprints.
     pub detect_db_errors: bool,
+    /// Scrub or block upstream responses leaking OWASP CRS DBMS error
+    /// fingerprints. Action depends on `untrust_level`: ≥ 80 blocks, otherwise
+    /// the matched substring is replaced with a single space and the response
+    /// is forwarded.
+    pub silent_sql_errors: bool,
     /// Global paranoia level (0–100). Controls the 2-signal block threshold
     /// and the 1-signal informative-log threshold in `java_deserialize_detect`.
     /// At ≥ 60, `detect_db_errors` blocks matching responses; below 60 it logs only.
+    /// At ≥ 80, `silent_sql_errors` blocks; below 80 it scrubs + low-severity log.
     /// Default: 60.
     pub untrust_level: u8,
 }
@@ -83,6 +99,7 @@ impl Default for CmcConfig {
             anti_passwd_leak_detect: false,
             java_deserialize_detect: false,
             detect_db_errors: false,
+            silent_sql_errors: false,
             untrust_level: 60,
         }
     }
@@ -131,6 +148,7 @@ impl CmcManagerBuilder {
     }
 
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn build(self) -> CmcManager {
         CmcManager {
             sqli_comments: self
@@ -223,6 +241,42 @@ impl CmcManagerBuilder {
             } else {
                 None
             },
+            silent_sql_errors: if self.config.silent_sql_errors {
+                if let Some(ref dir) = self.rules_dir {
+                    let path = dir.join("error_msgs/sql_errors_static.txt");
+                    match silent_sql_errors::SilentSqlErrorsDetector::from_file(
+                        &path,
+                        self.vectorscan_enabled,
+                    ) {
+                        Ok(d) => {
+                            tracing::info!(
+                                target: "krakenwaf",
+                                patterns = d.pattern_count(),
+                                path = %path.display(),
+                                "silent_sql_errors: loaded static DBMS error fingerprints"
+                            );
+                            Some(d)
+                        }
+                        Err(e) => {
+                            warn!(
+                                target: "krakenwaf",
+                                error = %e,
+                                path = %path.display(),
+                                "silent_sql_errors: failed to load patterns — module disabled"
+                            );
+                            None
+                        }
+                    }
+                } else {
+                    warn!(
+                        target: "krakenwaf",
+                        "silent_sql_errors: enabled in config but no rules_dir supplied — module disabled"
+                    );
+                    None
+                }
+            } else {
+                None
+            },
             untrust_level: self.config.untrust_level,
         }
     }
@@ -243,6 +297,7 @@ pub struct CmcManager {
     anti_passwd_leak: Option<anti_passwd_leak::AntiPasswdLeakCmc>,
     java_deserialize: Option<java_deserialize_detect::JavaDeserializeCmc>,
     detect_db_errors: Option<detect_db_errors::DbErrorDetector>,
+    silent_sql_errors: Option<silent_sql_errors::SilentSqlErrorsDetector>,
     untrust_level: u8,
 }
 
@@ -262,6 +317,7 @@ impl Default for CmcManager {
             anti_passwd_leak: None,
             java_deserialize: None,
             detect_db_errors: None,
+            silent_sql_errors: None,
             untrust_level: 60,
         }
     }
@@ -543,6 +599,39 @@ impl CmcManager {
             }
         }
 
+        if let Some(detector) = &self.silent_sql_errors {
+            if let Some(m) = detector.scan(body.as_bytes()) {
+                let severity = if self.untrust_level >= 80 {
+                    Severity::High
+                } else {
+                    Severity::Low
+                };
+                let f = finding(
+                    "CMC silent SQL error scrubber",
+                    severity,
+                    "CWE-209",
+                    &format!(
+                        "Upstream response body leaks a static DBMS error fingerprint that an \
+                         error-based SQL injection probe could use to enumerate the backend. \
+                         Matched literal: '{pat}'.",
+                        pat = m.matched_pattern,
+                    ),
+                    "https://github.com/coreruleset/coreruleset/blob/main/rules/sql-errors.data",
+                    format!("cmc::silent_sql_errors:literal={}", m.matched_pattern),
+                    "cmc/silent_sql_errors.rs:generated",
+                    &body.chars().take(256).collect::<String>(),
+                );
+                if self.untrust_level >= 80 {
+                    return Some(CmcResponseDecision::Block(f));
+                }
+                let scrubbed = silent_sql_errors::scrub(body.as_bytes(), &m);
+                return Some(CmcResponseDecision::SilentReplace {
+                    finding: f,
+                    body: bytes::Bytes::from(scrubbed),
+                });
+            }
+        }
+
         None
     }
 
@@ -749,6 +838,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
         anti_passwd_leak_detect: enabled("Anti_passwd_leak"),
         java_deserialize_detect: enabled("Java_deserialize_detect"),
         detect_db_errors: enabled("Detect_db_errors"),
+        silent_sql_errors: enabled("Silent_sql_errors"),
         untrust_level: 60, // overwritten by caller when global-options is parsed
     }
 }
