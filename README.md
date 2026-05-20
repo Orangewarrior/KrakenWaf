@@ -1,4 +1,4 @@
-# KrakenWaf v2.20.0
+# KrakenWaf v2.21.0
 
 ## 🚀 Overview
 
@@ -57,6 +57,7 @@ full module catalogue.
 - [Anti passwd/shadow leak](docs/cmc/anti_passwd_leak.md) — blocks upstream **responses** leaking `/etc/passwd` or `/etc/shadow` content (CWE-538, Critical)
 - [Java deserialize detect](docs/cmc/java_deserialize_detect.md) — three-signal scoring (magic bytes + header + encoded prefix) for Java deserialization gadget chains; inspects both requests and responses (CWE-502, Critical)
 - [Detect DB errors](docs/cmc/detect_db_errors.md) — intercepts upstream responses leaking verbose DBMS error messages, cutting off the error-based SQLi/NoSQLi feedback loop; 200+ patterns covering SQL and NoSQL engines sourced from SQLmap/NoSQLmap research (CWE-209, High)
+- [Silent SQL errors](docs/cmc/silent_sql_errors.md) — scrubs (or blocks) upstream responses leaking OWASP-CRS DBMS error fingerprints; below `Untrust=80` the matched literal is replaced with a single space and the response is forwarded with an updated `Content-Length`, above `Untrust=80` the response is blocked. memchr fast path + Vectorscan acceleration (CWE-209, Low→High)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -498,6 +499,7 @@ CMC-Rules:
   Anti_passwd_leak: true        # Response-body /etc/passwd and /etc/shadow leak detection
   Java_deserialize_detect: true # Java deserialization gadget chains (req + resp)
   Detect_db_errors: true        # Response-body DBMS error fingerprint detection (200+ patterns, CWE-209)
+  Silent_sql_errors: true       # Response-body DBMS error scrubber (OWASP CRS sql-errors.data, CWE-209)
 ```
 
 Set any key to `false` to disable that detector without recompiling.

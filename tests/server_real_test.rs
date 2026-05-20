@@ -133,6 +133,38 @@ async fn java_deser_endpoint() -> &'static str {
     "ok"
 }
 
+// ─── Silent_sql_errors static-fingerprint leak endpoints ──────────────────────
+async fn leak_static_mysql_client() -> &'static str {
+    "<html><body><p>MySqlClient. could not connect</p></body></html>"
+}
+async fn leak_static_sql_client_exception() -> &'static str {
+    "<html><body>System.Data.SqlClient.SqlException raised at line 42</body></html>"
+}
+async fn leak_static_ole_db_sql_server() -> &'static str {
+    "<html><body>Microsoft OLE DB Provider for SQL Server returned 0x80040E14</body></html>"
+}
+async fn leak_static_db2_cli_driver() -> &'static str {
+    "<html><body>[IBM][CLI Driver][DB2/6000] SQL0204N undefined name</body></html>"
+}
+async fn leak_static_psql_exception() -> &'static str {
+    "<html><body>org.postgresql.util.PSQLException: ERROR relation does not exist</body></html>"
+}
+async fn leak_static_sybase_msg() -> &'static str {
+    "<html><body>Sybase message: malformed identifier in line 1</body></html>"
+}
+async fn leak_static_npgsql() -> &'static str {
+    "<html><body>Npgsql.PostgresException: connection terminated</body></html>"
+}
+async fn leak_static_sqlite_exception() -> &'static str {
+    "<html><body>SQLiteException at offset 17 unrecognized token</body></html>"
+}
+async fn leak_static_zend_mysqli() -> &'static str {
+    "<html><body>Zend_Db_Adapter_Mysqli_Exception: Access denied for user</body></html>"
+}
+async fn leak_static_oracle_exception() -> &'static str {
+    "<html><body>OracleException ORA-00942: table or view does not exist</body></html>"
+}
+
 fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
         let addr: SocketAddr = backend_addr().parse().expect("test");
@@ -154,6 +186,28 @@ fn ensure_backend() {
                         .route("/leak/db-error/oracle", get(leak_db_error_oracle))
                         .route("/leak/db-error/mssql", get(leak_db_error_mssql))
                         .route("/leak/db-error/mongo", get(leak_db_error_mongo))
+                        .route("/leak/static/mysql-client", get(leak_static_mysql_client))
+                        .route(
+                            "/leak/static/sql-client-exception",
+                            get(leak_static_sql_client_exception),
+                        )
+                        .route(
+                            "/leak/static/ole-db-sql-server",
+                            get(leak_static_ole_db_sql_server),
+                        )
+                        .route("/leak/static/db2-cli-driver", get(leak_static_db2_cli_driver))
+                        .route("/leak/static/psql-exception", get(leak_static_psql_exception))
+                        .route("/leak/static/sybase-msg", get(leak_static_sybase_msg))
+                        .route("/leak/static/npgsql", get(leak_static_npgsql))
+                        .route(
+                            "/leak/static/sqlite-exception",
+                            get(leak_static_sqlite_exception),
+                        )
+                        .route("/leak/static/zend-mysqli", get(leak_static_zend_mysqli))
+                        .route(
+                            "/leak/static/oracle-exception",
+                            get(leak_static_oracle_exception),
+                        )
                         .route("/java-deser", post(java_deser_endpoint));
                     let listener = tokio::net::TcpListener::bind(addr).await.expect("test");
                     axum::serve(listener, app).await.expect("test");
@@ -1632,4 +1686,224 @@ async fn cmc_detect_db_errors_disabled_allows_response() {
         StatusCode::OK,
         "without CMC the DB error response must pass through"
     );
+}
+
+// ─── Silent_sql_errors CMC tests ──────────────────────────────────────────────
+//
+// These tests pin behaviour for the OWASP-CRS-based response-body scrubber.
+// Two modes are covered:
+//   * `Untrust < 80` → scrub: the matched DBMS-error literal is replaced with a
+//     single ASCII space; Content-Length is updated; HTTP 200 is forwarded.
+//   * `Untrust >= 80` → block: the response is replaced with a 403 page and
+//     never reaches the client.
+
+/// Write a custom CMC config that enables ONLY `Silent_sql_errors`. Disables
+/// `Detect_db_errors` so it does not pre-empt the silent path.
+fn write_silent_only_config(tmpdir: &std::path::Path, untrust: u8) -> std::path::PathBuf {
+    let path = tmpdir.join("silent_only.yaml");
+    let content = format!(
+        "global-options:\n  Untrust: {untrust}\n\nCMC-Rules:\n  Silent_sql_errors: true\n"
+    );
+    std::fs::write(&path, content).expect("write silent_only config");
+    path
+}
+
+fn spawn_waf_silent_only(waf_port: u16, untrust: u8) -> WafGuard {
+    let project_root = env!("CARGO_MANIFEST_DIR");
+    let rules_dir = format!("{project_root}/rules");
+    let listen = format!("127.0.0.1:{waf_port}");
+    let upstream = format!("http://{}", backend_addr());
+    let tmpdir = tempfile::tempdir().expect("failed to create temp dir for WAF");
+    let cmc_config = write_silent_only_config(tmpdir.path(), untrust);
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
+        .args([
+            "--no-tls",
+            "--allow-private-upstream",
+            "--listen",
+            &listen,
+            "--upstream",
+            &upstream,
+            "--rules-dir",
+            &rules_dir,
+            "--cmc-load",
+            cmc_config.to_str().expect("utf8 path"),
+        ])
+        .current_dir(tmpdir.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("failed to spawn krakenwaf binary");
+    WafGuard {
+        child,
+        _tmpdir: tmpdir,
+    }
+}
+
+async fn assert_scrubbed(waf_port: u16, path: &str, fingerprint: &str) {
+    let client = http_client();
+    wait_for_waf(&client, waf_port).await;
+    let resp = client
+        .get(format!("{}{}", waf_base(waf_port), path))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "silent-scrub must NOT block (untrust < 80) for {path}"
+    );
+    let cl = resp
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .map(|v| v.to_str().expect("ascii").to_string());
+    let body = resp.bytes().await.expect("body").to_vec();
+    assert!(
+        !body.windows(fingerprint.len()).any(|w| w == fingerprint.as_bytes()),
+        "fingerprint '{fingerprint}' must NOT appear in scrubbed body for {path}: {:?}",
+        String::from_utf8_lossy(&body),
+    );
+    if let Some(cl_str) = cl {
+        let cl_num: usize = cl_str.parse().expect("content-length numeric");
+        assert_eq!(
+            cl_num,
+            body.len(),
+            "Content-Length must match scrubbed body length for {path}"
+        );
+    }
+}
+
+// ── Scrub mode (Untrust = 50): all 10 leak routes must respond 200 with the
+//    fingerprint absent and Content-Length updated. ────────────────────────────
+
+#[tokio::test]
+async fn silent_scrubs_mysql_client_fingerprint() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(port, "/leak/static/mysql-client", "MySqlClient.").await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_sql_client_exception() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(
+        port,
+        "/leak/static/sql-client-exception",
+        "System.Data.SqlClient.SqlException",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_ole_db_sql_server() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(
+        port,
+        "/leak/static/ole-db-sql-server",
+        "Microsoft OLE DB Provider for SQL Server",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_db2_cli_driver() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(
+        port,
+        "/leak/static/db2-cli-driver",
+        "[IBM][CLI Driver][DB2/6000]",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_psql_exception() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(
+        port,
+        "/leak/static/psql-exception",
+        "org.postgresql.util.PSQLException",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_sybase_message() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(port, "/leak/static/sybase-msg", "Sybase message:").await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_npgsql() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(port, "/leak/static/npgsql", "Npgsql.").await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_sqlite_exception() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(port, "/leak/static/sqlite-exception", "SQLiteException").await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_zend_mysqli() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(
+        port,
+        "/leak/static/zend-mysqli",
+        "Zend_Db_Adapter_Mysqli_Exception",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn silent_scrubs_oracle_exception() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    assert_scrubbed(port, "/leak/static/oracle-exception", "OracleException").await;
+}
+
+// ── Block mode (Untrust = 80): a single representative route must return 403. ─
+
+#[tokio::test]
+async fn silent_blocks_when_untrust_high() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 80);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    let resp = client
+        .get(format!("{}/leak/static/oracle-exception", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "Silent_sql_errors must BLOCK at untrust >= 80"
+    );
+}
+
+// ── Clean response is not flagged. ────────────────────────────────────────────
+
+#[tokio::test]
+async fn silent_allows_clean_response() {
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_silent_only(port, 50);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+    let resp = client
+        .get(format!("{}/test_one", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+    assert_eq!(resp.status(), StatusCode::OK);
+    let body = resp.text().await.expect("body");
+    assert!(!body.is_empty(), "clean response should pass through unchanged");
 }

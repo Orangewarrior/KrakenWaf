@@ -305,6 +305,24 @@ const JAVA_DESER_PAYLOADS: &[&str] = &[
 /// The WAF must block the RESPONSE (not the request) and return 403.
 const PASSWD_LEAK_PATHS: &[&str] = &["/leak/passwd", "/leak/shadow"];
 
+/// Paths whose response bodies carry OWASP-CRS static DBMS error fingerprints
+/// that `Silent_sql_errors` must scrub or block. With the default config
+/// (`Untrust = 60`, both `Detect_db_errors` and `Silent_sql_errors` enabled)
+/// `Detect_db_errors` fires first and blocks each path (HTTP 403), so the
+/// attack tool reports them as blocked.
+const SILENT_SQL_ERRORS_PATHS: &[&str] = &[
+    "/leak/static/mysql-client",
+    "/leak/static/sql-client-exception",
+    "/leak/static/ole-db-sql-server",
+    "/leak/static/db2-cli-driver",
+    "/leak/static/psql-exception",
+    "/leak/static/sybase-msg",
+    "/leak/static/npgsql",
+    "/leak/static/sqlite-exception",
+    "/leak/static/zend-mysqli",
+    "/leak/static/oracle-exception",
+];
+
 const SCANNER_UAS: &[(&str, &str)] = &[
     ("nikto/2.1.6", "Nikto"),
     ("sqlmap/1.7", "sqlmap"),
@@ -1135,6 +1153,13 @@ async fn main() {
             PASSWD_LEAK_PATHS.len()
         ),
         sweep_leak_paths(&client, &cfg.target, PASSWD_LEAK_PATHS, cfg.concurrency)
+    );
+    run_sweep!(
+        format!(
+            "Silent SQL errors CMC — response ({} paths)",
+            SILENT_SQL_ERRORS_PATHS.len()
+        ),
+        sweep_leak_paths(&client, &cfg.target, SILENT_SQL_ERRORS_PATHS, cfg.concurrency)
     );
     run_sweep!(
         format!(

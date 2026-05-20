@@ -338,7 +338,9 @@ async fn waf_blocks_spamhaus_ip_and_reports_source_list() {
             assert!(finding.rule_match.contains("DROP.txt"));
             assert!(finding.rule_line_match.contains("addr/spamhaus/DROP.txt"));
         }
-        Decision::Allow | Decision::Monitor(_) => panic!("expected Spamhaus IP to be blocked"),
+        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {
+            panic!("expected Spamhaus IP to be blocked")
+        }
     }
 }
 
@@ -389,7 +391,9 @@ async fn waf_blocks_firehol_dir_ip_and_reports_source_list() {
                 .rule_line_match
                 .contains("addr/firehol/firehol_proxies.netset"));
         }
-        Decision::Allow | Decision::Monitor(_) => panic!("expected Firehol IP to be blocked"),
+        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {
+            panic!("expected Firehol IP to be blocked")
+        }
     }
 }
 
@@ -491,6 +495,8 @@ async fn waf_blocks_blocklist_dir_ip_and_reports_yaml_title() {
             assert!(finding.rule_match.contains("bots.txt"));
             assert!(finding.rule_line_match.contains("addr/blocklist/bots.txt"));
         }
-        Decision::Allow | Decision::Monitor(_) => panic!("expected blocklist IP to be blocked"),
+        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {
+            panic!("expected blocklist IP to be blocked")
+        }
     }
 }

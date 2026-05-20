@@ -1,3 +1,67 @@
+## [2.21.0] - 2026-05-20
+
+### Added
+
+#### `Silent_sql_errors` CMC module
+
+- New CMC module `Silent_sql_errors` inspects upstream HTTP **response bodies**
+  for verbose DBMS error fingerprints (OWASP ModSecurity Core Rule Set's
+  `sql-errors.data` literal list) and — depending on the global `Untrust`
+  level — either **scrubs** the matched substring or **blocks** the
+  response entirely (CWE-209).
+- Pattern research basis: the OWASP CRS data file
+  [`rules/sql-errors.data`](https://github.com/coreruleset/coreruleset/blob/main/rules/sql-errors.data)
+  — the same literals CRS uses for its `942100–942999` SQLi response
+  detection rule range, repurposed locally as a fingerprint set.
+- Pattern file: `rules/error_msgs/sql_errors_static.txt` (160+ literal
+  substrings) covering MySQL, MariaDB, Drizzle, PostgreSQL, Oracle, MSSQL,
+  SQLite, IBM DB2, Informix, Firebird, Sybase, Ingres, HSQLDB/H2/Derby,
+  MonetDB, Vertica, Presto/Trino, MemSQL, CrateDB, Snowflake, Virtuoso,
+  Altibase, FrontBase, Mimer, Neo4j/Cypher, plus connector identifiers
+  (`Npgsql.`, `Zend_Db_Adapter_*_Exception`,
+  `org.postgresql.util.PSQLException`,
+  `System.Data.SqlClient.SqlException`, `OracleException`, etc.).
+- Matching uses `memchr::memmem::Finder` (Boyer-Moore-like, SIMD-accelerated
+  on x86_64) on the CPU fast path. With `--enable-vectorscan` a Hyperscan
+  `BlockDatabase` with `SOM_LEFTMOST | SINGLEMATCH` is used so the SIMD
+  engine reports the exact match offsets needed for the scrub.
+- Action gated by `Untrust`:
+  - `>= 80` → **block** (HTTP 403), log to raw / JSONL / SQLite (`High`).
+  - `< 80` (default) → **silent scrub**: replace the matched literal with a
+    single ASCII space, recompute `Content-Length`, forward the response;
+    finding logged with `Low` severity.
+- New `Decision::SilentReplace { finding, body }` engine variant and
+  `CmcResponseDecision::SilentReplace { finding, body }` CMC variant
+  propagate the modified body from the CMC layer all the way to the proxy,
+  which updates `Content-Length` before forwarding.
+- Activated by adding `Silent_sql_errors: true` to `rules/cmc/config.yaml`.
+  **Disabled by default** for backwards compatibility.
+- 10 new `/leak/static/*` routes added to `demo_server` for manual testing
+  and the attack sweep tool. `attack` now exercises all 10 paths against
+  the configured WAF target.
+- Documentation: `docs/cmc/silent_sql_errors.md`, `docs/cmc/schema.md`
+  updated with module summary + conflict note for `Detect_db_errors`,
+  README CMC section updated.
+
+### Tests
+
+- 12 new unit tests in `src/cmc/silent_sql_errors.rs` (pattern loading,
+  detection across 8 DBMS families, leftmost-match, scrub helper).
+- 12 new integration tests in `tests/server_real_test.rs`:
+  - 10 scrub-mode tests (one per `/leak/static/*` route) verify HTTP 200,
+    fingerprint absent from response body, `Content-Length` matches scrubbed
+    body length.
+  - 1 block-mode test (`Untrust = 80`) verifies HTTP 403.
+  - 1 clean-response test verifies non-leak routes are not modified.
+
+### Changed
+
+- Version bumped 2.20.0 → 2.21.0 (Cargo.toml, Cargo.lock, README).
+- `rules/cmc/config.yaml` ships with `Silent_sql_errors: true` by default
+  alongside the other CMC modules.
+
+---
+
 ## [2.20.0] - 2026-05-19
 
 ### Added

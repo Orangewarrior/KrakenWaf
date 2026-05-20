@@ -52,6 +52,7 @@ CMC-Rules:
   Anti_passwd_leak: true
   Java_deserialize_detect: true
   Detect_db_errors: true
+  Silent_sql_errors: true
 ```
 
 ---
@@ -73,6 +74,7 @@ CMC-Rules:
 | `Anti_passwd_leak` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | Critical | [anti_passwd_leak.md](anti_passwd_leak.md) |
 | `Java_deserialize_detect` | [CWE-502](https://cwe.mitre.org/data/definitions/502.html) | Critical | [java_deserialize_detect.md](java_deserialize_detect.md) |
 | `Detect_db_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | High | [detect_db_errors.md](detect_db_errors.md) |
+| `Silent_sql_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | Low → High | [silent_sql_errors.md](silent_sql_errors.md) |
 
 ---
 
@@ -265,6 +267,33 @@ Patterns are loaded from `rules/error_msgs/sql_errors.txt`.  Custom patterns can
 appended to that file; the WAF must be restarted to pick them up.  Invalid regex
 lines are skipped with a startup warning so a single bad rule cannot disable the
 module.
+
+### [`Silent_sql_errors`](silent_sql_errors.md)
+
+Scrubs (or blocks) upstream HTTP **response bodies** that leak verbose DBMS
+error fingerprints. Pattern set sourced from the OWASP ModSecurity Core Rule
+Set (CRS) [`sql-errors.data`](https://github.com/coreruleset/coreruleset/blob/main/rules/sql-errors.data)
+file — the same literals CRS uses for its `942100-942999` rule range.
+
+* Patterns are loaded from `rules/error_msgs/sql_errors_static.txt`
+* Matching uses `memchr::memmem::Finder` (Boyer-Moore-like) on the CPU fast
+  path; when `--enable-vectorscan` is active, a Hyperscan `BlockDatabase` with
+  `SOM_LEFTMOST | SINGLEMATCH` is used for SIMD-accelerated scanning.
+
+Action depends on the global `Untrust` level:
+
+| `Untrust` | Action | Severity |
+|---|---|---|
+| ≥ 80 | **Block** — WAF returns 403, logs to all outputs | High |
+| < 80 (default) | **Silent scrub** — matched substring is replaced with a single ASCII space, `Content-Length` is recomputed, response is forwarded; finding is logged to raw / JSONL / SQLite | Low |
+
+> **Conflict with `Detect_db_errors`**: when both modules are enabled and a
+> response matches both, `Detect_db_errors` fires first inside
+> `inspect_response_body` and blocks before `Silent_sql_errors` runs.  It is
+> safe to enable both together (defence-in-depth) — verify that the
+> application's legitimate responses do not contain any of the OWASP CRS
+> literals before going to production.  Disable `Detect_db_errors` if you
+> want to observe `Silent_sql_errors`'s scrub behaviour end-to-end.
 
 ---
 
