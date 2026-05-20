@@ -16,3 +16,4 @@ CMC-Rules:
   Java_deserialize_detect: true
   Detect_db_errors: true
   Silent_sql_errors: true
+  Detect_bad_artifacts: true

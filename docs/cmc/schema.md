@@ -53,6 +53,7 @@ CMC-Rules:
   Java_deserialize_detect: true
   Detect_db_errors: true
   Silent_sql_errors: true
+  Detect_bad_artifacts: true
 ```
 
 ---
@@ -75,6 +76,7 @@ CMC-Rules:
 | `Java_deserialize_detect` | [CWE-502](https://cwe.mitre.org/data/definitions/502.html) | Critical | [java_deserialize_detect.md](java_deserialize_detect.md) |
 | `Detect_db_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | High | [detect_db_errors.md](detect_db_errors.md) |
 | `Silent_sql_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | Low → High | [silent_sql_errors.md](silent_sql_errors.md) |
+| `Detect_bad_artifacts` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | High | [detect_bad_artifacts.md](detect_bad_artifacts.md) |
 
 ---
 
@@ -267,6 +269,30 @@ Patterns are loaded from `rules/error_msgs/sql_errors.txt`.  Custom patterns can
 appended to that file; the WAF must be restarted to pick them up.  Invalid regex
 lines are skipped with a startup warning so a single bad rule cannot disable the
 module.
+
+### [`Detect_bad_artifacts`](detect_bad_artifacts.md)
+
+Inspects **request URI paths** for sensitive file/directory artifact patterns
+that should never be publicly accessible. The pattern set is derived from the
+OWASP CRS [`restricted-files.data`](https://github.com/coreruleset/coreruleset/blob/main/rules/restricted-files.data)
+list and covers: Apache dotfiles (`.htaccess`, `.htpasswd`), home-level dotfiles
+(`.env`, `.ssh/`, `.aws/`, `.git/`), generic config filenames
+(`config.json`, `config.yaml`, `config.php`, etc.), compressed database dumps
+(`.sql.gz`, `.sql.tar`), CMS-specific paths (WordPress `wp-config.`, Symfony,
+Drupal, PrestaShop, Magento), framework configs (ASP.NET, Node, Composer,
+Vite.js CVE-2025-30208), package managers, and Linux pseudo-filesystem entries
+(`proc/cpuinfo`, `/proc/`, `/sys/`).
+
+Detection runs in `inspect_uri()` before the request body is assembled, adding
+no latency to normal traffic. Blocking threshold depends on the global `Untrust`
+level:
+
+| `Untrust` | Action | Severity |
+|---|---|---|
+| ≥ 60 (default) | **Block** — WAF returns 403 | High |
+| < 60 | **Silent log** — request forwarded; finding logged via `tracing::warn!` | — |
+
+Patterns are loaded from `rules/artifacts/file_pitfalls.txt` (500+ literals).
 
 ### [`Silent_sql_errors`](silent_sql_errors.md)
 

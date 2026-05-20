@@ -171,6 +171,53 @@ async fn backup_file(Path(path): Path<String>) -> Html<String> {
     ))
 }
 
+// ─── Detect_bad_artifacts demo routes ────────────────────────────────────────
+//
+// Each route serves a realistic "leaked" response at a URI that matches a
+// known-sensitive artifact pattern.  The WAF must block the REQUEST at the URI
+// phase before the handler is ever invoked.  At `untrust >= 60` all of these
+// must return 403 from the WAF; at `untrust < 60` they return 200.
+
+async fn handle_env_leak() -> &'static str {
+    "DB_PASSWORD=secret123\nAPI_KEY=abc"
+}
+
+async fn handle_git_config_leak() -> &'static str {
+    "[core]\n  repositoryformatversion = 0"
+}
+
+async fn handle_wp_config_leak() -> &'static str {
+    "<?php define('DB_PASSWORD','secret');"
+}
+
+async fn handle_proc_cpuinfo_leak() -> &'static str {
+    "processor : 0\nmodel name : Intel(R) Core(TM) i7"
+}
+
+async fn handle_aws_credentials_leak() -> &'static str {
+    "[default]\naws_access_key_id = AKIAIOSFODNN7"
+}
+
+async fn handle_config_json_leak() -> &'static str {
+    r#"{"db_password":"secret","api_key":"abc"}"#
+}
+
+async fn handle_ssh_id_rsa_leak() -> &'static str {
+    "-----BEGIN RSA PRIVATE KEY-----"
+}
+
+async fn handle_debug_log_leak() -> &'static str {
+    "[ERROR] Connection failed"
+}
+
+async fn handle_composer_json_leak() -> &'static str {
+    r#"{"name":"app/app","require":{}}"#
+}
+
+async fn handle_htpasswd_leak() -> &'static str {
+    "admin:$apr1$xyz$hash"
+}
+
 #[tokio::main]
 async fn main() {
     let port: u16 = std::env::args()
@@ -206,6 +253,18 @@ async fn main() {
         // Java deserialization target — accepts POST with any body so the
         // attack tool can test Java deserialization payloads against the WAF.
         .route("/java-deser", post(java_deser_endpoint))
+        // Detect_bad_artifacts demo routes — these serve "leaked" content at
+        // sensitive URIs; the WAF must block the request before reaching here.
+        .route("/.env", get(handle_env_leak))
+        .route("/.git/config", get(handle_git_config_leak))
+        .route("/wp-config.php", get(handle_wp_config_leak))
+        .route("/proc/cpuinfo", get(handle_proc_cpuinfo_leak))
+        .route("/.aws/credentials", get(handle_aws_credentials_leak))
+        .route("/config.json", get(handle_config_json_leak))
+        .route("/.ssh/id_rsa", get(handle_ssh_id_rsa_leak))
+        .route("/debug.log", get(handle_debug_log_leak))
+        .route("/composer.json", get(handle_composer_json_leak))
+        .route("/.htpasswd", get(handle_htpasswd_leak))
         // Wildcard route for the backup-file sweep: returns 200 so the attack
         // tool can distinguish a WAF bypass from a WAF block (403).
         // Axum 0.8+ requires the `{*name}` syntax for wildcard capture.

@@ -1,3 +1,48 @@
+## [2.22.0] - 2026-05-20
+
+### Added
+
+#### `Detect_bad_artifacts` CMC module
+
+- New CMC module `Detect_bad_artifacts` inspects request **URI paths** for
+  sensitive file/directory artifacts that should never be publicly accessible:
+  dotfiles, configuration files, debug logs, credentials, framework-specific
+  files, `/proc` and `/sys` entries, and more (CWE-538).
+- Pattern research basis: OWASP ModSecurity Core Rule Set (CRS)
+  [`restricted-files.data`](https://github.com/coreruleset/coreruleset/blob/main/rules/restricted-files.data)
+  — covering Apache dotfiles, home-level dotfiles, generic config filenames,
+  compressed database dumps, CI/CD files, CMS-specific paths (WordPress,
+  Symfony, Drupal, PrestaShop, Magento), framework configs (ASP.NET, Node,
+  Composer), OS artefacts, and Linux pseudo-filesystem entries (`/proc/`,
+  `/sys/`).
+- Pattern file: `rules/artifacts/file_pitfalls.txt` (500+ literal substrings).
+- Matching uses `memchr::memmem::Finder` (Boyer-Moore-like SIMD) on the CPU
+  fast path. With `--enable-vectorscan` a Hyperscan `BlockDatabase` with
+  `SINGLEMATCH` is used.
+- Action gated by global `Untrust` level:
+  - `>= 60` (default) → **block** (HTTP 403), log to raw / JSONL / SQLite (`High`).
+  - `< 60` → **silent log** only; request is forwarded. Finding logged via `tracing::warn!`.
+- Activated by adding `Detect_bad_artifacts: true` to `rules/cmc/config.yaml`.
+  **Disabled by default** for backwards compatibility; enabled in the default
+  config file at `rules/cmc/config.yaml`.
+- 10 new demo routes added to `demo_server` (`.env`, `.git/config`,
+  `wp-config.php`, `proc/cpuinfo`, `.aws/credentials`, `config.json`,
+  `.ssh/id_rsa`, `debug.log`, `composer.json`, `.htpasswd`).
+- `attack` tool gains `BAD_ARTIFACT_PATHS` constant and sweep.
+- Documentation: `docs/cmc/detect_bad_artifacts.md`, `docs/cmc/schema.md`
+  updated, README CMC section updated.
+
+### Tests
+
+- 10 unit tests in `src/cmc/detect_bad_artifacts.rs` (pattern loading,
+  detection across dotfiles / config files / /proc entries, comment-skipping).
+- 12 new integration tests in `tests/server_real_test.rs`:
+  - 10 tests: artifact URI → 403 at `untrust=60`.
+  - 1 test: artifact URI → 200 at `untrust=30` (silent log mode).
+  - 1 test: clean URI → not 403 at `untrust=60`.
+
+---
+
 ## [2.21.0] - 2026-05-20
 
 ### Added

@@ -500,6 +500,7 @@ CMC-Rules:
   Java_deserialize_detect: true # Java deserialization gadget chains (req + resp)
   Detect_db_errors: true        # Response-body DBMS error fingerprint detection (200+ patterns, CWE-209)
   Silent_sql_errors: true       # Response-body DBMS error scrubber (OWASP CRS sql-errors.data, CWE-209)
+  Detect_bad_artifacts: true    # Request URI artifact detection (dotfiles, config, /proc, credentials — OWASP CRS restricted-files.data, CWE-538)
 ```
 
 Set any key to `false` to disable that detector without recompiling.
