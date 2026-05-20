@@ -1,0 +1,16 @@
+# KrakenWaf — Anomaly Scoring Configuration
+# Rules with a 'score' field > 0 contribute to an accumulated score per request.
+# When the accumulated score reaches the threshold, the request is blocked.
+# Rules with score = 0 (default) use binary block behaviour (unchanged).
+
+# Default threshold applied to all paths not matched below.
+default_threshold: 10
+
+# Per-path overrides — first match wins.
+paths:
+  - pattern: "/api/"
+    threshold: 7
+  - pattern: "/admin/"
+    threshold: 3
+  - pattern: "/login"
+    threshold: 5

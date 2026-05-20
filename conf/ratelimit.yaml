@@ -1,0 +1,53 @@
+# KrakenWaf — Rate Limiter Configuration
+#
+# Controls both the local in-memory limiter (always active) and an optional
+# distributed Redis backend.  The base request limit and window are still
+# set via the --rate-limit-per-minute CLI flag; the values below can override
+# them when redis.enabled = true.
+#
+# CIS Redis Benchmark compliance notes
+# ─────────────────────────────────────
+# • Connections MUST use the rediss:// scheme (TLS).  plain redis:// is rejected
+#   at startup to prevent credential or traffic exposure.
+# • Credentials are NEVER stored here.  Inject them via environment variables:
+#     REDIS_PASSWORD   – password sent with AUTH (required when auth is enabled)
+#     REDIS_USERNAME   – ACL username for Redis 6+ multi-user setups (optional)
+# • In container deployments store these variables in a secrets manager
+#   (HashiCorp Vault, AWS Secrets Manager, Kubernetes Secrets, etc.) and mount
+#   them as environment variables at runtime.
+
+local:
+  # Maximum distinct client IPs held in the in-memory table.
+  # Prevents unbounded growth under IP-rotation attacks.
+  max_tracked_ips: 100000
+
+redis:
+  # Set to true to enable distributed rate limiting.
+  # When false the local in-memory limiter is used exclusively.
+  enabled: false
+
+  # Redis connection URL.  MUST start with rediss:// (TLS enforced).
+  # Do NOT embed credentials here — use REDIS_PASSWORD / REDIS_USERNAME env vars.
+  url: "rediss://127.0.0.1:6379"
+
+  tls:
+    # Always verify the server certificate chain (CIS Redis § 3.x).
+    # There is no option to disable peer verification.
+    # Use ca_cert_path to supply a custom CA when your Redis server uses a
+    # private PKI.
+    #
+    # Path to a PEM-encoded CA certificate bundle. Leave empty to use the
+    # system trust store.
+    ca_cert_path: ""
+
+  # Number of connections in the pool.  Tune to match Redis server max-clients.
+  pool_size: 8
+
+  # Namespace prefix applied to every Redis key written by this instance.
+  # Change this when multiple KrakenWaf deployments share the same Redis DB.
+  key_prefix: "krakenwaf:rl:"
+
+  # Sliding-window parameters.  0 = inherit from the --rate-limit-per-minute
+  # CLI flag (max_requests) and the default 60-second window (window_secs).
+  max_requests: 0
+  window_secs: 0

@@ -7,6 +7,7 @@ pub mod error;
 pub mod ffi;
 pub mod logging;
 pub mod metrics;
+pub mod network_config;
 pub mod proxy;
 pub mod response_headers;
 pub mod rules;
@@ -16,3 +17,5 @@ pub mod tls;
 pub mod waf;
 
 pub mod dfa;
+pub mod ratelimit_config;
+pub mod scoring;

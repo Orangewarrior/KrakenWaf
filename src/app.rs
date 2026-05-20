@@ -4,14 +4,17 @@ use crate::{
     cli::{Cli, WafMode},
     logging::LoggingHandles,
     metrics::WafMetrics,
+    network_config::NetworkConfig,
     proxy::ProxyClient,
     response_headers::ResponseHeaderPolicy,
+    scoring::ScoringConfig,
     storage::SqliteStore,
     waf::WafEngine
 };
 use bytes::Bytes;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio_rustls::TlsAcceptor;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -27,4 +30,7 @@ pub struct AppState {
     pub response_header_policy: Arc<ResponseHeaderPolicy>,
     pub mode: WafMode,
     pub allow_path_config: Option<AllowPathConfig>,
+    pub network: Arc<NetworkConfig>,
+    pub tls_acceptor: Option<Arc<tokio::sync::RwLock<TlsAcceptor>>>,
+    pub scoring: Arc<ScoringConfig>,
 }

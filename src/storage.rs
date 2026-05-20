@@ -116,6 +116,15 @@ impl SqliteStore {
         Ok(Self { tx })
     }
 
+    /// Wait for the background writer to drain its queue. The background task
+    /// reads from the mpsc receiver in a loop; sleeping 500 ms gives it time to
+    /// process any buffered events before we exit. There is no explicit flush
+    /// signal because the unbounded channel has no built-in "drain-and-wait"
+    /// primitive — a short wait is the simplest correct approach here.
+    pub async fn flush(&self) {
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    }
+
     pub fn enqueue(&self, event: SecurityEvent) {
         if let Err(err) = self.tx.send(event) {
             error!(target: "krakenwaf", "failed to enqueue security event: {err}");

@@ -53,6 +53,7 @@ fn url_decode(input: &[u8]) -> Vec<u8> {
 use crate::{
     dfa::DfaManager,
     metrics::WafMetrics,
+    ratelimit_config::RateLimitConfig,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
     waf::rate_limit::RateLimiter,
 };
@@ -81,6 +82,8 @@ pub struct InspectionContext {
     /// request and threaded through all log events, SQLite rows, and upstream
     /// headers so that a WAF alert can be correlated with upstream access logs.
     pub request_id: String,
+    /// Anomaly score threshold for this request path (from ScoringConfig).
+    pub anomaly_threshold: u32,
 }
 
 /// Context used when inspecting the upstream HTTP response.
@@ -111,6 +114,8 @@ pub struct Finding {
     pub rule_line_match: String,
     pub request_payload: String,
     pub timestamp: String,
+    /// Anomaly score weight of the triggering rule (0 = binary block).
+    pub score: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -173,8 +178,9 @@ pub struct WafEngine {
 
 impl WafEngine {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    pub async fn new(
         rules: Arc<RuleSet>,
+        rl_config: &RateLimitConfig,
         rate_limit_per_minute: u32,
         blocklist_ip_enabled: bool,
         libinjection_sqli_enabled: bool,
@@ -184,7 +190,9 @@ impl WafEngine {
         metrics: Arc<WafMetrics>,
         dfa_manager: Arc<DfaManager>,
     ) -> Result<Self> {
-        let rate_limiter = Arc::new(RateLimiter::new(rate_limit_per_minute, Duration::from_secs(60), snapshot_path)?);
+        let rate_limiter = Arc::new(
+            RateLimiter::from_config(rl_config, rate_limit_per_minute, snapshot_path).await?,
+        );
         rate_limiter.clone().spawn_persistence_task();
         let matchers = build_matchers(&rules, vectorscan_enabled)?;
         Ok(Self {
@@ -206,6 +214,12 @@ impl WafEngine {
     /// Expose the current rule set for use by server-layer access control (allowlist).
     pub fn rules_snapshot(&self) -> Arc<RuleSet> {
         self.snapshot.read().rules.clone()
+    }
+
+    /// Flush the rate-limit counter state to disk. Called during graceful shutdown
+    /// so that in-window counters survive a restart.
+    pub async fn persist_rate_limit(&self) {
+        self.rate_limiter.persist().await.ok();
     }
 
     pub async fn reload_from_dir(&self, root: &Path) -> Result<()> {
@@ -296,7 +310,7 @@ impl WafEngine {
         }
 
         let early_request = format_request_prefix_bytes(ctx);
-        self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
+        self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method), ctx.anomaly_threshold)
     }
 
     #[allow(dead_code)]
@@ -305,22 +319,32 @@ impl WafEngine {
     }
 
     pub fn inspect_complete_payload(&self, payload: &[u8]) -> Decision {
-        self.inspect_complete_payload_with_context(payload, None)
+        // No context available: use binary-block behaviour (threshold irrelevant since
+        // callers of this path load rules with score=0).
+        self.inspect_complete_payload_with_context(payload, None, 0)
     }
 
     /// Inspect a request payload. Only rules with `http_action: Request` fire here.
-    pub fn inspect_complete_payload_with_context(&self, payload: &[u8], _method_hint: Option<&str>) -> Decision {
+    ///
+    /// `threshold` is the anomaly score threshold for this request path (from
+    /// `ScoringConfig`). Rules with `score == 0` block immediately (binary mode);
+    /// rules with `score > 0` accumulate until the total reaches `threshold`.
+    pub fn inspect_complete_payload_with_context(&self, payload: &[u8], _method_hint: Option<&str>, threshold: u32) -> Decision {
         let snap = self.snapshot.read().clone();
         let rules = &snap.rules;
         let matchers = &snap.matchers;
 
         let normalized_bytes = normalize_request_bytes(payload);
-        let original_text = String::from_utf8_lossy(payload);
-        let normalized_text = String::from_utf8_lossy(normalized_bytes.as_ref());
+        let original_text = bytes_to_inspection_str(payload);
+        let normalized_text = bytes_to_inspection_str(normalized_bytes.as_ref());
+
+        // Accumulated anomaly score for this inspection pass.
+        let mut anomaly_score: u32 = 0;
 
         {
             let dfa_lower = normalized_text.to_ascii_lowercase();
             if let Some(finding) = self.dfa_manager.inspect(&dfa_lower) {
+                // DFA findings are always binary-block (no score field available).
                 return Decision::Block(Box::new(finding));
             }
         }
@@ -332,6 +356,7 @@ impl WafEngine {
                 self.libinjection_sqli_enabled,
                 self.libinjection_xss_enabled,
             ) {
+                // libinjection findings are always binary-block.
                 return Decision::Block(Box::new(finding));
             }
         }
@@ -349,23 +374,35 @@ impl WafEngine {
 
         for view in inspection_views(normalized_text.as_ref()) {
             if let Some(finding) = keyword_match(matchers.req_uri.as_ref(), view, original_text.as_ref()) {
-                return Decision::Block(Box::new(finding));
+                if let Some(decision) = check_score(&mut anomaly_score, finding, threshold) {
+                    return decision;
+                }
             }
             if let Some(finding) = keyword_match(matchers.req_headers.as_ref(), view, original_text.as_ref()) {
-                return Decision::Block(Box::new(finding));
+                if let Some(decision) = check_score(&mut anomaly_score, finding, threshold) {
+                    return decision;
+                }
             }
             if let Some(finding) = keyword_match(matchers.req_body.as_ref(), view, original_text.as_ref()) {
-                return Decision::Block(Box::new(finding));
+                if let Some(decision) = check_score(&mut anomaly_score, finding, threshold) {
+                    return decision;
+                }
             }
 
             if let Some(finding) = regex_match_phase(&rules.path_regex, view, original_text.as_ref(), &HttpAction::Request) {
-                return Decision::Block(Box::new(finding));
+                if let Some(decision) = check_score(&mut anomaly_score, finding, threshold) {
+                    return decision;
+                }
             }
             if let Some(finding) = regex_match_phase(&rules.header_regex, view, original_text.as_ref(), &HttpAction::Request) {
-                return Decision::Block(Box::new(finding));
+                if let Some(decision) = check_score(&mut anomaly_score, finding, threshold) {
+                    return decision;
+                }
             }
             if let Some(finding) = regex_match_phase(&rules.body_regex, view, original_text.as_ref(), &HttpAction::Request) {
-                return Decision::Block(Box::new(finding));
+                if let Some(decision) = check_score(&mut anomaly_score, finding, threshold) {
+                    return decision;
+                }
             }
         }
 
@@ -381,12 +418,12 @@ impl WafEngine {
         // Build a flat text representation of the response headers for matching.
         let header_payload = format!("HTTP/1.1 {}\n{}\n\n", ctx.status, ctx.headers);
         let header_normalized = normalize_request_bytes(header_payload.as_bytes());
-        let header_original = String::from_utf8_lossy(header_payload.as_bytes());
-        let header_normalized_text = String::from_utf8_lossy(header_normalized.as_ref());
+        let header_original = bytes_to_inspection_str(header_payload.as_bytes());
+        let header_normalized_text = bytes_to_inspection_str(header_normalized.as_ref());
 
         let body_normalized = normalize_request_bytes(&ctx.body);
-        let body_original = String::from_utf8_lossy(&ctx.body);
-        let body_normalized_text = String::from_utf8_lossy(body_normalized.as_ref());
+        let body_original = bytes_to_inspection_str(&ctx.body);
+        let body_normalized_text = bytes_to_inspection_str(body_normalized.as_ref());
 
         if self.vectorscan_enabled {
             #[cfg(feature = "vectorscan-engine")]
@@ -448,6 +485,7 @@ impl WafEngine {
             rule_line_match: rule_line_match.into(),
             request_payload: request_payload.into(),
             timestamp: Utc::now().to_rfc3339(),
+            score: 0,
         }
     }
 }
@@ -478,6 +516,7 @@ fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Result<EngineMat
             source: "user_agents/scanners.txt".to_string(),
             line: idx + 1,
             http_action: HttpAction::Request,
+            score: 0,
         }
     }).collect();
 
@@ -554,15 +593,52 @@ fn rule_to_finding(rule: &DetectionRule, haystack: &str) -> Finding {
         rule_line_match: format!("{}:{}", rule.source, rule.line),
         request_payload: truncate_payload(haystack).into_owned(),
         timestamp: Utc::now().to_rfc3339(),
+        score: rule.score,
     }
+}
+
+/// Anomaly-score aware check. Returns a Block decision when:
+/// - rule.score == 0 (binary block), or
+/// - accumulated score reaches the threshold.
+/// Returns None to continue inspection when score is below threshold.
+fn check_score(accumulated: &mut u32, finding: Finding, threshold: u32) -> Option<Decision> {
+    if finding.score == 0 || threshold == 0 {
+        return Some(Decision::Block(Box::new(finding)));
+    }
+    *accumulated = accumulated.saturating_add(u32::from(finding.score));
+    if *accumulated >= threshold {
+        Some(Decision::Block(Box::new(finding)))
+    } else {
+        None
+    }
+}
+
+/// Replace null bytes with a space so they act as word delimiters without
+/// creating invisible characters that patterns cannot match.
+fn sanitize_null_bytes(input: Vec<u8>) -> Vec<u8> {
+    input.into_iter().map(|b| if b == 0 { b' ' } else { b }).collect()
 }
 
 fn normalize_request_bytes(payload: &[u8]) -> Cow<'_, [u8]> {
     let decoded = url_decode(payload);
-    if decoded.as_slice() == payload {
+    let sanitized = sanitize_null_bytes(decoded);
+    if sanitized.as_slice() == payload {
         Cow::Borrowed(payload)
     } else {
-        Cow::Owned(decoded)
+        Cow::Owned(sanitized)
+    }
+}
+
+/// Convert bytes to a string for inspection.
+/// - Valid UTF-8: zero-copy borrow.
+/// - Invalid UTF-8: each byte maps to its Latin-1 codepoint (U+0000–U+00FF),
+///   preserving every byte so ASCII patterns still fire on ASCII bytes embedded
+///   in malformed payloads. This is strictly better than `from_utf8_lossy`
+///   which swallows invalid bytes into U+FFFD.
+fn bytes_to_inspection_str(bytes: &[u8]) -> Cow<'_, str> {
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Cow::Borrowed(s),
+        Err(_) => Cow::Owned(bytes.iter().map(|&b| char::from(b)).collect()),
     }
 }
 
@@ -670,6 +746,7 @@ fn libinjection_match(
                 rule_line_match: "runtime:ffi/libinjection".into(),
                 request_payload: truncate_payload(original_payload).into_owned(),
                 timestamp: Utc::now().to_rfc3339(),
+                score: 0,
             });
         }
     }
@@ -686,6 +763,7 @@ fn libinjection_match(
                 rule_line_match: "runtime:ffi/libinjection".into(),
                 request_payload: truncate_payload(original_payload).into_owned(),
                 timestamp: Utc::now().to_rfc3339(),
+                score: 0,
             });
         }
     }

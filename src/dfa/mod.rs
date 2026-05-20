@@ -160,6 +160,7 @@ fn finding(title: &str, severity: Severity, cwe: &str, description: &str, refere
         rule_line_match: rule_line_match.to_string(),
         request_payload: input.chars().take(2048).collect(),
         timestamp: Utc::now().to_rfc3339(),
+        score: 0,
     }
 }
 

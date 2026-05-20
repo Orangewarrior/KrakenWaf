@@ -43,6 +43,8 @@ struct RuleJson {
     description: String,
     url: String,
     rule_match: String,
+    #[serde(default)]
+    score: u16,
 }
 
 
@@ -219,6 +221,7 @@ fn json_rules_to_detection_rules(values: Vec<RuleJson>, source: &str) -> Vec<Det
                 source: source.to_string(),
                 line: idx + 1,
                 http_action: value.http_action,
+                score: value.score,
             })
         })
         .collect()
@@ -277,6 +280,7 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
                     source: source.to_string(),
                     line,
                     http_action: rule.http_action,
+                    score: rule.score,
                 },
                 compiled,
             })

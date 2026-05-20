@@ -8,9 +8,12 @@ mod dfa;
 mod ffi;
 mod logging;
 mod metrics;
+mod network_config;
 mod proxy;
+mod ratelimit_config;
 mod response_headers;
 mod rules;
+mod scoring;
 mod server;
 mod storage;
 mod tls;
@@ -23,6 +26,8 @@ use clap::Parser;
 use cli::Cli;
 use dfa::{DfaConfig, DfaManagerBuilder};
 use metrics::WafMetrics;
+use network_config::NetworkConfig;
+use ratelimit_config::RateLimitConfig;
 use response_headers::ResponseHeaderPolicy;
 use std::{path::PathBuf, sync::Arc};
 use tokio_rustls::TlsAcceptor;
@@ -33,6 +38,9 @@ async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider().install_default().expect("failed to install rustls CryptoProvider");
     let cli = Cli::parse();
     let root_dir = std::env::current_dir()?;
+    let network_config = Arc::new(NetworkConfig::load(&root_dir)?);
+    let scoring_config = Arc::new(scoring::ScoringConfig::load(&root_dir)?);
+    let rl_config = RateLimitConfig::load(&root_dir)?;
 
     println!("{}", banner::banner());
 
@@ -52,6 +60,7 @@ async fn main() -> Result<()> {
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
     let waf = Arc::new(waf::WafEngine::new(
         rules,
+        &rl_config,
         cli.rate_limit_per_minute,
         cli.blocklist_ip,
         cli.libinjection_sqli_enabled(),
@@ -60,7 +69,7 @@ async fn main() -> Result<()> {
         root_dir.join("logs").join("db").join("rate_limit_state.json"),
         metrics.clone(),
         dfa_manager.clone(),
-    )?);
+    ).await?);
     let proxy = Arc::new(proxy::ProxyClient::new(
         &cli.upstream,
         cli.upstream_timeout_secs,
@@ -73,6 +82,13 @@ async fn main() -> Result<()> {
         Some(path) => Some(allowpaths::load_and_validate(&PathBuf::from(path))
             .with_context(|| format!("--allow-paths: failed to load '{path}'"))?),
         None => None,
+    };
+
+    let tls_acceptor_shared = if cli.no_tls {
+        None
+    } else {
+        let tls_config = tls::build_tls_config(PathBuf::from(&cli.sni_map).as_path())?;
+        Some(Arc::new(tokio::sync::RwLock::new(TlsAcceptor::from(tls_config))))
     };
 
     let state = Arc::new(AppState {
@@ -88,6 +104,9 @@ async fn main() -> Result<()> {
         block_response_body,
         block_response_content_type,
         response_header_policy,
+        network: network_config.clone(),
+        tls_acceptor: tls_acceptor_shared.clone(),
+        scoring: scoring_config,
     });
 
     spawn_rule_reload(state.clone());
@@ -95,11 +114,34 @@ async fn main() -> Result<()> {
     info!(target: "krakenwaf", libinjection_sqli_enabled=cli.libinjection_sqli_enabled(), libinjection_xss_enabled=cli.libinjection_xss_enabled(), vectorscan_enabled=cli.enable_vectorscan, blocklist_ip_enabled=cli.blocklist_ip, dfa_config_loaded=cli.dfa_load.is_some(), mode=?cli.mode, allow_paths_file=?cli.allow_paths_file, no_tls=cli.no_tls, upstream=%cli.upstream, "KrakenWaf initialized");
 
     if cli.no_tls {
-        server::run_plain(cli.listen, state).await
+        server::run_plain(cli.listen, state.clone(), shutdown_signal()).await?;
     } else {
-        let tls_config = tls::build_tls_config(PathBuf::from(&cli.sni_map).as_path())?;
-        let tls_acceptor = TlsAcceptor::from(tls_config);
-        server::run(cli.listen, tls_acceptor, state).await
+        let shared = tls_acceptor_shared.expect("tls_acceptor_shared is Some when !cli.no_tls");
+        server::run(cli.listen, shared, state.clone(), shutdown_signal()).await?;
+    }
+
+    // Graceful drain: flush rate-limit snapshot and SQLite event queue.
+    state.waf.persist_rate_limit().await;
+    state.store.flush().await;
+    info!(target: "krakenwaf", "KrakenWaf shutdown complete");
+    Ok(())
+}
+
+async fn shutdown_signal() {
+    use tokio::signal;
+    #[cfg(unix)]
+    {
+        let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to register SIGTERM handler");
+        tokio::select! {
+            _ = sigterm.recv() => { tracing::info!(target: "krakenwaf", "received SIGTERM, shutting down"); }
+            _ = signal::ctrl_c() => { tracing::info!(target: "krakenwaf", "received SIGINT, shutting down"); }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        signal::ctrl_c().await.expect("failed to listen for ctrl-c");
+        tracing::info!(target: "krakenwaf", "received SIGINT, shutting down");
     }
 }
 
@@ -120,6 +162,17 @@ fn spawn_rule_reload(state: Arc<AppState>) {
                 match state.waf.reload_from_dir(&state.rules_dir).await {
                     Ok(_) => info!(target: "krakenwaf", "rules hot-reloaded successfully"),
                     Err(err) => error!(target: "krakenwaf", "rule reload failed: {err:#}"),
+                }
+
+                // Reload TLS certs if we have a shared acceptor
+                if let Some(ref shared_acceptor) = state.tls_acceptor {
+                    match tls::build_tls_config(PathBuf::from(&state.cli.sni_map).as_path()) {
+                        Ok(new_cfg) => {
+                            *shared_acceptor.write().await = TlsAcceptor::from(new_cfg);
+                            info!(target: "krakenwaf", "TLS certificates hot-reloaded");
+                        }
+                        Err(err) => error!(target: "krakenwaf", "TLS cert reload failed: {err:#}"),
+                    }
                 }
             }
         });

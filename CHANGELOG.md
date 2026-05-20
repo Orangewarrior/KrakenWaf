@@ -1,3 +1,67 @@
+## [2.12.0] - 2026-05-20
+
+### Added
+
+#### Anomaly Scoring (conf/scoring.yaml)
+- Rules now carry an optional `score: u16` field (default `0` = binary block, existing behaviour unchanged).
+- Rules with `score > 0` accumulate per-request instead of blocking immediately; a request is blocked only when the accumulated score reaches the configured threshold.
+- `conf/scoring.yaml` sets a `default_threshold` and per-path overrides (first match wins), e.g. stricter thresholds for `/admin/` and `/login`.
+- New `InspectionContext.anomaly_threshold` carries the path-specific threshold into the WAF inspection pipeline.
+- `src/scoring.rs` — new module; `ScoringConfig::load()` reads `conf/scoring.yaml`, returns defaults if absent.
+- New metric: `krakenwaf_anomaly_score_blocks_total` — incremented whenever an accumulated score causes a block.
+
+#### Extended Prometheus Metrics (src/metrics.rs)
+- Latency histogram: 7 cumulative buckets (<1 ms, <5 ms, <10 ms, <50 ms, <100 ms, <1 s, ≥1 s), exported as `krakenwaf_request_duration_ms_bucket{le="…"}`.
+- Per-rule hit counters: `krakenwaf_rule_hits_total{rule_id="…"}` incremented on every match; fast read-lock path, slow write-lock path for new rules only.
+- All four counters (`inspected`, `blocked`, `rate_limit_hits`, `anomaly_score_blocks`) and the histogram are now emitted by `/metrics`.
+
+#### HTTP/2 Support (conf/network.yaml)
+- `hyper` and `hyper-util` rebuilt with `http2` feature; the server accepts HTTP/2 over ALPN-negotiated TLS.
+- `src/network_config.rs` — new module loading `conf/network.yaml` with `http2.server_enabled`, `http2.upstream_enabled`, `http2.max_concurrent_streams`, `http2.initial_connection_window_size`.
+
+#### Distributed Rate Limiter via Redis (conf/ratelimit.yaml)
+- `src/waf/rate_limit.rs` refactored into a `RateLimiter` enum with two backends:
+  - `Local` — the existing in-memory fixed-window counter with snapshot persistence (unchanged behaviour).
+  - `Redis` — distributed sliding-window using an atomic Lua script (`INCR` + `EXPIRE`) over a connection pool.
+- `conf/ratelimit.yaml` toggles distributed mode (`redis.enabled`) and configures pool size, key prefix, window overrides.
+- **CIS Redis Benchmark hardening**:
+  - Only `rediss://` URLs accepted — plain `redis://` is rejected at startup (TLS mandatory).
+  - Credentials injected via `REDIS_PASSWORD` / `REDIS_USERNAME` environment variables exclusively; never read from the config file.
+  - Peer certificate verification always enabled (system trust store by default; `tls.ca_cert_path` for private PKI).
+  - Atomic Lua rate-limit script prevents INCR/EXPIRE race condition.
+  - Fail-open on Redis unavailability (logged as warning) to prevent WAF-induced DoS.
+- `fred = "10.1"` (rustls-ring feature) added as dependency.
+- `WafEngine::new` is now `async` to support async Redis pool initialisation.
+
+#### Graceful Shutdown (SIGTERM/SIGINT)
+- Server stop-accepting loop responds to SIGTERM and SIGINT.
+- 30-second drain window allows in-flight requests to complete.
+- On exit: rate-limit snapshot flushed to disk, SQLite event queue drained.
+
+#### TLS Hot-Reload (SIGHUP)
+- SIGHUP reloads both rules and TLS certificates atomically via `Arc<RwLock<TlsAcceptor>>`.
+
+#### AppSec Hardening
+- **Null-byte sanitisation** — `\0` bytes replaced with spaces before pattern matching, preventing null-byte truncation bypass (CWE-158).
+- **UTF-8 / Latin-1 fallback** — bodies that are not valid UTF-8 are decoded as Latin-1 (one byte → one code point, U+0000–U+00FF) instead of silent lossy replacement, preserving every byte for pattern matching without FFFD contamination.
+- **Per-request time cap** — configurable `--request-timeout-secs` (default 120 s) with HTTP 408 response.
+- **Header / body read timeouts** — `--header-timeout-secs` (default 10 s) and `--body-read-timeout-secs` (default 30 s) defend against Slowloris and RUDY attacks.
+
+#### W3C Traceparent Propagation
+- `traceparent` header synthesised per request (`00-{32-hex-trace_id}-{16-hex-parent_id}-01`) or forwarded if already present.
+- Propagated to upstream and stamped on every response alongside `x-request-id`.
+
+#### Health Endpoints
+- `/livez` — liveness probe, always 200.
+- `/readyz` and `/health` — readiness probe, returns 503 until rules are loaded.
+
+### Changed
+- `RuleSet.DetectionRule` gains `score: u16` field (default `0`; existing rule files unaffected).
+- `SecurityEvent` gains `score: u16` (omitted from JSON when `0`).
+- All tests converted to `#[tokio::test(flavor = "multi_thread")]` where engine construction is needed.
+
+---
+
 ## [2.11.1] - 2026-05-05
 
 ### Fixed

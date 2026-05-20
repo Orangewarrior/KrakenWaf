@@ -77,6 +77,21 @@ pub struct Cli {
     #[arg(long, default_value_t = 30)]
     pub connection_timeout_secs: u64,
 
+    /// Timeout in seconds for receiving the complete HTTP request headers.
+    /// Defends against Slowloris attacks that send headers one byte at a time.
+    #[arg(long, default_value_t = 10)]
+    pub header_timeout_secs: u64,
+
+    /// Timeout in seconds for the client to finish sending the request body.
+    /// Defends against RUDY (R-U-Dead-Yet) slow-body attacks.
+    #[arg(long, default_value_t = 30)]
+    pub body_read_timeout_secs: u64,
+
+    /// Maximum wall-clock time for a single request (headers + body + upstream + response).
+    /// Prevents any single request from tying up a connection indefinitely.
+    #[arg(long, default_value_t = 120)]
+    pub request_timeout_secs: u64,
+
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,
 

@@ -75,16 +75,36 @@ impl ProxyClient {
         // request. Threaded through all log events, SQLite rows, and the upstream
         // X-Request-Id header so a WAF alert can be correlated with upstream access logs.
         let request_id = Uuid::new_v4().simple().to_string();
-        let mut resp = self.dispatch(state, req, client_ip, &request_id).await;
+
+        // Extract or synthesize a W3C traceparent header.
+        // Format: 00-<trace_id_32hex>-<parent_id_16hex>-01
+        // If the client already sent a traceparent we propagate it unchanged (trust the trace chain).
+        // If not, we create one using request_id as the trace-id (padded to 32 hex) and a fixed parent-id.
+        let incoming_traceparent = req.headers()
+            .get("traceparent")
+            .and_then(|v| v.to_str().ok())
+            .map(|s| s.to_string());
+        let traceparent = incoming_traceparent.unwrap_or_else(|| {
+            // request_id is already 32 hex chars; use first 16 as parent-id span.
+            let parent_id = &request_id[..16];
+            format!("00-{request_id}-{parent_id}-01")
+        });
+
+        let start = std::time::Instant::now();
+        let mut resp = self.dispatch(state, req, client_ip, &request_id, &traceparent).await;
+        state.metrics.record_latency(start.elapsed());
         // Stamp every response (blocked or forwarded) with the correlation ID so the
         // client can include it in bug reports or support tickets.
         if let Ok(val) = http::header::HeaderValue::from_str(&request_id) {
             resp.headers_mut().insert(http::header::HeaderName::from_static("x-request-id"), val);
         }
+        if let Ok(val) = http::header::HeaderValue::from_str(&traceparent) {
+            resp.headers_mut().insert(http::header::HeaderName::from_static("traceparent"), val);
+        }
         resp
     }
 
-    async fn dispatch(&self, state: &AppState, mut req: Request<Incoming>, client_ip: String, request_id: &str) -> Response<Full<Bytes>> {
+    async fn dispatch(&self, state: &AppState, mut req: Request<Incoming>, client_ip: String, request_id: &str, traceparent: &str) -> Response<Full<Bytes>> {
         let method = req.method().clone();
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
         let uri = req.uri().clone();
@@ -93,6 +113,7 @@ impl ProxyClient {
         // A-2: per-route rule limit is further bounded by the operator-configured hard cap.
         let body_limit = state.waf.body_limit_for_path(&path).min(state.cli.max_body_bytes);
 
+        let anomaly_threshold = state.scoring.threshold_for(&path);
         let context = InspectionContext {
             client_ip: effective_ip.clone(),
             method: method.to_string(),
@@ -101,6 +122,7 @@ impl ProxyClient {
             headers: headers_flat.clone(),
             body_limit,
             request_id: request_id.to_string(),
+            anomaly_threshold,
         };
 
         // Check allow-paths: if the URI is explicitly allowed, skip WAF inspection entirely.
@@ -145,7 +167,7 @@ impl ProxyClient {
 
         if !skip_inspection {
             let full_request = format_full_request_bytes(&context, Some(&body_bytes));
-            match state.waf.inspect_complete_payload_with_context(&full_request, Some(&context.method)) {
+            match state.waf.inspect_complete_payload_with_context(&full_request, Some(&context.method), context.anomaly_threshold) {
                 Decision::Allow => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, Some(&body_bytes));
@@ -156,7 +178,7 @@ impl ProxyClient {
             }
         }
 
-        match self.forward_request(state, method, uri, req.headers(), body_bytes, request_id).await {
+        match self.forward_request(state, method, uri, req.headers(), body_bytes, request_id, traceparent).await {
             Ok(response) => response,
             Err(err) => {
                 error!(target: "krakenwaf", "upstream proxy failure: {err:#}");
@@ -171,6 +193,10 @@ impl ProxyClient {
     /// Returns `None` in `Silent` mode so the caller can continue forwarding the request.
     async fn log_and_enforce(&self, state: &AppState, event: SecurityEvent) -> Option<Response<Full<Bytes>>> {
         state.metrics.inc_blocked();
+        state.metrics.inc_rule_hit(&event.rule_id);
+        if event.score > 0 {
+            state.metrics.inc_anomaly_score_blocks();
+        }
 
         info!(
             target: "krakenwaf",
@@ -208,6 +234,7 @@ impl ProxyClient {
         headers: &HeaderMap,
         body: Bytes,
         request_id: &str,
+        traceparent: &str,
     ) -> Result<Response<Full<Bytes>>> {
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
@@ -235,6 +262,7 @@ impl ProxyClient {
 
         builder = builder.header("x-forwarded-proto", "https");
         builder = builder.header("x-request-id", request_id);
+        builder = builder.header("traceparent", traceparent);
         if let Some(header_name) = &self.internal_header_name {
             builder = builder.header(header_name, "1");
         }
@@ -286,6 +314,7 @@ impl ProxyClient {
                     headers: String::new(),
                     body_limit: 0,
                     request_id: request_id.to_string(),
+                    anomaly_threshold: 0,
                 },
                 finding.request_payload.clone(),
             );
@@ -334,7 +363,7 @@ async fn consume_and_inspect_body(
             inspection_buf.extend_from_slice(chunk);
 
             let request_window = format_full_request_window_bytes(ctx, &inspection_buf);
-            match state.waf.inspect_complete_payload_with_context(&request_window, Some(&ctx.method)) {
+            match state.waf.inspect_complete_payload_with_context(&request_window, Some(&ctx.method), ctx.anomaly_threshold) {
                 Decision::Allow => {
                     acc.extend_from_slice(chunk);
                     overlap = inspection_buf[inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..].to_vec();

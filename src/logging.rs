@@ -30,6 +30,8 @@ pub struct SecurityEvent {
     pub reference_url: String,
     pub rule_match: String,
     pub rule_line_match: String,
+    #[serde(skip_serializing_if = "is_zero_u16")]
+    pub score: u16,
     #[serde(skip_serializing)]
     pub request_payload: String,
 }
@@ -52,9 +54,14 @@ impl SecurityEvent {
             reference_url: sanitize_for_log(&finding.reference_url),
             rule_match: sanitize_for_log(&finding.rule_match),
             rule_line_match: sanitize_for_log(&finding.rule_line_match),
+            score: finding.score,
             request_payload,
         }
     }
+}
+
+fn is_zero_u16(v: &u16) -> bool {
+    *v == 0
 }
 
 pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {

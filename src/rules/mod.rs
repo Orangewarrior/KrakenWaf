@@ -75,6 +75,9 @@ pub struct DetectionRule {
     pub source: String,
     pub line: usize,
     pub http_action: HttpAction,
+    /// Anomaly score weight for this rule. 0 = binary block (existing behaviour).
+    /// > 0 = contributes to accumulated score; block when threshold exceeded.
+    pub score: u16,
 }
 
 /// A compiled regex rule with its metadata.

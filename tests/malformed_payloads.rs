@@ -2,6 +2,7 @@
 use krakenwaf::{
     dfa::{DfaConfig, DfaManagerBuilder},
     metrics::WafMetrics,
+    ratelimit_config::RateLimitConfig,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
     waf::{Decision, WafEngine},
 };
@@ -12,8 +13,8 @@ fn empty_dfa_manager() -> Arc<krakenwaf::dfa::DfaManager> {
     Arc::new(DfaManagerBuilder::new(DfaConfig::default()).build())
 }
 
-#[test]
-fn blocks_malformed_traversal_payload() {
+#[tokio::test(flavor = "multi_thread")]
+async fn blocks_malformed_traversal_payload() {
     let rules = Arc::new(RuleSet {
         blocked_ips: vec![],
         blocked_ip_prefixes: vec![],
@@ -30,6 +31,7 @@ fn blocks_malformed_traversal_payload() {
             rule_match: "../".into(),
             source: "rules.json:body_keywords".into(),
             http_action: HttpAction::Request,
+            score: 0,
         }],
         allowed_ips: vec![],
         scanner_agents: vec![],
@@ -43,6 +45,7 @@ fn blocks_malformed_traversal_payload() {
 
     let engine = WafEngine::new(
         rules,
+        &RateLimitConfig::default(),
         60,
         false,
         false,
@@ -51,13 +54,13 @@ fn blocks_malformed_traversal_payload() {
         tempfile::tempdir().unwrap().path().join("rate_limit.json"),
         Arc::new(WafMetrics::default()),
         empty_dfa_manager(),
-    ).unwrap();
+    ).await.unwrap();
     let decision = engine.inspect_body_chunk(br"../../../../etc/passwd");
     assert!(matches!(decision, Decision::Block(_)));
 }
 
-#[test]
-fn blocks_regex_based_rce_pattern() {
+#[tokio::test(flavor = "multi_thread")]
+async fn blocks_regex_based_rce_pattern() {
     let rules = Arc::new(RuleSet {
         blocked_ips: vec![],
         blocked_ip_prefixes: vec![],
@@ -81,6 +84,7 @@ fn blocks_regex_based_rce_pattern() {
                 rule_match: r"(?i)(cmd(\.exe)?\s+/c|powershell\s+-enc)".into(),
                 source: "regex/body_regex.json".into(),
                 http_action: HttpAction::Request,
+                score: 0,
             },
             compiled: Regex::new(r"(?i)(cmd(\.exe)?\s+/c|powershell\s+-enc)").unwrap(),
         }],
@@ -90,6 +94,7 @@ fn blocks_regex_based_rce_pattern() {
 
     let engine = WafEngine::new(
         rules,
+        &RateLimitConfig::default(),
         60,
         false,
         false,
@@ -98,7 +103,7 @@ fn blocks_regex_based_rce_pattern() {
         tempfile::tempdir().unwrap().path().join("rate_limit.json"),
         Arc::new(WafMetrics::default()),
         empty_dfa_manager(),
-    ).unwrap();
+    ).await.unwrap();
     let decision = engine.inspect_body_chunk(br"powershell -enc AAAA");
     assert!(matches!(decision, Decision::Block(_)));
 }

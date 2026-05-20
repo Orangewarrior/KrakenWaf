@@ -1,0 +1,17 @@
+# KrakenWaf — Network Protocol Configuration
+# Reload: restart the process (or SIGHUP to reload rules + TLS certs).
+
+http2:
+  # Accept HTTP/2 from downstream clients (ALPN h2 advertised on TLS).
+  # Set to false to force HTTP/1.1 only (useful for compatibility debugging).
+  server_enabled: true
+
+  # Forward requests to upstream over HTTP/2.
+  # Enable only if your upstream backend supports h2 (most do on port 443).
+  upstream_enabled: false
+
+  # Maximum concurrent streams per HTTP/2 connection.
+  max_concurrent_streams: 256
+
+  # Initial flow-control window size in bytes (RFC 9113 minimum: 65535).
+  initial_connection_window_size: 65535
