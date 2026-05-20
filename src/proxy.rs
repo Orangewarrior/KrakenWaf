@@ -226,6 +226,7 @@ impl ProxyClient {
         Some(block_content_response(state, StatusCode::FORBIDDEN, "Blocked by KrakenWaf"))
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn forward_request(
         &self,
         state: &AppState,

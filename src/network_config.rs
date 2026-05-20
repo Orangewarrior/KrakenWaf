@@ -3,13 +3,14 @@ use serde::Deserialize;
 use std::{fs, path::Path};
 
 /// HTTP protocol configuration loaded from `conf/network.yaml`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct NetworkConfig {
     #[serde(default)]
     pub http2: Http2Config,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)] // upstream_enabled, max_concurrent_streams, and initial_connection_window_size are surfaced for operators via YAML; not yet read on the server-side fast path.
 pub struct Http2Config {
     /// Enable HTTP/2 on the server (inbound) side.
     /// Default: true — clients may negotiate h2 via ALPN.
@@ -44,12 +45,6 @@ impl Default for Http2Config {
             max_concurrent_streams: 256,
             initial_connection_window_size: 65535,
         }
-    }
-}
-
-impl Default for NetworkConfig {
-    fn default() -> Self {
-        Self { http2: Http2Config::default() }
     }
 }
 

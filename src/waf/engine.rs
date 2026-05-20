@@ -63,7 +63,7 @@ use chrono::Utc;
 use ipnet::IpNet;
 use crate::ffi::libinjection;
 use parking_lot::RwLock;
-use std::{borrow::Cow, net::IpAddr, path::Path, sync::Arc, time::Duration};
+use std::{borrow::Cow, net::IpAddr, path::Path, sync::Arc};
 use tracing::warn;
 #[cfg(feature = "vectorscan-engine")]
 use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
@@ -600,6 +600,7 @@ fn rule_to_finding(rule: &DetectionRule, haystack: &str) -> Finding {
 /// Anomaly-score aware check. Returns a Block decision when:
 /// - rule.score == 0 (binary block), or
 /// - accumulated score reaches the threshold.
+///
 /// Returns None to continue inspection when score is below threshold.
 fn check_score(accumulated: &mut u32, finding: Finding, threshold: u32) -> Option<Decision> {
     if finding.score == 0 || threshold == 0 {

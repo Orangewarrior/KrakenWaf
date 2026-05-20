@@ -1,8 +1,8 @@
 
 use anyhow::Result;
 use fred::{
-    interfaces::{ClientLike, KeysInterface, LuaInterface},
-    prelude::{Builder, Config, Pool, ReconnectPolicy},
+    interfaces::{ClientLike, LuaInterface},
+    prelude::{Builder, Config, Pool},
     types::config::{TlsConfig, TlsConnector},
 };
 use serde::{Deserialize, Serialize};
@@ -294,24 +294,27 @@ impl RedisRateLimiter {
 }
 
 /// Builds a rustls TLS connector using a custom PEM-encoded CA certificate bundle.
+///
+/// Uses `rustls_pki_types::pem` for PEM parsing — avoids depending on the
+/// unmaintained `rustls-pemfile` crate (RUSTSEC-2025-0134).
 fn build_custom_ca_connector(ca_cert_path: &str) -> Result<TlsConnector> {
     use fred::rustls::{ClientConfig as RustlsClientConfig, RootCertStore};
+    use rustls_pki_types::{pem::PemObject, CertificateDer};
 
     let pem_bytes = std::fs::read(ca_cert_path)
         .map_err(|e| anyhow::anyhow!("failed to read CA cert '{ca_cert_path}': {e}"))?;
 
-    let mut root_store = RootCertStore::empty();
-    let mut cursor = std::io::Cursor::new(&pem_bytes);
-    let certs = rustls_pemfile::certs(&mut cursor)
-        .collect::<std::io::Result<Vec<_>>>()
+    let certs: Vec<CertificateDer<'static>> = CertificateDer::pem_slice_iter(&pem_bytes)
+        .collect::<Result<Vec<_>, _>>()
         .map_err(|e| anyhow::anyhow!("failed to parse certs from '{ca_cert_path}': {e}"))?;
-    let found = certs.len();
+
+    anyhow::ensure!(!certs.is_empty(), "no valid certificates found in '{ca_cert_path}'");
+
+    let mut root_store = RootCertStore::empty();
     for cert in certs {
         root_store.add(cert)
             .map_err(|e| anyhow::anyhow!("invalid CA cert in '{ca_cert_path}': {e}"))?;
     }
-
-    anyhow::ensure!(found > 0, "no valid certificates found in '{ca_cert_path}'");
 
     let tls_config = RustlsClientConfig::builder()
         .with_root_certificates(root_store)
