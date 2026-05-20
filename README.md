@@ -477,7 +477,7 @@ Fields:
 
 ---
 
-### CMC config — `rules/cmc/config.yaml`
+### 🔎  CMC config — `rules/cmc/config.yaml`
 
 Toggles each CMC detector independently at startup.
 Loaded via `--cmc-load rules/cmc/config.yaml`.
@@ -514,7 +514,7 @@ Set any key to `false` to disable that detector without recompiling.
 
 ---
 
-### Security header profiles — `rules/headers_http/`
+### 🔎 Security header profiles — `rules/headers_http/`
 
 Plain-text files (one `Header-Name: value` per line) injected into every
 upstream response. Loaded via `--header-protection-injection`.
@@ -550,7 +550,7 @@ krakenwaf ... --header-protection-injection rules/headers_http/strict.headers
 
 ---
 
-## CI/CD
+## 🕒 CI/CD
 
 ### Security pipeline (`.github/workflows/security.yml`)
 
@@ -596,7 +596,7 @@ Actions → Monthly Release Artifacts → [run] → Artifacts
 - - DOcs about CMC https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/cmc/schema.md
 
 
-## Scheduler and auto update
+## 🕒 Scheduler and auto update
 
 KrakenWaf includes two isolated update robots:
 
