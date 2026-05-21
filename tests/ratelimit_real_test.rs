@@ -2,13 +2,18 @@
 //!
 //! Topology
 //! ────────
-//!   reqwest  →  `KrakenWAF` `:WAF_PORT` (--no-tls)  →  Axum backend :9500
+//!   reqwest  →  `KrakenWAF` `:WAF_PORT` (--no-tls)  →  Axum backend `:BACKEND_PORT`
 //!
 //! Tests exercise:
 //!   • Local GCRA rate limiter via WAF binary (--rate-limit-per-minute)
 //!   • Config file loading (--ratelimit-by-file-conf)
 //!   • Per-IP concurrency cap (`max_coroutines_per_ip`)
 //!   • Attack simulations: burst, concurrent flood, slow-connection (Slowloris)
+//!
+//! Port isolation
+//! ──────────────
+//! Every test process allocates ports dynamically via the OS (bind ":0") so
+//! that concurrent `cargo test` runs do not fight over fixed port numbers.
 #![allow(clippy::unwrap_used)]
 
 use axum::{routing::get, Router};
@@ -16,10 +21,7 @@ use reqwest::StatusCode;
 use std::{
     net::SocketAddr,
     process::{Child, Command, Stdio},
-    sync::{
-        atomic::{AtomicU16, Ordering},
-        OnceLock,
-    },
+    sync::OnceLock,
     time::Duration,
 };
 use tempfile::NamedTempFile;
@@ -27,32 +29,37 @@ use tokio::io::AsyncWriteExt;
 
 // ── Port allocation ───────────────────────────────────────────────────────────
 
-const BACKEND_PORT: u16 = 9500;
-static NEXT_WAF_PORT: AtomicU16 = AtomicU16::new(9510);
+/// Bind to port 0 and return the OS-allocated ephemeral port number.
+/// The socket is released immediately; there is a small TOCTOU window, but
+/// it is acceptable in loopback-only test infrastructure.
+fn pick_free_port() -> u16 {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0");
+    listener.local_addr().expect("local_addr").port()
+}
 
+/// Allocate a free WAF port for one test.
 fn alloc_waf_port() -> u16 {
-    NEXT_WAF_PORT.fetch_add(1, Ordering::SeqCst)
+    pick_free_port()
 }
 
-fn backend_addr() -> String {
-    format!("127.0.0.1:{BACKEND_PORT}")
-}
+// ── Axum backend (started once per test process on a dynamic port) ───────────
 
-fn waf_base(port: u16) -> String {
-    format!("http://127.0.0.1:{port}")
-}
-
-// ── Axum backend (started once for all tests in this file) ───────────────────
-
+/// The backend port for this test-process instance. Resolved once, then cached.
+static BACKEND_PORT: OnceLock<u16> = OnceLock::new();
 static BACKEND_ONCE: OnceLock<()> = OnceLock::new();
 
-async fn ok_handler() -> &'static str {
-    "ok"
-}
+fn ensure_backend() -> u16 {
+    // Bind first (keeps the port while we hand it to the spawned thread).
+    let std_listener = BACKEND_PORT.get_or_init(|| {
+        let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind backend");
+        l.local_addr().expect("addr").port()
+    });
+    let port = *std_listener;
 
-fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
-        let addr: SocketAddr = backend_addr().parse().expect("test");
+        // Bind again — the first bind above only reserved the port number.
+        // We do a second bind here; the tiny race is acceptable in loopback tests.
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
         std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -66,6 +73,20 @@ fn ensure_backend() {
         });
         std::thread::sleep(Duration::from_millis(300));
     });
+
+    port
+}
+
+fn backend_addr(port: u16) -> String {
+    format!("127.0.0.1:{port}")
+}
+
+fn waf_base(port: u16) -> String {
+    format!("http://127.0.0.1:{port}")
+}
+
+async fn ok_handler() -> &'static str {
+    "ok"
 }
 
 // ── WAF subprocess helpers ────────────────────────────────────────────────────
@@ -82,7 +103,7 @@ impl Drop for WafGuard {
     }
 }
 
-fn spawn_waf(port: u16, extra_args: &[&str]) -> WafGuard {
+fn spawn_waf(waf_port: u16, backend_port: u16, extra_args: &[&str]) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
     let tmpdir = tempfile::tempdir().expect("tempdir");
@@ -91,8 +112,8 @@ fn spawn_waf(port: u16, extra_args: &[&str]) -> WafGuard {
         .args([
             "--no-tls",
             "--allow-private-upstream",
-            "--listen", &format!("127.0.0.1:{port}"),
-            "--upstream", &format!("http://{}", backend_addr()),
+            "--listen", &format!("127.0.0.1:{waf_port}"),
+            "--upstream", &format!("http://{}", backend_addr(backend_port)),
             "--rules-dir", &rules_dir,
         ])
         .args(extra_args)
@@ -131,9 +152,9 @@ async fn wait_for_waf(client: &reqwest::Client, port: u16) {
 
 #[tokio::test]
 async fn local_rate_limit_blocks_burst() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf(port, &["--rate-limit-per-minute", "3"]);
+    let _waf = spawn_waf(port, bp, &["--rate-limit-per-minute", "3"]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -150,9 +171,9 @@ async fn local_rate_limit_blocks_burst() {
 
 #[tokio::test]
 async fn local_rate_limit_ips_are_independent() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf(port, &["--rate-limit-per-minute", "1"]);
+    let _waf = spawn_waf(port, bp, &["--rate-limit-per-minute", "1"]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -169,14 +190,14 @@ async fn local_rate_limit_ips_are_independent() {
 
 #[tokio::test]
 async fn ratelimit_by_file_conf_sets_rate_limit() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
 
     let conf = NamedTempFile::new().expect("tempfile");
     std::fs::write(conf.path(), "rate_limit_per_minute: 2\nmax_coroutines_per_ip: 0\n")
         .expect("write conf");
 
-    let _waf = spawn_waf(port, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -192,7 +213,7 @@ async fn ratelimit_by_file_conf_sets_rate_limit() {
 
 #[tokio::test]
 async fn cli_rate_limit_overrides_file_conf() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
 
     // File says limit=1 but CLI says 5 — CLI wins.
@@ -200,7 +221,7 @@ async fn cli_rate_limit_overrides_file_conf() {
     std::fs::write(conf.path(), "rate_limit_per_minute: 1\nmax_coroutines_per_ip: 0\n")
         .expect("write conf");
 
-    let _waf = spawn_waf(port, &[
+    let _waf = spawn_waf(port, bp, &[
         "--ratelimit-by-file-conf", conf.path().to_str().unwrap(),
         "--rate-limit-per-minute", "5",
     ]);
@@ -221,7 +242,7 @@ async fn cli_rate_limit_overrides_file_conf() {
 
 #[tokio::test]
 async fn max_coroutines_per_ip_blocks_excess_concurrent() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
 
     // Set a very high rate limit so the GCRA never fires; test only concurrency.
@@ -229,7 +250,7 @@ async fn max_coroutines_per_ip_blocks_excess_concurrent() {
     std::fs::write(conf.path(), "rate_limit_per_minute: 10000\nmax_coroutines_per_ip: 2\n")
         .expect("write conf");
 
-    let _waf = spawn_waf(port, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -255,14 +276,14 @@ async fn max_coroutines_per_ip_blocks_excess_concurrent() {
 
 #[tokio::test]
 async fn max_coroutines_per_ip_zero_disables_limit() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
 
     let conf = NamedTempFile::new().expect("tempfile");
     std::fs::write(conf.path(), "rate_limit_per_minute: 10000\nmax_coroutines_per_ip: 0\n")
         .expect("write conf");
 
-    let _waf = spawn_waf(port, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -292,9 +313,9 @@ async fn max_coroutines_per_ip_zero_disables_limit() {
 /// burst up to the configured limit and block the rest.
 #[tokio::test]
 async fn attack_burst_is_rate_limited() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf(port, &["--rate-limit-per-minute", "5"]);
+    let _waf = spawn_waf(port, bp, &["--rate-limit-per-minute", "5"]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -315,9 +336,9 @@ async fn attack_burst_is_rate_limited() {
 /// not per-UA, so rotating the user-agent must not bypass the limit.
 #[tokio::test]
 async fn attack_scanner_rate_limited_regardless_of_ua() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf(port, &["--rate-limit-per-minute", "3"]);
+    let _waf = spawn_waf(port, bp, &["--rate-limit-per-minute", "3"]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -352,7 +373,7 @@ async fn attack_scanner_rate_limited_regardless_of_ua() {
 /// cap and the rate limiter together must reduce the number of successful responses.
 #[tokio::test]
 async fn attack_concurrent_flood_is_throttled() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
 
     let conf = NamedTempFile::new().expect("tempfile");
@@ -362,7 +383,7 @@ async fn attack_concurrent_flood_is_throttled() {
     )
     .expect("write conf");
 
-    let _waf = spawn_waf(port, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -393,7 +414,7 @@ async fn attack_concurrent_flood_is_throttled() {
 /// rejected when the concurrency cap is tight.
 #[tokio::test]
 async fn attack_slowloris_concurrent_blocked() {
-    ensure_backend();
+    let bp = ensure_backend();
     let port = alloc_waf_port();
 
     let conf = NamedTempFile::new().expect("tempfile");
@@ -403,7 +424,7 @@ async fn attack_slowloris_concurrent_blocked() {
     )
     .expect("write conf");
 
-    let _waf = spawn_waf(port, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -434,4 +455,3 @@ async fn attack_slowloris_concurrent_blocked() {
     }
     drop(slow_conn);
 }
-
