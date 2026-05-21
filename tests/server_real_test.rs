@@ -337,21 +337,21 @@ fn spawn_waf_with_cmc(waf_port: u16) -> WafGuard {
 }
 
 /// Poll the WAF health endpoint until it responds (or timeout).
-/// Allows up to 45 s (150 × 300 ms) so the WAF binary can start even
-/// when many parallel cargo-test processes saturate the CPU.
+/// Allows up to 25 s (50 × 500 ms). If the WAF does not respond within
+/// this window it is considered broken, not merely slow.
 async fn wait_for_waf(client: &reqwest::Client, waf_port: u16) {
     let health_url = format!("{}/__krakenwaf/health", waf_base(waf_port));
-    for _ in 0..150 {
+    for _ in 0..50 {
         if client
             .get(&health_url)
-            .timeout(Duration::from_millis(1000))
+            .timeout(Duration::from_millis(500))
             .send()
             .await
             .is_ok()
         {
             return;
         }
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
     panic!("KrakenWAF on port {waf_port} did not become ready in time");
 }
