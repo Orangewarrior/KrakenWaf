@@ -1,0 +1,51 @@
+# KrakenWaf — Rate-Limit Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Load with:  --ratelimit-by-file-conf conf/ratelimit.yaml
+# Auto-discovered at conf/ratelimit.yaml when present in the working directory.
+#
+# Priority chain for rate_limit_per_minute:
+#   1. --rate-limit-per-minute CLI flag  (highest)
+#   2. rate_limit_per_minute in this file
+#   3. Built-in default: 240 req/min
+
+# Maximum requests per minute per source IP.
+# Set to 0 to defer to --rate-limit-per-minute or the built-in default (240).
+rate_limit_per_minute: 240
+
+# Maximum simultaneous in-flight connections accepted from a single IP.
+# Excess connections receive HTTP 429 with Retry-After: 5.
+# Set to 0 to disable per-IP concurrency limiting.
+max_coroutines_per_ip: 64
+
+# ── Redis distributed rate limiter ────────────────────────────────────────────
+# When this section is present KrakenWaf replaces the built-in GCRA limiter
+# with a Redis-backed counter, enabling consistent rate limiting across multiple
+# WAF instances (horizontal scaling / active-active deployments).
+#
+# CIS Redis Benchmark requirements enforced by KrakenWaf:
+#   • TLS mandatory — URL MUST use the rediss:// scheme (encrypted transport).
+#   • Credentials via environment variables only — never hardcode in this file.
+#     REDIS_PASSWORD — AUTH password (required when Redis has requirepass set).
+#     REDIS_USERNAME — ACL username (optional, Redis 6+ ACL AUTH).
+#   • Fail-open policy — if Redis is unreachable a request is allowed through
+#     and a tracing warning is emitted. The local GCRA limiter is NOT used as
+#     fallback; disable the redis section to fall back to local mode.
+#
+# Example — uncomment and adjust to enable:
+#
+# redis:
+#   # Redis endpoint. rediss:// enables TLS (required).
+#   url: "rediss://redis.internal:6380/0"
+#
+#   # Number of pooled connections. Tune to match expected request concurrency.
+#   pool_size: 4
+#
+#   # Namespace prefix — isolates this WAF from other services sharing Redis.
+#   key_prefix: "krakenwaf:rl"
+#
+#   # Sliding window length in seconds (default: 60 = per-minute).
+#   window_secs: 60
+#
+#   # Path to a custom CA certificate (PEM) for private PKI / mTLS deployments.
+#   # Omit to use the system trust store.
+#   # ca_cert_path: "/etc/ssl/private/redis-ca.pem"

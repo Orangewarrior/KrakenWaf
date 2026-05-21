@@ -58,8 +58,18 @@ pub struct Cli {
     #[arg(long)]
     pub blockmsg: Option<String>,
 
-    #[arg(long, default_value_t = 240)]
-    pub rate_limit_per_minute: u32,
+    /// Per-IP request rate limit (requests per minute). Overrides the value in
+    /// `--ratelimit-by-file-conf` or `conf/ratelimit.yaml`. When absent the
+    /// effective limit is taken from the config file or defaults to 240.
+    #[arg(long)]
+    pub rate_limit_per_minute: Option<u32>,
+
+    /// Path to a rate-limit YAML configuration file. KrakenWaf auto-discovers
+    /// `conf/ratelimit.yaml` in the working directory; use this flag to supply
+    /// an alternative path. The file controls the Redis backend, per-IP
+    /// concurrency cap, and the default rate limit.
+    #[arg(long = "ratelimit-by-file-conf")]
+    pub ratelimit_by_file_conf: Option<String>,
 
     #[arg(long, default_value_t = 15)]
     pub upstream_timeout_secs: u64,

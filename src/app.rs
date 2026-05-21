@@ -7,11 +7,14 @@ use crate::{
     proxy::ProxyClient,
     response_headers::ResponseHeaderPolicy,
     storage::SqliteStore,
-    waf::WafEngine
+    waf::WafEngine,
 };
 use bytes::Bytes;
-use std::path::PathBuf;
-use std::sync::Arc;
+use dashmap::DashMap;
+use std::{
+    path::PathBuf,
+    sync::{atomic::AtomicUsize, Arc},
+};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -27,4 +30,10 @@ pub struct AppState {
     pub response_header_policy: Arc<ResponseHeaderPolicy>,
     pub mode: WafMode,
     pub allow_path_config: Option<AllowPathConfig>,
+    /// Tracks the number of in-flight requests per source IP for per-IP
+    /// concurrency limiting. Entries are lazily created on first request.
+    pub ip_connections: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    /// Maximum simultaneous in-flight requests accepted from a single IP.
+    /// 0 disables the per-IP concurrency cap.
+    pub max_coroutines_per_ip: usize,
 }

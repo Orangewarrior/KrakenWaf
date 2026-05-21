@@ -13,12 +13,12 @@ use crate::update::{
 use crate::{
     metrics::WafMetrics,
     rules::{AddrListEntry, HttpAction, RuleSet, Severity},
-    waf::rate_limit::{PersistenceMode, RateLimiter},
+    waf::rate_limit::RateLimiter,
 };
 use anyhow::Result;
 use chrono::Utc;
 use parking_lot::RwLock;
-use std::{path::Path, sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc};
 
 use ip_filter::{canonical_ip, extract_header_value};
 use matchers::{
@@ -104,26 +104,18 @@ struct SpamhausDqsConfig {
 
 impl WafEngine {
     /// # Errors
-    /// Returns an error if the rate limiter or rule matchers fail to initialize.
+    /// Returns an error if the rule matchers fail to initialise.
     #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
     pub fn new(
         rules: Arc<RuleSet>,
-        rate_limit_per_minute: u32,
+        rate_limiter: Arc<RateLimiter>,
         blocklist_ip_enabled: bool,
         libinjection_sqli_enabled: bool,
         libinjection_xss_enabled: bool,
         vectorscan_enabled: bool,
-        snapshot_path: &std::path::Path,
-        rate_limit_persistence: PersistenceMode,
         metrics: Arc<WafMetrics>,
         cmc_manager: Arc<CmcManager>,
     ) -> Result<Self> {
-        let rate_limiter = Arc::new(RateLimiter::new(
-            rate_limit_per_minute,
-            Duration::from_mins(1),
-            snapshot_path,
-            rate_limit_persistence,
-        )?);
         rate_limiter.clone().spawn_persistence_task();
         let matchers = build_matchers(&rules, vectorscan_enabled)?;
         let spamhaus_dqs = load_spamhaus_dqs_config(blocklist_ip_enabled);

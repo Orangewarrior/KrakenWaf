@@ -8,13 +8,11 @@ use hyper_util::{
     rt::{TokioExecutor, TokioIo},
     server::conn::auto::Builder,
 };
-use std::{
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    time::Duration,
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
 };
+use std::time::Duration;
 use tokio::{net::TcpListener, sync::Notify, task, time::timeout};
 use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
@@ -23,8 +21,16 @@ use tracing::{error, info, warn};
 /// receiving SIGINT/SIGTERM before forcibly returning.
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// Resolves when the process receives SIGINT or, on Unix, SIGTERM. Used to wire
-/// graceful shutdown into both the TLS and plain-HTTP listener loops.
+/// RAII guard that decrements the per-IP in-flight counter when dropped.
+struct ConnGuard(Arc<AtomicUsize>);
+
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Resolves when the process receives SIGINT or, on Unix, SIGTERM.
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
@@ -218,34 +224,60 @@ async fn handle(
 ) -> Response<Full<Bytes>> {
     let path = req.uri().path();
 
-    // Health and metrics endpoints respect the addr allowlist.
+    // Health and metrics endpoints respect the addr allowlist only — skip
+    // per-IP concurrency tracking for these lightweight internal routes.
     if path == "/__krakenwaf/health" || path == "/metrics" {
         let snap = state.waf.rules_snapshot();
         if !snap.is_ip_allowed(&client_ip) {
             let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-            state
-                .response_header_policy
-                .apply(resp.headers_mut(), false);
+            state.response_header_policy.apply(resp.headers_mut(), false);
             return resp;
         }
         if path == "/__krakenwaf/health" {
             let mut response = plain_response(StatusCode::OK, "KrakenWaf OK");
-            state
-                .response_header_policy
-                .apply(response.headers_mut(), false);
+            state.response_header_policy.apply(response.headers_mut(), false);
             return response;
         }
-        // /metrics
         let mut response = Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
             .body(Full::new(Bytes::from(state.metrics.render_prometheus())))
             .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
-        state
-            .response_header_policy
-            .apply(response.headers_mut(), false);
+        state.response_header_policy.apply(response.headers_mut(), false);
         return response;
     }
+
+    // Per-IP concurrency gate — enforced before any WAF inspection.
+    let _conn_guard = if state.max_coroutines_per_ip > 0 {
+        let counter = state
+            .ip_connections
+            .entry(client_ip.clone())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+            .clone();
+
+        let prev = counter.fetch_add(1, Ordering::Relaxed);
+        if prev >= state.max_coroutines_per_ip {
+            counter.fetch_sub(1, Ordering::Relaxed);
+            warn!(
+                target: "krakenwaf",
+                ip = %client_ip,
+                limit = state.max_coroutines_per_ip,
+                "per-IP concurrency limit exceeded"
+            );
+            state.metrics.inc_rate_limit_hits();
+            let mut resp = plain_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many simultaneous connections from this IP address",
+            );
+            resp.headers_mut()
+                .insert("Retry-After", http::HeaderValue::from_static("5"));
+            state.response_header_policy.apply(resp.headers_mut(), false);
+            return resp;
+        }
+        Some(ConnGuard(counter))
+    } else {
+        None
+    };
 
     state.proxy.handle(&state, req, client_ip).await
 }

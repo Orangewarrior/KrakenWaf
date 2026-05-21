@@ -1,3 +1,68 @@
+## [2.23.0] - 2026-05-21
+
+### Added
+
+#### Rate-limit configuration file (`--ratelimit-by-file-conf`)
+
+- New CLI flag `--ratelimit-by-file-conf <path>` loads all rate-limit settings
+  from a YAML file, eliminating the need to pass individual rate-limit arguments.
+- KrakenWaf **auto-discovers** `conf/ratelimit.yaml` in the working directory;
+  no flag needed when the file is present.
+- Priority chain: explicit `--rate-limit-per-minute` CLI flag → value in the
+  config file → built-in default (240 req/min).
+- Config fields:
+  - `rate_limit_per_minute` — per-IP request rate (0 = defer to CLI/default).
+  - `max_coroutines_per_ip` — per-IP concurrency cap (see below).
+  - `redis` — Redis backend configuration (see below).
+- Template file shipped at `conf/ratelimit.yaml` with full inline documentation.
+
+#### Per-IP concurrency limiter (`max_coroutines_per_ip`)
+
+- New `max_coroutines_per_ip` field (config file) caps the number of
+  simultaneous in-flight requests accepted from a single IP address.
+- Excess connections are rejected immediately with **HTTP 429** and
+  `Retry-After: 5` before any WAF inspection or upstream proxying occurs.
+- Implemented as a lock-free `AtomicUsize` per IP stored in a `DashMap`
+  with RAII `ConnGuard` semantics — no per-request allocation on the hot path.
+- Default: 64. Set to 0 to disable.
+
+#### Redis distributed rate-limiter backend
+
+- When a `redis:` section is present in `conf/ratelimit.yaml`, KrakenWaf
+  replaces the local GCRA limiter with a Redis-backed counter, enabling
+  consistent rate limiting across multiple WAF instances.
+- Rate limiting uses an **atomic Lua script** (`INCR` + conditional `EXPIRE`)
+  executed server-side — no MULTI/EXEC round-trips, no TOCTOU window.
+- **Fail-open policy**: Redis unavailability emits a `tracing::warn!` and
+  allows the request through rather than causing an outage.
+- **CIS Redis Benchmark hardening enforced at startup**:
+  - URL must use `rediss://` (TLS mandatory — runtime error otherwise).
+  - Credentials (`REDIS_PASSWORD`, `REDIS_USERNAME`) read from environment
+    variables — never stored in the config file, safe for container secrets vaults.
+  - Custom CA certificate supported via `ca_cert_path` for private PKI / mTLS.
+- Connection pool size, key namespace prefix, and window duration configurable.
+
+### Tests
+
+- New unit tests in `src/waf/rate_limit.rs`:
+  - `redis_allows_within_limit` — Redis allows exactly `limit` requests.
+  - `redis_ips_are_independent` — separate counters per IP.
+  - `redis_window_resets` — counter expires after the configured window.
+  - All Redis tests auto-skip when `redis-server` is not on `PATH`.
+- New integration test file `tests/ratelimit_real_test.rs` (11 tests):
+  - `local_rate_limit_blocks_burst` — GCRA blocks after configured limit.
+  - `local_rate_limit_ips_are_independent` — IPs have isolated counters.
+  - `ratelimit_by_file_conf_sets_rate_limit` — config file sets effective limit.
+  - `cli_rate_limit_overrides_file_conf` — CLI flag takes precedence.
+  - `max_coroutines_per_ip_blocks_excess_concurrent` — concurrent cap enforced.
+  - `max_coroutines_per_ip_zero_disables_limit` — cap=0 allows all.
+  - `attack_burst_is_rate_limited` — burst of 10 requests, limit=5, rest blocked.
+  - `attack_scanner_rate_limited_regardless_of_ua` — UA rotation doesn't bypass limit.
+  - `attack_concurrent_flood_is_throttled` — flood of 20 concurrent requests throttled.
+  - `attack_slowloris_concurrent_blocked` — slow-connection Slowloris simulation.
+
+---
+
 ## [2.22.0] - 2026-05-20
 
 ### Added
