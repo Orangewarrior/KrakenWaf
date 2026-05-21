@@ -1,4 +1,4 @@
-## [2.12.0] - 2026-05-20
+## [2.12.0] - 2026-05-21
 
 ### Added
 
@@ -32,6 +32,43 @@
   - Fail-open on Redis unavailability (logged as warning) to prevent WAF-induced DoS.
 - `fred = "10.1"` (rustls-ring feature) added as dependency.
 - `WafEngine::new` is now `async` to support async Redis pool initialisation.
+
+#### Rate-Limit Config File (`--ratelimit-by-file-conf`)
+- New CLI flag `--ratelimit-by-file-conf <path>` loads **all** rate-limit settings from a YAML
+  file, eliminating the need to pass individual rate-limit flags at every startup.
+- Priority chain: explicit `--rate-limit-per-minute` → file `rate_limit_per_minute` → built-in
+  default (240 req/min). Operators can always override the file with a CLI flag.
+- `conf/ratelimit.yaml` gains two new top-level fields:
+  - `rate_limit_per_minute: u32` — per-IP request rate; `0` delegates to CLI default.
+  - `max_coroutines_per_ip: usize` — per-IP simultaneous in-flight connection cap (default **64**).
+- `src/ratelimit_config.rs`:
+  - `RateLimitConfig::load_from(path)` — explicit file-path loader (auto-discovered default
+    unchanged at `conf/ratelimit.yaml`).
+  - `rate_limit_per_minute: Option<u32>` deserialised with `0 → None` semantics.
+  - `max_coroutines_per_ip: usize` with serde default (64).
+- `src/cli.rs`: `rate_limit_per_minute` changed to `Option<u32>`; `effective_rate_limit()`
+  helper resolves the three-level priority chain.
+
+#### Per-IP Concurrency Limiter (`max_coroutines_per_ip`)
+- Independently caps simultaneous in-flight HTTP requests per client IP, regardless of the
+  request-rate window. Defends against connection-flood and Slowloris-style attacks.
+- When an IP exceeds the cap, the new request receives **HTTP 429 Too Many Requests** with a
+  `Retry-After: 5` header and the WAF `rate_limit_hits` metric is incremented.
+- `src/server.rs`: RAII `ConnGuard` atomically tracks in-flight count per IP via a
+  `DashMap<String, Arc<AtomicUsize>>` in `AppState`; zero-cost when the feature is disabled
+  (`max_coroutines_per_ip = 0`).
+- `dashmap = "6"` added as runtime dependency.
+
+#### Rate-Limit Integration Tests (`tests/ratelimit_real_test.rs`)
+- New test file with **14 integration tests** covering:
+  - **Local rate limiter** (WAF subprocess): burst blocked after limit; IPs independent;
+    `--ratelimit-by-file-conf` loads `rate_limit_per_minute` from file; CLI flag overrides file.
+  - **Per-IP concurrency** (WAF subprocess + slow backend): cap=2 blocks 3rd concurrent request;
+    cap=0 disables the limit; Slowloris simulation (3 slow connections + 1 fast → HTTP 429).
+  - **Redis backend** (direct, no-TLS local `redis-server`): blocks after limit; IPs independent;
+    2-second TTL window resets; 30-goroutine concurrent flood respects exact limit; key-prefix
+    namespace isolation between WAF instances.
+- Tests auto-skip when `redis-server` is absent from PATH; `which = "7"` added as dev-dependency.
 
 #### Graceful Shutdown (SIGTERM/SIGINT)
 - Server stop-accepting loop responds to SIGTERM and SIGINT.
