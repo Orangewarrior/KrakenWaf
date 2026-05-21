@@ -14,9 +14,42 @@ use http::{
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use reqwest::{redirect::Policy, Client};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tracing::{error, info, warn};
 use url::{Host, Url};
 use uuid::Uuid;
+
+/// RAII guard that tracks bytes buffered during body inspection and releases
+/// the global + per-IP in-flight byte counters on drop.
+struct BodyTracker {
+    global: Arc<AtomicUsize>,
+    ip: Arc<AtomicUsize>,
+    bytes: usize,
+}
+
+impl BodyTracker {
+    fn new(global: Arc<AtomicUsize>, ip: Arc<AtomicUsize>) -> Self {
+        Self { global, ip, bytes: 0 }
+    }
+
+    fn add(&mut self, n: usize) {
+        self.global.fetch_add(n, Ordering::Relaxed);
+        self.ip.fetch_add(n, Ordering::Relaxed);
+        self.bytes += n;
+    }
+}
+
+impl Drop for BodyTracker {
+    fn drop(&mut self) {
+        if self.bytes > 0 {
+            self.global.fetch_sub(self.bytes, Ordering::Relaxed);
+            self.ip.fetch_sub(self.bytes, Ordering::Relaxed);
+        }
+    }
+}
 
 /// Bytes carried between adjacent body chunks when streaming-inspecting the body.
 /// Sized to be larger than any realistic detection pattern so attackers cannot
@@ -118,12 +151,31 @@ impl ProxyClient {
         // request. Threaded through all log events, SQLite rows, and the upstream
         // X-Request-Id header so a WAF alert can be correlated with upstream access logs.
         let request_id = Uuid::new_v4().simple().to_string();
-        let mut resp = self.dispatch(state, req, client_ip, &request_id).await;
-        // Stamp every response (blocked or forwarded) with the correlation ID so the
-        // client can include it in bug reports or support tickets.
+
+        // Build or propagate a W3C traceparent.
+        // Format: "00-{trace_id_32hex}-{parent_id_16hex}-01"
+        // - Incoming valid traceparent → preserve trace-id, generate fresh parent-id span.
+        // - No incoming traceparent → generate both trace-id and parent-id from UUID.
+        let traceparent = build_traceparent(
+            req.headers()
+                .get("traceparent")
+                .and_then(|v| v.to_str().ok()),
+            &state.metrics,
+        );
+
+        let started = std::time::Instant::now();
+        let mut resp = self.dispatch(state, req, client_ip, &request_id, &traceparent).await;
+        state
+            .metrics
+            .observe_latency_ms(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
+        // Stamp every response (blocked or forwarded) with the correlation IDs.
         if let Ok(val) = http::header::HeaderValue::from_str(&request_id) {
             resp.headers_mut()
                 .insert(http::header::HeaderName::from_static("x-request-id"), val);
+        }
+        if let Ok(val) = http::header::HeaderValue::from_str(&traceparent) {
+            resp.headers_mut()
+                .insert(http::header::HeaderName::from_static("traceparent"), val);
         }
         resp
     }
@@ -135,6 +187,7 @@ impl ProxyClient {
         mut req: Request<Incoming>,
         client_ip: String,
         request_id: &str,
+        traceparent: &str,
     ) -> Response<Full<Bytes>> {
         let method = req.method().clone();
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
@@ -188,7 +241,7 @@ impl ProxyClient {
             }
         }
 
-        let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut()).await {
+        let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut(), &client_ip).await {
             Ok(bytes) => bytes,
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
                 return block_content_response(
@@ -246,7 +299,7 @@ impl ProxyClient {
         }
 
         match self
-            .forward_request(state, method, uri, req.headers(), body_bytes, request_id)
+            .forward_request(state, method, uri, req.headers(), body_bytes, request_id, traceparent)
             .await
         {
             Ok(response) => response,
@@ -305,7 +358,7 @@ impl ProxyClient {
         ))
     }
 
-    #[allow(clippy::too_many_lines)]
+    #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
     async fn forward_request(
         &self,
         state: &AppState,
@@ -314,6 +367,7 @@ impl ProxyClient {
         headers: &HeaderMap,
         body: Bytes,
         request_id: &str,
+        traceparent: &str,
     ) -> Result<Response<Full<Bytes>>> {
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
@@ -343,6 +397,7 @@ impl ProxyClient {
 
         builder = builder.header("x-forwarded-proto", "https");
         builder = builder.header("x-request-id", request_id);
+        builder = builder.header("traceparent", traceparent);
         if let Some(header_name) = &self.internal_header_name {
             builder = builder.header(header_name, "1");
         }
@@ -506,12 +561,33 @@ async fn consume_and_inspect_body(
     state: &AppState,
     ctx: &InspectionContext,
     body: &mut Incoming,
+    client_ip: &str,
 ) -> std::result::Result<Bytes, BodyInspectionError> {
     let mut acc = BytesMut::new();
     let mut overlap = Vec::new();
 
+    // Acquire (or lazily create) the per-IP body-byte counter and wire up the
+    // global + per-IP RAII tracker. The tracker auto-releases both counters on drop
+    // whether the function returns Ok, Err, or panics.
+    // Lazily create the per-IP body-byte counter and clone the Arc so the tracker
+    // can hold it independently of the DashMap entry guard.
+    let ip_counter: Arc<AtomicUsize> = state
+        .ip_body_bytes
+        .entry(client_ip.to_string())
+        .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+        .clone();
+    let mut tracker =
+        BodyTracker::new(Arc::clone(&state.inflight_body_bytes), ip_counter);
+
+    // Body frame timeout: configurable via CLI, falls back to BODY_FRAME_TIMEOUT constant.
+    let frame_timeout = if state.cli.body_frame_timeout_secs > 0 {
+        std::time::Duration::from_secs(state.cli.body_frame_timeout_secs)
+    } else {
+        BODY_FRAME_TIMEOUT
+    };
+
     loop {
-        let frame = match tokio::time::timeout(BODY_FRAME_TIMEOUT, body.frame()).await {
+        let frame = match tokio::time::timeout(frame_timeout, body.frame()).await {
             Ok(Some(frame)) => frame.map_err(|err| BodyInspectionError::Other(err.into()))?,
             Ok(None) => break,
             Err(_) => return Err(BodyInspectionError::Timeout),
@@ -522,6 +598,9 @@ async fn consume_and_inspect_body(
                     limit: ctx.body_limit,
                 });
             }
+
+            // Track bytes for global + per-IP backpressure.
+            tracker.add(chunk.len());
 
             let mut inspection_buf = BytesMut::with_capacity(overlap.len() + chunk.len());
             inspection_buf.extend_from_slice(&overlap);
@@ -863,6 +942,48 @@ fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppStat
     } else {
         peer_ip.to_string()
     }
+}
+
+/// Build or propagate a W3C traceparent header value.
+///
+/// Rules:
+/// - If the incoming value is present and has a valid 32-hex trace-id in field[1],
+///   the trace-id is preserved and a new parent-id span is generated.
+/// - Otherwise (absent or malformed) both trace-id and parent-id are freshly
+///   generated from UUID v4.
+fn build_traceparent(incoming: Option<&str>, metrics: &crate::metrics::WafMetrics) -> String {
+    fn new_parent_id() -> String {
+        let parent_bytes = *Uuid::new_v4().as_bytes();
+        format!(
+            "{:016x}",
+            u64::from_be_bytes([
+                parent_bytes[0],
+                parent_bytes[1],
+                parent_bytes[2],
+                parent_bytes[3],
+                parent_bytes[4],
+                parent_bytes[5],
+                parent_bytes[6],
+                parent_bytes[7],
+            ])
+        )
+    }
+
+    if let Some(tp) = incoming {
+        let parts: Vec<&str> = tp.splitn(4, '-').collect();
+        if parts.len() >= 3
+            && parts[1].len() == 32
+            && parts[1].chars().all(|c| c.is_ascii_hexdigit())
+        {
+            let trace_id = parts[1];
+            metrics.inc_traceparent_forwarded();
+            return format!("00-{trace_id}-{}-01", new_parent_id());
+        }
+    }
+    // No valid incoming — generate fresh traceparent.
+    let trace_id = format!("{:032x}", Uuid::new_v4().as_u128());
+    metrics.inc_traceparent_generated();
+    format!("00-{trace_id}-{}-01", new_parent_id())
 }
 
 /// Derive an `"engine:module"` label for the per-module Prometheus counter.

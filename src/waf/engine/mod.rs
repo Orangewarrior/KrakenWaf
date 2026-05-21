@@ -22,9 +22,12 @@ use std::{path::Path, sync::Arc};
 
 use ip_filter::{canonical_ip, extract_header_value};
 use matchers::{
-    build_matchers, keyword_match, libinjection_match, regex_match_phase_scored, EngineMatchers,
+    build_matchers, keyword_match, keyword_match_accumulate, libinjection_match,
+    regex_match_phase_scored, regex_match_phase_scored_threshold, EngineMatchers,
+    SCORE_BLOCK_THRESHOLD,
 };
-use normalize::{inspection_views, normalize_request_bytes};
+use normalize::{as_latin1, inspection_views, normalize_request_bytes};
+use std::time::{Duration, Instant};
 
 #[cfg(feature = "vectorscan-engine")]
 use matchers::vectorscan_match_scored;
@@ -80,6 +83,39 @@ struct RulesSnapshot {
     matchers: EngineMatchers,
 }
 
+/// All configuration needed to construct a `WafEngine`. Use `WafEngineFactory`
+/// instead of calling `WafEngine` constructors directly.
+#[allow(clippy::struct_excessive_bools)]
+pub struct WafEngineConfig {
+    pub rules: Arc<RuleSet>,
+    pub rate_limiter: Arc<RateLimiter>,
+    pub blocklist_ip_enabled: bool,
+    pub libinjection_sqli_enabled: bool,
+    pub libinjection_xss_enabled: bool,
+    pub vectorscan_enabled: bool,
+    pub metrics: Arc<WafMetrics>,
+    pub cmc_manager: Arc<CmcManager>,
+    /// Anomaly-score block threshold. `0` falls back to the built-in default.
+    pub anomaly_threshold: u32,
+    /// Per-request wall-clock cap on WAF inspection in milliseconds. `0` = unlimited.
+    pub max_inspection_ms: u64,
+}
+
+/// Factory for constructing a fully-initialised [`WafEngine`].
+///
+/// Calling `WafEngine::new` directly is no longer supported; use
+/// `WafEngineFactory::create(WafEngineConfig { ... })`. The factory pattern
+/// keeps the engine constructor stable as new optional features are added.
+pub struct WafEngineFactory;
+
+impl WafEngineFactory {
+    /// # Errors
+    /// Returns an error if the rule matchers fail to initialise.
+    pub fn create(cfg: WafEngineConfig) -> Result<WafEngine> {
+        WafEngine::new(cfg)
+    }
+}
+
 /// Main `KrakenWaf` engine containing rules and optional accelerated detectors.
 #[allow(clippy::struct_excessive_bools)]
 pub struct WafEngine {
@@ -94,6 +130,8 @@ pub struct WafEngine {
     metrics: Arc<WafMetrics>,
     cmc_manager: Arc<CmcManager>,
     spamhaus_dqs: Option<SpamhausDqsConfig>,
+    anomaly_threshold: u32,
+    max_inspection_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -103,32 +141,34 @@ struct SpamhausDqsConfig {
 }
 
 impl WafEngine {
+    /// Construct directly from a [`WafEngineConfig`]. Prefer `WafEngineFactory::create`.
+    ///
     /// # Errors
     /// Returns an error if the rule matchers fail to initialise.
-    #[allow(clippy::too_many_arguments, clippy::fn_params_excessive_bools)]
-    pub fn new(
-        rules: Arc<RuleSet>,
-        rate_limiter: Arc<RateLimiter>,
-        blocklist_ip_enabled: bool,
-        libinjection_sqli_enabled: bool,
-        libinjection_xss_enabled: bool,
-        vectorscan_enabled: bool,
-        metrics: Arc<WafMetrics>,
-        cmc_manager: Arc<CmcManager>,
-    ) -> Result<Self> {
-        rate_limiter.clone().spawn_persistence_task();
-        let matchers = build_matchers(&rules, vectorscan_enabled)?;
-        let spamhaus_dqs = load_spamhaus_dqs_config(blocklist_ip_enabled);
+    fn new(cfg: WafEngineConfig) -> Result<Self> {
+        cfg.rate_limiter.clone().spawn_persistence_task();
+        let matchers = build_matchers(&cfg.rules, cfg.vectorscan_enabled)?;
+        let spamhaus_dqs = load_spamhaus_dqs_config(cfg.blocklist_ip_enabled);
+        let anomaly_threshold = if cfg.anomaly_threshold == 0 {
+            SCORE_BLOCK_THRESHOLD
+        } else {
+            cfg.anomaly_threshold
+        };
         Ok(Self {
-            snapshot: RwLock::new(Arc::new(RulesSnapshot { rules, matchers })),
-            rate_limiter,
-            blocklist_ip_enabled,
-            libinjection_sqli_enabled,
-            libinjection_xss_enabled,
-            vectorscan_enabled,
-            metrics,
-            cmc_manager,
+            snapshot: RwLock::new(Arc::new(RulesSnapshot {
+                rules: cfg.rules,
+                matchers,
+            })),
+            rate_limiter: cfg.rate_limiter,
+            blocklist_ip_enabled: cfg.blocklist_ip_enabled,
+            libinjection_sqli_enabled: cfg.libinjection_sqli_enabled,
+            libinjection_xss_enabled: cfg.libinjection_xss_enabled,
+            vectorscan_enabled: cfg.vectorscan_enabled,
+            metrics: cfg.metrics,
+            cmc_manager: cfg.cmc_manager,
             spamhaus_dqs,
+            anomaly_threshold,
+            max_inspection_ms: cfg.max_inspection_ms,
         })
     }
 
@@ -299,11 +339,27 @@ impl WafEngine {
     pub fn inspect_complete_payload_with_context(
         &self,
         payload: &[u8],
+        method_hint: Option<&str>,
+    ) -> Decision {
+        let deadline = if self.max_inspection_ms == 0 {
+            None
+        } else {
+            Some(Instant::now() + Duration::from_millis(self.max_inspection_ms))
+        };
+        self.inspect_payload_inner(payload, method_hint, deadline)
+    }
+
+    #[allow(clippy::too_many_lines, unused_variables)]
+    fn inspect_payload_inner(
+        &self,
+        payload: &[u8],
         _method_hint: Option<&str>,
+        deadline: Option<Instant>,
     ) -> Decision {
         let snap = self.snapshot.read().clone();
         let rules = &snap.rules;
         let matchers = &snap.matchers;
+        let threshold = self.anomaly_threshold;
 
         let normalized_bytes = normalize_request_bytes(payload);
         let original_text = String::from_utf8_lossy(payload);
@@ -361,44 +417,89 @@ impl WafEngine {
             }
         }
 
-        for view in inspection_views(normalized_text.as_ref()) {
-            if let Some(finding) =
-                keyword_match(matchers.req_uri.as_ref(), view, original_text.as_ref())
-            {
+        // UTF-8 dual-form: when lossy conversion introduced replacement chars we
+        // additionally inspect a Latin-1 form so byte-specific patterns are not
+        // masked by `\u{FFFD}`. The Latin-1 string is computed lazily.
+        let latin1_text: Option<String> = if normalized_text.contains('\u{FFFD}') {
+            Some(as_latin1(normalized_bytes.as_ref()))
+        } else {
+            None
+        };
+
+        let mut sum_score: u32 = 0;
+        let views = inspection_views(normalized_text.as_ref());
+        let latin1_views: Option<Vec<&str>> =
+            latin1_text.as_deref().map(inspection_views);
+        let all_views = views.iter().copied().chain(
+            latin1_views
+                .as_ref()
+                .map(|v| v.iter().copied())
+                .into_iter()
+                .flatten(),
+        );
+
+        for view in all_views {
+            if let Some(d) = deadline {
+                if Instant::now() >= d {
+                    break;
+                }
+            }
+
+            if let Some(finding) = keyword_match_accumulate(
+                matchers.req_uri.as_ref(),
+                view,
+                original_text.as_ref(),
+                threshold,
+                &mut sum_score,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) =
-                keyword_match(matchers.req_headers.as_ref(), view, original_text.as_ref())
-            {
+            if let Some(finding) = keyword_match_accumulate(
+                matchers.req_headers.as_ref(),
+                view,
+                original_text.as_ref(),
+                threshold,
+                &mut sum_score,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) =
-                keyword_match(matchers.req_body.as_ref(), view, original_text.as_ref())
-            {
+            if let Some(finding) = keyword_match_accumulate(
+                matchers.req_body.as_ref(),
+                view,
+                original_text.as_ref(),
+                threshold,
+                &mut sum_score,
+            ) {
                 return Decision::Block(Box::new(finding));
             }
 
-            if let Some(finding) = regex_match_phase_scored(
+            if let Some(finding) = regex_match_phase_scored_threshold(
                 &rules.path_regex,
                 view,
                 original_text.as_ref(),
                 &HttpAction::Request,
+                threshold,
+                &mut sum_score,
             ) {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = regex_match_phase_scored(
+            if let Some(finding) = regex_match_phase_scored_threshold(
                 &rules.header_regex,
                 view,
                 original_text.as_ref(),
                 &HttpAction::Request,
+                threshold,
+                &mut sum_score,
             ) {
                 return Decision::Block(Box::new(finding));
             }
-            if let Some(finding) = regex_match_phase_scored(
+            if let Some(finding) = regex_match_phase_scored_threshold(
                 &rules.body_regex,
                 view,
                 original_text.as_ref(),
                 &HttpAction::Request,
+                threshold,
+                &mut sum_score,
             ) {
                 return Decision::Block(Box::new(finding));
             }

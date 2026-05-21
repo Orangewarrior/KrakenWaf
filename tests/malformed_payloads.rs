@@ -2,7 +2,7 @@ use krakenwaf::{
     cmc::{CmcConfig, CmcManagerBuilder},
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
-    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, ResponseContext, WafEngine},
+    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, ResponseContext, WafEngineConfig, WafEngineFactory},
 };
 use regex::Regex;
 use std::{collections::HashMap, sync::Arc};
@@ -53,16 +53,18 @@ fn blocks_malformed_traversal_payload() {
         vectorscan_keywords: vec![],
     });
 
-    let engine = WafEngine::new(
+    let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
-        make_test_rl(),
-        false,
-        false,
-        false,
-        false,
-        Arc::new(WafMetrics::default()),
-        empty_cmc_manager(),
-    )
+        rate_limiter: make_test_rl(),
+        blocklist_ip_enabled: false,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: empty_cmc_manager(),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("test");
     let decision = engine.inspect_body_chunk(br"../../../../etc/passwd");
     assert!(matches!(decision, Decision::Block(_)));
@@ -102,16 +104,18 @@ fn blocks_regex_based_rce_pattern() {
         vectorscan_keywords: vec![],
     });
 
-    let engine = WafEngine::new(
+    let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
-        make_test_rl(),
-        false,
-        false,
-        false,
-        false,
-        Arc::new(WafMetrics::default()),
-        empty_cmc_manager(),
-    )
+        rate_limiter: make_test_rl(),
+        blocklist_ip_enabled: false,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: empty_cmc_manager(),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("test");
     let decision = engine.inspect_body_chunk(br"powershell -enc AAAA");
     assert!(matches!(decision, Decision::Block(_)));
@@ -168,8 +172,8 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
         compiled: Regex::new("kwaf-score-low-c").expect("test"),
     };
 
-    let engine = WafEngine::new(
-        Arc::new(RuleSet {
+    let engine = WafEngineFactory::create(WafEngineConfig {
+        rules: Arc::new(RuleSet {
             blocked_ips: vec![],
             blocked_ip_prefixes: vec![],
             addr_list_entries: vec![],
@@ -185,14 +189,16 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
             header_regex: vec![],
             vectorscan_keywords: vec![],
         }),
-        make_test_rl(),
-        false,
-        false,
-        false,
-        false,
-        Arc::new(WafMetrics::default()),
-        empty_cmc_manager(),
-    )
+        rate_limiter: make_test_rl(),
+        blocklist_ip_enabled: false,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: empty_cmc_manager(),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("test");
 
     assert!(matches!(
@@ -251,8 +257,8 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
     })
     .collect::<Vec<_>>();
 
-    let engine = WafEngine::new(
-        Arc::new(RuleSet {
+    let engine = WafEngineFactory::create(WafEngineConfig {
+        rules: Arc::new(RuleSet {
             blocked_ips: vec![],
             blocked_ip_prefixes: vec![],
             addr_list_entries: vec![],
@@ -268,14 +274,16 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
             header_regex: vec![],
             vectorscan_keywords: vec![],
         }),
-        make_test_rl(),
-        false,
-        false,
-        false,
-        false,
-        Arc::new(WafMetrics::default()),
-        empty_cmc_manager(),
-    )
+        rate_limiter: make_test_rl(),
+        blocklist_ip_enabled: false,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: empty_cmc_manager(),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("test");
 
     let ctx = ResponseContext {

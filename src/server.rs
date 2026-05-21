@@ -1,4 +1,4 @@
-use crate::{app::AppState, proxy::plain_response};
+use crate::{app::AppState, proxy::plain_response, tls::TlsConfigStore};
 use anyhow::Result;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -14,7 +14,6 @@ use std::sync::{
 };
 use std::time::Duration;
 use tokio::{net::TcpListener, sync::Notify, task, time::timeout};
-use tokio_rustls::TlsAcceptor;
 use tracing::{error, info, warn};
 
 /// Maximum time the listener waits for in-flight connections to drain after
@@ -82,7 +81,7 @@ async fn wait_for_drain(in_flight: &AtomicUsize, notify: &Notify) {
 /// Returns an error if the TCP listener cannot bind to the given address.
 pub async fn run(
     listener_addr: std::net::SocketAddr,
-    tls_acceptor: TlsAcceptor,
+    tls_store: TlsConfigStore,
     state: Arc<AppState>,
 ) -> Result<()> {
     let listener = TcpListener::bind(listener_addr).await?;
@@ -108,7 +107,7 @@ pub async fn run(
             () = &mut shutdown => break,
         };
 
-        let acceptor = tls_acceptor.clone();
+        let acceptor = tls_store.acceptor();
         let state = state.clone();
         let in_flight = in_flight.clone();
         let drain_notify = drain_notify.clone();
@@ -217,6 +216,7 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
     Ok(())
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle(
     req: Request<Incoming>,
     state: Arc<AppState>,
@@ -224,20 +224,45 @@ async fn handle(
 ) -> Response<Full<Bytes>> {
     let path = req.uri().path();
 
-    // Health and metrics endpoints respect the addr allowlist only — skip
-    // per-IP concurrency tracking for these lightweight internal routes.
-    if path == "/__krakenwaf/health" || path == "/metrics" {
+    // Health and metrics endpoints bypass per-IP concurrency and backpressure gates.
+    // Root-level /livez and /readyz are aliases for the namespaced paths.
+    if path == "/__krakenwaf/health"
+        || path == "/__krakenwaf/livez"
+        || path == "/__krakenwaf/readyz"
+        || path == "/livez"
+        || path == "/readyz"
+        || path == "/metrics"
+    {
         let snap = state.waf.rules_snapshot();
         if !snap.is_ip_allowed(&client_ip) {
             let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
             state.response_header_policy.apply(resp.headers_mut(), false);
             return resp;
         }
-        if path == "/__krakenwaf/health" {
-            let mut response = plain_response(StatusCode::OK, "KrakenWaf OK");
+        if path == "/__krakenwaf/livez" || path == "/livez" {
+            let mut response = plain_response(StatusCode::OK, "ok");
             state.response_header_policy.apply(response.headers_mut(), false);
             return response;
         }
+        if path == "/__krakenwaf/health" || path == "/__krakenwaf/readyz" || path == "/readyz" {
+            // Readiness: WAF must have at least one rule loaded.
+            let ready = !snap.uri_keywords.is_empty()
+                || !snap.header_keywords.is_empty()
+                || !snap.body_keywords.is_empty()
+                || !snap.path_regex.is_empty()
+                || !snap.blocked_ips.is_empty()
+                || !snap.blocked_ip_prefixes.is_empty();
+            if ready {
+                let mut response = plain_response(StatusCode::OK, "KrakenWaf OK");
+                state.response_header_policy.apply(response.headers_mut(), false);
+                return response;
+            }
+            let mut response =
+                plain_response(StatusCode::SERVICE_UNAVAILABLE, "KrakenWaf not ready");
+            state.response_header_policy.apply(response.headers_mut(), false);
+            return response;
+        }
+        // /metrics
         let mut response = Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
@@ -278,6 +303,55 @@ async fn handle(
     } else {
         None
     };
+
+    // Memory backpressure gate (global).
+    if state.max_inflight_body_bytes > 0 {
+        let current = state.inflight_body_bytes.load(Ordering::Relaxed);
+        if current >= state.max_inflight_body_bytes {
+            warn!(
+                target: "krakenwaf",
+                current_bytes = current,
+                limit = state.max_inflight_body_bytes,
+                ip = %client_ip,
+                "global body-bytes backpressure limit reached"
+            );
+            state.metrics.inc_rate_limit_hits();
+            let mut resp = plain_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KrakenWaf is under load, please retry",
+            );
+            resp.headers_mut()
+                .insert("Retry-After", http::HeaderValue::from_static("5"));
+            state.response_header_policy.apply(resp.headers_mut(), false);
+            return resp;
+        }
+    }
+
+    // Memory backpressure gate (per-IP).
+    if state.max_per_ip_body_bytes > 0 {
+        let ip_current = state
+            .ip_body_bytes
+            .get(&client_ip)
+            .map_or(0, |v| v.load(Ordering::Relaxed));
+        if ip_current >= state.max_per_ip_body_bytes {
+            warn!(
+                target: "krakenwaf",
+                current_bytes = ip_current,
+                limit = state.max_per_ip_body_bytes,
+                ip = %client_ip,
+                "per-IP body-bytes backpressure limit reached"
+            );
+            state.metrics.inc_rate_limit_hits();
+            let mut resp = plain_response(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KrakenWaf per-IP limit reached, please retry",
+            );
+            resp.headers_mut()
+                .insert("Retry-After", http::HeaderValue::from_static("5"));
+            state.response_header_policy.apply(resp.headers_mut(), false);
+            return resp;
+        }
+    }
 
     state.proxy.handle(&state, req, client_ip).await
 }

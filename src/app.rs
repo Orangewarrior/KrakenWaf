@@ -36,4 +36,12 @@ pub struct AppState {
     /// Maximum simultaneous in-flight requests accepted from a single IP.
     /// 0 disables the per-IP concurrency cap.
     pub max_coroutines_per_ip: usize,
+    /// Global in-flight request-body byte counter for memory backpressure.
+    pub inflight_body_bytes: Arc<AtomicUsize>,
+    /// Hard cap on total in-flight body bytes globally. 0 = disabled.
+    pub max_inflight_body_bytes: usize,
+    /// Per-IP in-flight body-byte counters. Guards per-IP memory fairness.
+    pub ip_body_bytes: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    /// Per-IP hard cap on in-flight body bytes. 0 = disabled.
+    pub max_per_ip_body_bytes: usize,
 }

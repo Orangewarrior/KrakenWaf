@@ -8,7 +8,7 @@ use krakenwaf::{
         update_addr_list, update_addr_list_from_config, update_spamhaus, CronSchedule,
         UpdateConfig,
     },
-    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngine},
+    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngineConfig, WafEngineFactory},
 };
 use std::{
     fs,
@@ -310,16 +310,18 @@ async fn waf_blocks_spamhaus_ip_and_reports_source_list() {
         RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
             .expect("test"),
     );
-    let engine = WafEngine::new(
+    let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
-        rl,
-        true,
-        false,
-        false,
-        false,
-        Arc::new(WafMetrics::default()),
-        Arc::new(CmcManager::default()),
-    )
+        rate_limiter: rl,
+        blocklist_ip_enabled: true,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: Arc::new(CmcManager::default()),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("test");
 
     let decision = engine
@@ -363,16 +365,18 @@ async fn waf_blocks_firehol_dir_ip_and_reports_source_list() {
         RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
             .expect("test"),
     );
-    let engine = WafEngine::new(
+    let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
-        rl,
-        true,
-        false,
-        false,
-        false,
-        Arc::new(WafMetrics::default()),
-        Arc::new(CmcManager::default()),
-    )
+        rate_limiter: rl,
+        blocklist_ip_enabled: true,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: Arc::new(CmcManager::default()),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("test");
 
     let decision = engine
@@ -471,16 +475,18 @@ async fn waf_blocks_blocklist_dir_ip_and_reports_yaml_title() {
         RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
             .expect("test"),
     );
-    let engine = WafEngine::new(
+    let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
-        rl,
-        true,
-        false,
-        false,
-        false,
-        Arc::new(WafMetrics::default()),
-        Arc::new(CmcManager::default()),
-    )
+        rate_limiter: rl,
+        blocklist_ip_enabled: true,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: Arc::new(CmcManager::default()),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("test");
 
     let decision = engine

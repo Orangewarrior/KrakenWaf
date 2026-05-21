@@ -1,3 +1,83 @@
+## [2.24.0] - 2026-05-21
+
+### Added
+
+#### HTTP/2 ALPN negotiation
+
+- `TlsConfigStore` now advertises `h2` and `http/1.1` in TLS ALPN during
+  handshake so clients can negotiate HTTP/2 without any additional configuration.
+- ALPN protocols are applied inside `build_tls_config` after the `ServerConfig`
+  is built; no changes to SNI resolution or certificate selection logic.
+
+#### `TlsConfigStore` hot-reload factory
+
+- `TlsConfigStore` (in `src/tls.rs`) wraps `Arc<parking_lot::RwLock<Arc<ServerConfig>>>`
+  for wait-free reads in the accept loop while supporting atomic cert swaps on SIGHUP.
+- SIGHUP handler now calls `tls_store.reload()` instead of rebuilding a raw
+  `TlsAcceptor`; the new config is visible to all active connections without a
+  restart.
+
+#### Root-path health and liveness probes
+
+- `/livez` and `/readyz` are now available as root-level aliases alongside the
+  existing `/__krakenwaf/livez` and `/__krakenwaf/readyz` paths. Kubernetes
+  deployments no longer need to configure a path prefix.
+
+#### Memory backpressure gates
+
+- New global gate: when `inflight_body_bytes` reaches `max_inflight_body_bytes`
+  (default 1 GiB), new requests return HTTP 503 with `Retry-After: 5` until
+  memory is freed.
+- New per-IP gate: when a single IP's `ip_body_bytes` reaches
+  `max_per_ip_body_bytes` (default 200 MiB), that IP receives HTTP 503 with
+  `Retry-After: 5`.
+- Both limits are configurable via `--max-inflight-body-bytes` and
+  `--max-per-ip-body-bytes`; 0 disables each gate independently.
+- `BodyTracker` RAII struct in `proxy.rs` increments the global and per-IP
+  counters on each body chunk and releases them atomically on drop (Ok, Err,
+  or panic).
+
+#### W3C traceparent propagation improvements
+
+- Incoming `traceparent` headers with a valid 32-hex trace-id are now preserved:
+  the trace-id is kept and a new parent-id span is generated.
+- If no valid incoming traceparent exists, both trace-id and parent-id are
+  freshly generated from UUID v4.
+- `traceparent_forwarded` and `traceparent_generated` Prometheus counters track
+  which path was taken per request.
+
+#### Inspection deadline (`--max-inspection-ms`)
+
+- New `--max-inspection-ms` CLI flag sets a per-request wall-clock cap on WAF
+  rule inspection. When the deadline is reached the inspection loop exits and the
+  request proceeds (fail-open). 0 = unlimited (default).
+
+#### Body frame timeout (`--body-frame-timeout-secs`)
+
+- New `--body-frame-timeout-secs` CLI flag controls how long the WAF waits for
+  a single body frame before timing out (RUDY/slow-body defence).
+  Default: 30 s.
+
+#### Anomaly-score threshold (`--anomaly-threshold`)
+
+- New `--anomaly-threshold` CLI flag exposes the global anomaly score block
+  threshold previously hardcoded in the engine. Default: 600.
+
+#### WAL persistence mode (`--wal-mode`)
+
+- New `--wal-mode` CLI flag selects between `sqlite` (WAL journal, queryable)
+  and `bincode` (flat binary, atomic rename, much faster) persistence backends
+  for the rate-limiter state snapshot. Default: `sqlite`.
+
+### Changed
+
+- `server::run()` now accepts a `TlsConfigStore` instead of a raw `TlsAcceptor`,
+  enabling atomic cert rotation without restarting the accept loop.
+- `AppState` extended with `inflight_body_bytes`, `max_inflight_body_bytes`,
+  `ip_body_bytes`, and `max_per_ip_body_bytes` fields.
+- `WafEngine` construction now uses the `WafEngineFactory::create(WafEngineConfig)`
+  pattern, keeping the engine constructor stable as optional fields are added.
+
 ## [2.23.0] - 2026-05-21
 
 ### Added

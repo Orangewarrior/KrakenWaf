@@ -63,6 +63,11 @@ pub(super) fn normalize_request_bytes(payload: &[u8]) -> Cow<'_, [u8]> {
 /// `&`/`;`/`?`/newline/NUL separated segments (duplicates of the full string
 /// are skipped). Callers MUST match on the first view before iterating so that
 /// score accumulation across substring rules works correctly.
+///
+/// **Null-byte dual-form (AppSec):** splitting on `\0` means both the full
+/// form (view[0]) and the null-truncated prefix (a subsequent segment) are
+/// always inspected. This defends against `foo\0../etc/passwd` attacks where
+/// the C-layer backend truncates at the first NUL.
 pub(super) fn inspection_views(normalized: &str) -> Vec<&str> {
     let mut views = Vec::with_capacity(8);
     if !normalized.is_empty() {
@@ -75,6 +80,17 @@ pub(super) fn inspection_views(normalized: &str) -> Vec<&str> {
         }
     }
     views
+}
+
+/// Encode raw bytes as a Latin-1 string (1:1 byte→char). Used as a fallback
+/// inspection form when `String::from_utf8_lossy` introduces replacement
+/// characters (`\u{FFFD}`) that would mask byte-specific attack patterns.
+///
+/// **UTF-8 dual-form (AppSec):** callers inspect both the UTF-8 lossy form
+/// and this Latin-1 form so that neither valid nor invalid-UTF-8 payloads
+/// can evade keyword / regex rules.
+pub(super) fn as_latin1(bytes: &[u8]) -> String {
+    bytes.iter().map(|&b| char::from(b)).collect()
 }
 
 #[cfg(test)]

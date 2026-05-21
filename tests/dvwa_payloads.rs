@@ -2,7 +2,7 @@ use krakenwaf::{
     cmc::{CmcConfig, CmcManagerBuilder},
     metrics::WafMetrics,
     rules::RuleSet,
-    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngine},
+    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngine, WafEngineConfig, WafEngineFactory},
 };
 use std::{sync::Arc, path::Path};
 
@@ -13,17 +13,18 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
         RateLimiter::new(240, std::time::Duration::from_secs(60), &tmp.path().join("rate_limit.db"), PersistenceMode::Sqlite)
             .expect("rate limiter"),
     );
-    // keep `tmp` alive for the duration of this function call
-    let engine = WafEngine::new(
+    let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
-        rl,
-        false,
-        false,
-        false,
+        rate_limiter: rl,
+        blocklist_ip_enabled: false,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
         vectorscan_enabled,
-        Arc::new(WafMetrics::default()),
-        Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build()),
-    )
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build()),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
     .expect("engine");
     drop(tmp);
     engine

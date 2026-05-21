@@ -183,20 +183,54 @@ pub(super) fn keyword_match(
         .map(|rule| super::finding::rule_to_finding(rule, original_payload))
 }
 
+/// Returns `true` when the rule's score alone or the accumulated `sum_score`
+/// reaches `SCORE_BLOCK_THRESHOLD`. Resets `sum_score` to zero on a block so
+/// the next view starts fresh. Kept for vectorscan callers that use the
+/// hard-coded default; new code should use [`score_allows_block_threshold`].
+#[cfg(feature = "vectorscan-engine")]
 pub(super) fn score_allows_block(rule: &DetectionRule, sum_score: &mut u32) -> bool {
-    if rule.score >= SCORE_BLOCK_THRESHOLD {
+    score_allows_block_threshold(rule, sum_score, SCORE_BLOCK_THRESHOLD)
+}
+
+/// Configurable-threshold variant used when `--anomaly-threshold` is set.
+pub(super) fn score_allows_block_threshold(
+    rule: &DetectionRule,
+    sum_score: &mut u32,
+    threshold: u32,
+) -> bool {
+    if rule.score >= threshold {
         *sum_score = 0;
         return true;
     }
     *sum_score = sum_score.saturating_add(rule.score);
-    if *sum_score >= SCORE_BLOCK_THRESHOLD {
+    if *sum_score >= threshold {
         *sum_score = 0;
         return true;
     }
     false
 }
 
-/// Regex match filtered by `http_action` phase.
+/// Keyword-match variant that accumulates score across **all** non-overlapping
+/// hits using `find_iter`, so multiple low-score rules in the same payload can
+/// trip the threshold even when no single hit reaches it.
+pub(super) fn keyword_match_accumulate(
+    matcher: Option<&KeywordMatcher>,
+    haystack: &str,
+    original_payload: &str,
+    threshold: u32,
+    sum_score: &mut u32,
+) -> Option<Finding> {
+    let matcher = matcher?;
+    for mat in matcher.ac.find_iter(haystack) {
+        let rule = matcher.rules.get(mat.pattern().as_usize())?;
+        if score_allows_block_threshold(rule, sum_score, threshold) {
+            return Some(super::finding::rule_to_finding(rule, original_payload));
+        }
+    }
+    None
+}
+
+/// Regex match filtered by `http_action` phase using the default threshold.
 pub(super) fn regex_match_phase_scored(
     rules: &[CompiledDetectionRule],
     haystack: &str,
@@ -204,12 +238,32 @@ pub(super) fn regex_match_phase_scored(
     phase: &HttpAction,
 ) -> Option<Finding> {
     let mut sum_score = 0u32;
+    regex_match_phase_scored_threshold(
+        rules,
+        haystack,
+        original_payload,
+        phase,
+        SCORE_BLOCK_THRESHOLD,
+        &mut sum_score,
+    )
+}
+
+/// Configurable-threshold regex match. The caller threads `sum_score` across
+/// inspection views so cross-view score accumulation works correctly.
+pub(super) fn regex_match_phase_scored_threshold(
+    rules: &[CompiledDetectionRule],
+    haystack: &str,
+    original_payload: &str,
+    phase: &HttpAction,
+    threshold: u32,
+    sum_score: &mut u32,
+) -> Option<Finding> {
     rules
         .iter()
         .filter(|r| &r.meta.http_action == phase)
         .filter(|rule| rule.compiled.is_match(haystack))
         .find_map(|rule| {
-            score_allows_block(&rule.meta, &mut sum_score)
+            score_allows_block_threshold(&rule.meta, sum_score, threshold)
                 .then(|| super::finding::rule_to_finding(&rule.meta, original_payload))
         })
 }

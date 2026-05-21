@@ -28,8 +28,10 @@ use dashmap::DashMap;
 use metrics::WafMetrics;
 use ratelimit_config::RateLimitConfig;
 use response_headers::ResponseHeaderPolicy;
-use std::{path::PathBuf, sync::Arc};
-use tokio_rustls::TlsAcceptor;
+use std::{
+    path::PathBuf,
+    sync::{atomic::AtomicUsize, Arc},
+};
 use tracing::{error, info};
 use waf::rate_limit::{PersistenceMode, RateLimiter};
 
@@ -89,16 +91,18 @@ async fn main() -> Result<()> {
 
     // ── WAF engine ────────────────────────────────────────────────────────────
 
-    let waf = Arc::new(waf::WafEngine::new(
+    let waf = Arc::new(waf::WafEngineFactory::create(waf::WafEngineConfig {
         rules,
         rate_limiter,
-        cli.blocklist_ip,
-        cli.libinjection_sqli_enabled(),
-        cli.libinjection_xss_enabled(),
-        cli.enable_vectorscan,
-        metrics.clone(),
-        cmc_manager.clone(),
-    )?);
+        blocklist_ip_enabled: cli.blocklist_ip,
+        libinjection_sqli_enabled: cli.libinjection_sqli_enabled(),
+        libinjection_xss_enabled: cli.libinjection_xss_enabled(),
+        vectorscan_enabled: cli.enable_vectorscan,
+        metrics: metrics.clone(),
+        cmc_manager: cmc_manager.clone(),
+        anomaly_threshold: cli.anomaly_threshold,
+        max_inspection_ms: cli.max_inspection_ms,
+    })?);
     let proxy = Arc::new(proxy::ProxyClient::new(
         &cli.upstream,
         cli.upstream_timeout_secs,
@@ -131,9 +135,20 @@ async fn main() -> Result<()> {
         response_header_policy,
         ip_connections: Arc::new(DashMap::new()),
         max_coroutines_per_ip: rl_config.max_coroutines_per_ip,
+        inflight_body_bytes: Arc::new(AtomicUsize::new(0)),
+        max_inflight_body_bytes: cli.max_inflight_body_bytes,
+        ip_body_bytes: Arc::new(DashMap::new()),
+        max_per_ip_body_bytes: cli.max_per_ip_body_bytes,
     });
 
-    spawn_rule_reload(state.clone());
+    // Build TLS store once; clone it for both the SIGHUP handler and the server.
+    let tls_store = if cli.no_tls {
+        None
+    } else {
+        Some(tls::TlsConfigStore::new(PathBuf::from(&cli.sni_map))?)
+    };
+
+    spawn_rule_reload(state.clone(), tls_store.clone());
 
     info!(
         target: "krakenwaf",
@@ -155,9 +170,8 @@ async fn main() -> Result<()> {
     if cli.no_tls {
         server::run_plain(cli.listen, state).await
     } else {
-        let tls_config = tls::build_tls_config(PathBuf::from(&cli.sni_map).as_path())?;
-        let tls_acceptor = TlsAcceptor::from(tls_config);
-        server::run(cli.listen, tls_acceptor, state).await
+        let store = tls_store.expect("tls_store is Some when !cli.no_tls");
+        server::run(cli.listen, store, state).await
     }
 }
 
@@ -191,7 +205,7 @@ async fn build_rate_limiter(
         .context("failed to initialise local GCRA rate-limiter")
 }
 
-fn spawn_rule_reload(state: Arc<AppState>) {
+fn spawn_rule_reload(state: Arc<AppState>, tls_store: Option<tls::TlsConfigStore>) {
     #[cfg(unix)]
     {
         tokio::spawn(async move {
@@ -208,8 +222,19 @@ fn spawn_rule_reload(state: Arc<AppState>) {
                     Ok(()) => info!(target: "krakenwaf", "rules hot-reloaded successfully"),
                     Err(err) => error!(target: "krakenwaf", "rule reload failed: {err:#}"),
                 }
+                // Hot-reload TLS certificates if a TLS store is active.
+                if let Some(ref store) = tls_store {
+                    match store.reload() {
+                        Ok(()) => info!(target: "krakenwaf", "TLS certificates hot-reloaded"),
+                        Err(err) => error!(target: "krakenwaf", "TLS cert reload failed: {err:#}"),
+                    }
+                }
             }
         });
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (state, tls_store);
     }
 }
 
