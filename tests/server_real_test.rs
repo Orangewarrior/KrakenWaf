@@ -2,11 +2,11 @@
 //!
 //! Topology
 //! --------
-//!   reqwest  →  `KrakenWAF` `:WAF_PORT` (--no-tls)  →  Axum backend :9077
+//!   reqwest  →  `KrakenWAF` `:WAF_PORT` (--no-tls)  →  Axum backend `:BACKEND_PORT`
 //!
 //! The backend is started once for the whole test binary via `BACKEND_ONCE`.
-//! Each test gets its own WAF port (atomically allocated) so tests can run
-//! without port collisions even when the OS puts a closed socket in `TIME_WAIT`.
+//! Each test gets its own WAF port (OS-allocated) so tests can run
+//! without port collisions even when many cargo-test processes run in parallel.
 //!
 //! Backend routes
 //! --------------
@@ -26,24 +26,31 @@ use serde::Deserialize;
 use std::{
     net::SocketAddr,
     process::{Child, Command, Stdio},
-    sync::{
-        atomic::{AtomicU16, Ordering},
-        OnceLock,
-    },
+    sync::OnceLock,
     time::Duration,
 };
 
 // ─── Port allocation ──────────────────────────────────────────────────────────
+// All ports are OS-allocated (bind ":0") so parallel cargo-test processes
+// never fight over fixed port numbers.
 
-const BACKEND_PORT: u16 = 9077;
-static NEXT_WAF_PORT: AtomicU16 = AtomicU16::new(9090);
+static BACKEND_PORT: OnceLock<u16> = OnceLock::new();
+
+fn pick_free_port() -> u16 {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").expect("bind :0");
+    l.local_addr().expect("local_addr").port()
+}
 
 fn alloc_waf_port() -> u16 {
-    NEXT_WAF_PORT.fetch_add(1, Ordering::SeqCst)
+    pick_free_port()
+}
+
+fn backend_port() -> u16 {
+    *BACKEND_PORT.get_or_init(pick_free_port)
 }
 
 fn backend_addr() -> String {
-    format!("127.0.0.1:{BACKEND_PORT}")
+    format!("127.0.0.1:{}", backend_port())
 }
 
 fn waf_base(port: u16) -> String {
@@ -213,7 +220,7 @@ async fn artifact_htpasswd() -> &'static str {
 
 fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
-        let addr: SocketAddr = backend_addr().parse().expect("test");
+        let addr: SocketAddr = backend_addr().parse().expect("backend addr");
         std::thread::spawn(move || {
             tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -330,12 +337,14 @@ fn spawn_waf_with_cmc(waf_port: u16) -> WafGuard {
 }
 
 /// Poll the WAF health endpoint until it responds (or timeout).
+/// Allows up to 45 s (150 × 300 ms) so the WAF binary can start even
+/// when many parallel cargo-test processes saturate the CPU.
 async fn wait_for_waf(client: &reqwest::Client, waf_port: u16) {
     let health_url = format!("{}/__krakenwaf/health", waf_base(waf_port));
-    for _ in 0..60 {
+    for _ in 0..150 {
         if client
             .get(&health_url)
-            .timeout(Duration::from_millis(500))
+            .timeout(Duration::from_millis(1000))
             .send()
             .await
             .is_ok()
