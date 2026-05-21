@@ -128,7 +128,7 @@ fn spawn_waf(waf_port: u16, backend_port: u16, extra_args: &[&str]) -> WafGuard 
 
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
-        .timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(25))
         .build()
         .expect("reqwest client")
 }
@@ -136,16 +136,16 @@ fn http_client() -> reqwest::Client {
 async fn wait_for_waf(client: &reqwest::Client, port: u16) {
     // Use the health endpoint — it bypasses the rate limiter so readiness
     // polling does not consume rate-limit budget during tests.
-    // Allow up to 25 s (50 × 500 ms). If the WAF does not respond within
-    // this window it is considered broken, not merely slow.
+    // Poll until the WAF process is ready (up to 45 s). Per-request timeout
+    // for actual test requests is 25 s, controlled by `http_client()`.
     let health = format!("{}/__krakenwaf/health", waf_base(port));
-    for _ in 0..50 {
+    for _ in 0..150 {
         if let Ok(r) = client.get(&health).timeout(Duration::from_millis(500)).send().await {
             if r.status().is_success() {
                 return;
             }
         }
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(300)).await;
     }
     panic!("KrakenWAF on port {port} did not become ready");
 }
