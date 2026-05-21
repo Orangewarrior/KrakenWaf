@@ -454,6 +454,10 @@ pub struct RedisRateLimiter {
     key_prefix: String,
     max_requests: u32,
     window_secs: u64,
+    /// Per-call timeout for `EVAL` operations. Bounds the worst-case latency the
+    /// WAF can spend waiting on a hung Redis (network blip, GC stall) before
+    /// failing open. Keeps tail latency under control on heavy load.
+    op_timeout: Duration,
 }
 
 impl RedisRateLimiter {
@@ -520,13 +524,22 @@ impl RedisRateLimiter {
             .build_pool(pool_size)
             .context("failed to build Redis connection pool")?;
 
-        pool.init().await.context("failed to connect to Redis")?;
+        // Bound how long startup can spend waiting for Redis; without this the
+        // process can hang silently when Redis is misconfigured / unreachable.
+        tokio::time::timeout(Duration::from_secs(10), pool.init())
+            .await
+            .context("Redis pool init timed out after 10s")?
+            .context("failed to connect to Redis")?;
 
         Ok(Self {
             pool,
             key_prefix: key_prefix.to_string(),
             max_requests: limit,
             window_secs,
+            // 150 ms is comfortably above p99 of a healthy intra-DC Redis call
+            // (typically &lt; 5 ms) yet tight enough that a degraded Redis cannot
+            // dominate WAF tail latency under load. Tunable later if needed.
+            op_timeout: Duration::from_millis(150),
         })
     }
 
@@ -535,20 +548,34 @@ impl RedisRateLimiter {
         use fred::prelude::*;
 
         let key = format!("{}:{}", self.key_prefix, ip);
-        let result: Result<i64, _> = self
-            .pool
-            .eval(
-                INCR_WITH_TTL_LUA,
-                vec![key],
-                vec![i64::from(self.max_requests), self.window_secs.cast_signed()],
-            )
-            .await;
+        // Wrap the EVAL in a per-call timeout: a hung Redis (network blip, GC
+        // pause, evictions) must not stall the WAF request path. On timeout we
+        // fail open — denying availability is worse than missing one count.
+        let eval_fut = self.pool.eval::<i64, _, _, _>(
+            INCR_WITH_TTL_LUA,
+            vec![key],
+            vec![i64::from(self.max_requests), self.window_secs.cast_signed()],
+        );
 
-        match result {
-            Ok(1) => true,
-            Ok(_) => false,
-            Err(err) => {
-                warn!(target: "krakenwaf", error = %err, ip, "Redis rate-limit check failed; failing open");
+        match tokio::time::timeout(self.op_timeout, eval_fut).await {
+            Ok(Ok(1)) => true,
+            Ok(Ok(_)) => false,
+            Ok(Err(err)) => {
+                warn!(
+                    target: "krakenwaf",
+                    error = %err,
+                    ip,
+                    "Redis rate-limit check failed; failing open"
+                );
+                true
+            }
+            Err(_elapsed) => {
+                warn!(
+                    target: "krakenwaf",
+                    timeout_ms = u64::try_from(self.op_timeout.as_millis()).unwrap_or(u64::MAX),
+                    ip,
+                    "Redis rate-limit EVAL exceeded per-call timeout; failing open"
+                );
                 true
             }
         }
@@ -758,35 +785,102 @@ mod tests {
     }
 
     // ── Redis tests (skipped when redis-server is not on PATH) ────────────────
+    //
+    // Each test spawns its own short-lived `redis-server` on an **OS-allocated**
+    // ephemeral port so dozens of cargo-test processes can run in parallel
+    // without colliding on fixed ports (16379/16380/16381 was racy under load —
+    // 50 parallel test processes ⇒ only one wins the bind, the rest fail with
+    // ECONNREFUSED). The readiness probe polls with PING until the server
+    // replies so we never depend on a hard-coded `sleep` to mask startup jitter.
 
-    struct RedisGuard(std::process::Child);
+    struct RedisGuard {
+        child: std::process::Child,
+        pub port: u16,
+    }
     impl Drop for RedisGuard {
         fn drop(&mut self) {
-            self.0.kill().ok();
-            self.0.wait().ok();
+            self.child.kill().ok();
+            self.child.wait().ok();
         }
     }
 
-    fn try_spawn_test_redis(port: u16) -> Option<RedisGuard> {
+    /// Reserves a free TCP port from the OS and returns it. The listener is
+    /// dropped before returning so the port becomes available to the child
+    /// `redis-server` immediately. A small race window exists (another process
+    /// could grab the port) but in practice that's vanishingly rare and the
+    /// caller retries on failure.
+    fn pick_free_port() -> std::io::Result<u16> {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")?;
+        let port = listener.local_addr()?.port();
+        drop(listener);
+        Ok(port)
+    }
+
+    /// Block until the child Redis answers PING, or give up after `deadline`.
+    /// Avoids the cargo-cult `sleep(400ms)` that breaks under heavy load.
+    async fn wait_until_redis_ready(port: u16, deadline: std::time::Instant) -> bool {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        while std::time::Instant::now() < deadline {
+            if let Ok(mut stream) = tokio::net::TcpStream::connect(("127.0.0.1", port)).await {
+                if stream.write_all(b"PING\r\n").await.is_ok() {
+                    let mut buf = [0u8; 16];
+                    if let Ok(Ok(n)) = tokio::time::timeout(
+                        Duration::from_millis(250),
+                        stream.read(&mut buf),
+                    )
+                    .await
+                    {
+                        if n > 0 && buf.starts_with(b"+PONG") {
+                            return true;
+                        }
+                    }
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// Spawn an isolated `redis-server` on an OS-allocated port. Retries port
+    /// selection up to 5 times to defeat the rare port-bind race.
+    async fn try_spawn_test_redis() -> Option<RedisGuard> {
         let bin = which::which("redis-server").ok()?;
-        let child = std::process::Command::new(bin)
-            .args([
-                "--port", &port.to_string(),
-                "--save", "",
-                "--loglevel", "warning",
-            ])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok()?;
-        std::thread::sleep(Duration::from_millis(400));
-        Some(RedisGuard(child))
+        for _ in 0..5 {
+            let Ok(port) = pick_free_port() else { continue };
+            let Ok(child) = std::process::Command::new(&bin)
+                .args([
+                    "--port", &port.to_string(),
+                    "--save", "",
+                    "--loglevel", "warning",
+                    // Bind only to loopback so we never expose the test server.
+                    "--bind", "127.0.0.1",
+                    // Tight maxmemory keeps each ephemeral instance light.
+                    "--maxmemory", "32mb",
+                    "--maxmemory-policy", "allkeys-lru",
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            else {
+                continue;
+            };
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            if wait_until_redis_ready(port, deadline).await {
+                return Some(RedisGuard { child, port });
+            }
+            // Server did not become ready in time — kill and retry on a new port.
+            let mut child = child;
+            child.kill().ok();
+            child.wait().ok();
+        }
+        None
     }
 
     #[tokio::test]
     async fn redis_allows_within_limit() {
-        let Some(_guard) = try_spawn_test_redis(16_379) else { return };
-        let rl = RateLimiter::new_redis_for_test("redis://127.0.0.1:16379", 3, 60, "kwtest1")
+        let Some(guard) = try_spawn_test_redis().await else { return };
+        let url = format!("redis://127.0.0.1:{}", guard.port);
+        let rl = RateLimiter::new_redis_for_test(&url, 3, 60, "kwtest1")
             .await
             .expect("connect to test Redis");
         assert!(rl.check("1.2.3.4").await);
@@ -797,8 +891,9 @@ mod tests {
 
     #[tokio::test]
     async fn redis_ips_are_independent() {
-        let Some(_guard) = try_spawn_test_redis(16_380) else { return };
-        let rl = RateLimiter::new_redis_for_test("redis://127.0.0.1:16380", 2, 60, "kwtest2")
+        let Some(guard) = try_spawn_test_redis().await else { return };
+        let url = format!("redis://127.0.0.1:{}", guard.port);
+        let rl = RateLimiter::new_redis_for_test(&url, 2, 60, "kwtest2")
             .await
             .expect("connect to test Redis");
         assert!(rl.check("10.0.0.1").await);
@@ -809,8 +904,9 @@ mod tests {
 
     #[tokio::test]
     async fn redis_window_resets() {
-        let Some(_guard) = try_spawn_test_redis(16_381) else { return };
-        let rl = RateLimiter::new_redis_for_test("redis://127.0.0.1:16381", 2, 2, "kwtest3")
+        let Some(guard) = try_spawn_test_redis().await else { return };
+        let url = format!("redis://127.0.0.1:{}", guard.port);
+        let rl = RateLimiter::new_redis_for_test(&url, 2, 2, "kwtest3")
             .await
             .expect("connect to test Redis");
         assert!(rl.check("5.5.5.5").await);
