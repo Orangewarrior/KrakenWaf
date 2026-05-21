@@ -2,13 +2,24 @@ use krakenwaf::{
     cmc::{CmcConfig, CmcManagerBuilder},
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
-    waf::{rate_limit::PersistenceMode, Decision, ResponseContext, WafEngine},
+    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, ResponseContext, WafEngine},
 };
 use regex::Regex;
 use std::{collections::HashMap, sync::Arc};
 
 fn empty_cmc_manager() -> Arc<krakenwaf::cmc::CmcManager> {
     Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build())
+}
+
+fn make_test_rl() -> Arc<RateLimiter> {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("rate_limit.db");
+    let rl = Arc::new(
+        RateLimiter::new(60, std::time::Duration::from_secs(60), &path, PersistenceMode::Sqlite)
+            .expect("rate limiter"),
+    );
+    drop(dir);
+    rl
 }
 
 #[test]
@@ -44,16 +55,11 @@ fn blocks_malformed_traversal_payload() {
 
     let engine = WafEngine::new(
         rules,
-        60,
+        make_test_rl(),
         false,
         false,
         false,
         false,
-        &tempfile::tempdir()
-            .expect("tempdir")
-            .path()
-            .join("rate_limit.db"),
-        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),
     )
@@ -98,16 +104,11 @@ fn blocks_regex_based_rce_pattern() {
 
     let engine = WafEngine::new(
         rules,
-        60,
+        make_test_rl(),
         false,
         false,
         false,
         false,
-        &tempfile::tempdir()
-            .expect("tempdir")
-            .path()
-            .join("rate_limit.db"),
-        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),
     )
@@ -184,16 +185,11 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
             header_regex: vec![],
             vectorscan_keywords: vec![],
         }),
-        60,
+        make_test_rl(),
         false,
         false,
         false,
         false,
-        &tempfile::tempdir()
-            .expect("tempdir")
-            .path()
-            .join("rate_limit.db"),
-        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),
     )
@@ -272,16 +268,11 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
             header_regex: vec![],
             vectorscan_keywords: vec![],
         }),
-        60,
+        make_test_rl(),
         false,
         false,
         false,
         false,
-        &tempfile::tempdir()
-            .expect("tempdir")
-            .path()
-            .join("rate_limit.db"),
-        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         empty_cmc_manager(),
     )

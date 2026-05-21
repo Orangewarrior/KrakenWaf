@@ -2,25 +2,31 @@ use krakenwaf::{
     cmc::{CmcConfig, CmcManagerBuilder},
     metrics::WafMetrics,
     rules::RuleSet,
-    waf::{rate_limit::PersistenceMode, Decision, InspectionContext, WafEngine},
+    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngine},
 };
 use std::{sync::Arc, path::Path};
 
 fn build_engine(vectorscan_enabled: bool) -> WafEngine {
     let rules = Arc::new(RuleSet::from_dir(Path::new("./rules")).expect("load bundled rules"));
-    WafEngine::new(
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let rl = Arc::new(
+        RateLimiter::new(240, std::time::Duration::from_secs(60), &tmp.path().join("rate_limit.db"), PersistenceMode::Sqlite)
+            .expect("rate limiter"),
+    );
+    // keep `tmp` alive for the duration of this function call
+    let engine = WafEngine::new(
         rules,
-        240,
+        rl,
         false,
         false,
         false,
         vectorscan_enabled,
-        &tempfile::tempdir().expect("tempdir").path().join("rate_limit.db"),
-        PersistenceMode::Sqlite,
         Arc::new(WafMetrics::default()),
         Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build()),
     )
-    .expect("engine")
+    .expect("engine");
+    drop(tmp);
+    engine
 }
 
 #[tokio::test(flavor = "multi_thread")]

@@ -34,6 +34,7 @@ use tracing::{error, info};
 use waf::rate_limit::{PersistenceMode, RateLimiter};
 
 #[tokio::main]
+#[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
     rustls::crypto::ring::default_provider()
         .install_default()

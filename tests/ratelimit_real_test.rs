@@ -2,13 +2,14 @@
 //!
 //! Topology
 //! ────────
-//!   reqwest  →  KrakenWAF `:WAF_PORT` (--no-tls)  →  Axum backend :9500
+//!   reqwest  →  `KrakenWAF` `:WAF_PORT` (--no-tls)  →  Axum backend :9500
 //!
 //! Tests exercise:
 //!   • Local GCRA rate limiter via WAF binary (--rate-limit-per-minute)
 //!   • Config file loading (--ratelimit-by-file-conf)
-//!   • Per-IP concurrency cap (max_coroutines_per_ip)
+//!   • Per-IP concurrency cap (`max_coroutines_per_ip`)
 //!   • Attack simulations: burst, concurrent flood, slow-connection (Slowloris)
+#![allow(clippy::unwrap_used)]
 
 use axum::{routing::get, Router};
 use reqwest::StatusCode;

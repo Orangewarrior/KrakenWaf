@@ -8,7 +8,7 @@ use krakenwaf::{
         update_addr_list, update_addr_list_from_config, update_spamhaus, CronSchedule,
         UpdateConfig,
     },
-    waf::{rate_limit::PersistenceMode, Decision, InspectionContext, WafEngine},
+    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngine},
 };
 use std::{
     fs,
@@ -306,15 +306,17 @@ async fn waf_blocks_spamhaus_ip_and_reports_source_list() {
     let rules = Arc::new(RuleSet::from_dir(tmp.path()).expect("test"));
     assert_eq!(rules.addr_list_entries.len(), 1);
 
+    let rl = Arc::new(
+        RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
+            .expect("test"),
+    );
     let engine = WafEngine::new(
         rules,
-        10_000,
+        rl,
         true,
         false,
         false,
         false,
-        &tmp.path().join("rate.bin"),
-        PersistenceMode::Bincode,
         Arc::new(WafMetrics::default()),
         Arc::new(CmcManager::default()),
     )
@@ -357,15 +359,17 @@ async fn waf_blocks_firehol_dir_ip_and_reports_source_list() {
     let rules = Arc::new(RuleSet::from_dir(tmp.path()).expect("test"));
     assert_eq!(rules.addr_list_entries.len(), 1);
 
+    let rl = Arc::new(
+        RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
+            .expect("test"),
+    );
     let engine = WafEngine::new(
         rules,
-        10_000,
+        rl,
         true,
         false,
         false,
         false,
-        &tmp.path().join("rate.bin"),
-        PersistenceMode::Bincode,
         Arc::new(WafMetrics::default()),
         Arc::new(CmcManager::default()),
     )
@@ -463,15 +467,17 @@ async fn waf_blocks_blocklist_dir_ip_and_reports_yaml_title() {
     let rules = Arc::new(RuleSet::from_dir(tmp.path()).expect("test"));
     assert_eq!(rules.addr_list_entries.len(), 1);
 
+    let rl = Arc::new(
+        RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
+            .expect("test"),
+    );
     let engine = WafEngine::new(
         rules,
-        10_000,
+        rl,
         true,
         false,
         false,
         false,
-        &tmp.path().join("rate.bin"),
-        PersistenceMode::Bincode,
         Arc::new(WafMetrics::default()),
         Arc::new(CmcManager::default()),
     )

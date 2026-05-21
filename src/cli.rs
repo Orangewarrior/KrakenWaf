@@ -64,7 +64,7 @@ pub struct Cli {
     #[arg(long)]
     pub rate_limit_per_minute: Option<u32>,
 
-    /// Path to a rate-limit YAML configuration file. KrakenWaf auto-discovers
+    /// Path to a rate-limit YAML configuration file. `KrakenWaf` auto-discovers
     /// `conf/ratelimit.yaml` in the working directory; use this flag to supply
     /// an alternative path. The file controls the Redis backend, per-IP
     /// concurrency cap, and the default rate limit.

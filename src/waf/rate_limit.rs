@@ -1,5 +1,5 @@
 
-//! Rate-limiter backends for KrakenWaf.
+//! Rate-limiter backends for `KrakenWaf`.
 //!
 //! ## Architecture
 //!
@@ -28,7 +28,7 @@
 //! the shard is acquired only once when inserting a new IP.
 //!
 //! 64 shards → expected contention at 10 k RPS with 16 workers ≈ 2 %.
-//! Hot path: read-lock + Arc::clone (~10 ns) + CAS (~5 ns) ≈ 20–30 ns/req.
+//! Hot path: read-lock + `Arc::clone` (~10 ns) + CAS (~5 ns) ≈ 20–30 ns/req.
 //!
 //! ## Redis / distributed
 //!
@@ -126,6 +126,10 @@ impl RateLimiter {
 
     /// Like [`new_redis`] but skips the TLS requirement — intended exclusively
     /// for integration tests against a local `redis-server` without TLS.
+    ///
+    /// # Errors
+    /// Returns an error if the Redis connection pool cannot be initialised.
+    #[allow(dead_code)]
     pub async fn new_redis_for_test(
         url: &str,
         limit: u32,
@@ -158,6 +162,7 @@ impl RateLimiter {
     ///
     /// # Errors
     /// Returns an error if the persistence backend fails to write the snapshot.
+    #[allow(dead_code)]
     pub fn persist(&self) -> Result<()> {
         match self {
             Self::Local(inner) => inner.persist(),
@@ -433,7 +438,7 @@ impl LocalRateLimiter {
 // ── RedisRateLimiter ──────────────────────────────────────────────────────────
 
 /// Atomic Lua script: INCR key, set TTL on first write, return 1=allow / 0=deny.
-const INCR_WITH_TTL_LUA: &str = r#"
+const INCR_WITH_TTL_LUA: &str = r"
 local n = redis.call('INCR', KEYS[1])
 if n == 1 then
   redis.call('EXPIRE', KEYS[1], ARGV[2])
@@ -442,7 +447,7 @@ if n > tonumber(ARGV[1]) then
   return 0
 end
 return 1
-"#;
+";
 
 pub struct RedisRateLimiter {
     pool: FredPool,
@@ -535,7 +540,7 @@ impl RedisRateLimiter {
             .eval(
                 INCR_WITH_TTL_LUA,
                 vec![key],
-                vec![self.max_requests as i64, self.window_secs as i64],
+                vec![i64::from(self.max_requests), self.window_secs.cast_signed()],
             )
             .await;
 
@@ -622,7 +627,7 @@ fn with_transaction(conn: &Connection, f: impl FnOnce(&Connection) -> Result<()>
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
 /// FNV-1a (64-bit) — deterministic, seed-free. Stable across restarts so
-/// SQLite can re-hydrate state correctly.
+/// `SQLite` can re-hydrate state correctly.
 #[inline]
 fn hash_ip(ip: &str) -> u64 {
     const OFFSET: u64 = 14_695_981_039_346_656_037;
