@@ -1,3 +1,65 @@
+## [2.25.0] - 2026-05-21
+
+### Fixed
+
+#### Score accumulator double-counting (false positive) — CRITICAL
+
+- `inspect_payload_inner` carried `sum_score` across all inspection views,
+  causing the same rule to contribute its score twice whenever the rule's
+  literal appeared both in the full normalized payload **and** in a sub-view
+  created by `inspection_views` splitting on `\n`, `&`, `;`, `?`, `\r`, `\0`.
+- Concrete reproduction: `POST /test_post` with body
+  `payload_test=kwaf-score-post-near` (rule score = 599, default threshold =
+  600). View 1 (the full request) matched once (sum_score = 599, below
+  threshold). The newline-delimited segment view "payload_test=kwaf-score-post-near"
+  re-matched the same rule (sum_score = 1198 ≥ 600) and produced a spurious
+  403.
+- `sum_score` is now reset at the start of each view iteration. Cross-segment
+  attacks (e.g. `kwaf-score-low-a&kwaf-score-low-b&kwaf-score-low-c`) remain
+  blocked because the full-payload view already accumulates across all
+  segments via `find_iter` (keywords) or per-rule iteration (regex).
+- Verified end-to-end with `attack --concurrency 50` against a live
+  `demo_server`+`krakenwaf` stack: 477 attack payloads, 477 blocked, 0
+  bypassed, 0 errors, 0 score expectation failures.
+
+#### Integration-test concurrency: fixed-port collisions removed
+
+- `tests/ratelimit_real_test.rs` previously bound backend to fixed port 9500
+  and allocated WAF ports from an `AtomicU16` starting at 9510, causing
+  port-already-in-use failures whenever two `cargo test` processes ran in
+  parallel.
+- `tests/server_real_test.rs` had the same anti-pattern with backend port
+  9077 and WAF ports starting at 9090.
+- Both files now use OS-allocated ephemeral ports via `pick_free_port()` (the
+  same pattern as the Redis integration tests in `src/waf/rate_limit.rs`).
+  The backend port is resolved once per process via `OnceLock<u16>`; each WAF
+  instance gets its own freshly-allocated port.
+
+#### Test client / readiness timing
+
+- `wait_for_waf` polling window extended to 45 s (150 × 300 ms) so the WAF
+  binary can come up even when many parallel `cargo test` processes saturate
+  the CPU.
+- `reqwest::Client::timeout` for per-request HTTP calls raised from 5 s to
+  25 s; a WAF that has not responded to an attack request within 25 s is
+  treated as broken rather than slow.
+
+#### Redis rate limiter hardening (production)
+
+- Wrapped `pool.eval()` in a 150 ms per-call `tokio::time::timeout` so a hung
+  Redis instance cannot stall WAF request processing — on timeout the
+  limiter fails open and emits a `tracing::warn` with the IP and elapsed ms.
+- Wrapped `pool.init()` in a 10 s `tokio::time::timeout` so a misconfigured
+  Redis URL fails fast at startup rather than blocking the supervisor loop.
+
+#### Redis integration tests: ephemeral ports + readiness probe
+
+- `try_spawn_test_redis` now allocates a free TCP port via `TcpListener::bind(":0")`
+  and probes the spawned `redis-server` with `PING` until it responds, with
+  up to 5 retry attempts on a different port on each retry. Replaces the
+  previous fixed-port + `sleep(400ms)` approach that collided when tests ran
+  in parallel cargo invocations.
+
 ## [2.24.0] - 2026-05-21
 
 ### Added

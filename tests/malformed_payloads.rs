@@ -231,6 +231,79 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
 }
 
 #[test]
+fn single_near_threshold_rule_in_full_request_is_not_double_counted_across_views() {
+    // Regression test for the v2.25.0 score-accumulator double-counting bug.
+    //
+    // A rule scoring 599 (below the 600 default threshold) used to be wrongly
+    // blocked because `inspection_views` produces both the full normalized
+    // request AND each segment split on `\n`, `&`, `;`, `?`, `\r`, `\0`. The
+    // shared `sum_score` carried across views accumulated the same rule hit
+    // twice (599 + 599 = 1198), tripping the threshold.
+    //
+    // Each view must score independently; cross-segment attacks remain caught
+    // by the full-payload view via `find_iter`/per-rule iteration.
+    let near_threshold = CompiledDetectionRule {
+        meta: DetectionRule {
+            id: "score-near-001".into(),
+            line: 1,
+            title: "Near-threshold single rule".into(),
+            severity: Severity::Low,
+            score: 599,
+            cwe: "CWE-693".into(),
+            description: "Rule scoring just below the default block threshold (600).".into(),
+            reference_url: "https://owasp.org/www-project-web-security-testing-guide/".into(),
+            rule_match: "kwaf-score-near-threshold".into(),
+            source: "regex/body_regex.json".into(),
+            http_action: HttpAction::Request,
+        },
+        compiled: Regex::new("kwaf-score-near-threshold").expect("test"),
+    };
+
+    let engine = WafEngineFactory::create(WafEngineConfig {
+        rules: Arc::new(RuleSet {
+            blocked_ips: vec![],
+            blocked_ip_prefixes: vec![],
+            addr_list_entries: vec![],
+            uri_keywords: vec![],
+            header_keywords: vec![],
+            body_keywords: vec![],
+            allow_paths: vec![],
+            body_limits: HashMap::new(),
+            allowed_ips: vec![],
+            scanner_agents: vec![],
+            path_regex: vec![],
+            body_regex: vec![near_threshold],
+            header_regex: vec![],
+            vectorscan_keywords: vec![],
+        }),
+        rate_limiter: make_test_rl(),
+        blocklist_ip_enabled: false,
+        libinjection_sqli_enabled: false,
+        libinjection_xss_enabled: false,
+        vectorscan_enabled: false,
+        metrics: Arc::new(WafMetrics::default()),
+        cmc_manager: empty_cmc_manager(),
+        anomaly_threshold: 600,
+        max_inspection_ms: 0,
+    })
+    .expect("test");
+
+    // The full request mimics what the proxy assembles: HTTP request line,
+    // headers, blank line, body. The rule literal appears once inside the
+    // form body. Score is 599 — strictly below the 600 threshold — so the
+    // decision MUST be Allow / Monitor / SilentReplace, never Block.
+    let full_request: &[u8] =
+        b"POST /test_post HTTP/1.1\nhost: 127.0.0.1\ncontent-type: application/x-www-form-urlencoded\ncontent-length: 38\n\npayload_test=kwaf-score-near-threshold";
+    assert!(
+        matches!(
+            engine.inspect_complete_payload(full_request),
+            Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. }
+        ),
+        "single rule scoring 599 must not be double-counted across inspection views"
+    );
+}
+
+#[test]
 fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
     let response_rules = [
         "kwaf-score-response-a",

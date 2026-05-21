@@ -9,6 +9,19 @@ under `rules/Vectorscan/strings2block.json` support a numeric `score` field.
 - When `sum_score >= 600`, KrakenWaf blocks using the current matching rule.
 - When a new rule list is scanned, `sum_score` starts at `0`.
 - When an immediate high-score block happens, `sum_score` is reset to `0`.
+- **`sum_score` is reset per inspection view** (since v2.25.0). The full
+  normalized payload is inspected as one view, and each segment split on
+  `\n`, `&`, `;`, `?`, `\r`, `\0` is a separate, independently-scored view.
+  Cross-segment attacks (e.g. `evil-a&evil-b&evil-c` with three rules each
+  scoring 250) are still caught because the full-payload view already
+  accumulates all matches via `find_iter` (keywords) or per-rule iteration
+  (regex). This prevents a single rule from being double-counted when it
+  appears in both the full payload and a sub-segment derived from it.
+
+The configurable threshold is controlled by `--anomaly-threshold` (default
+`600`). Any rule whose `score` is `>= threshold` blocks on its own; rules
+with `score < threshold` only block when their accumulated `sum_score` within
+a single view reaches `threshold`.
 
 The bundled regex and Vectorscan rules use `score: 1000` unless they are
 explicit score-engine laboratory rules. This preserves the previous behavior for

@@ -1,4 +1,4 @@
-# KrakenWaf v2.23.0
+# KrakenWaf v2.25.0
 
 ## 🚀 Overview
 

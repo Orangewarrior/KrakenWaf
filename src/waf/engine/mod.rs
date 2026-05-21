@@ -426,7 +426,6 @@ impl WafEngine {
             None
         };
 
-        let mut sum_score: u32 = 0;
         let views = inspection_views(normalized_text.as_ref());
         let latin1_views: Option<Vec<&str>> =
             latin1_text.as_deref().map(inspection_views);
@@ -444,6 +443,14 @@ impl WafEngine {
                     break;
                 }
             }
+
+            // Each view is an independent inspection unit. The full-payload
+            // view already accumulates score across delimited segments via
+            // `find_iter` (keywords) or per-rule iteration (regex); carrying
+            // a shared accumulator across views would double-count the same
+            // rule when it matches both the full payload AND a sub-segment
+            // (e.g. the form field value when newline-splitting the request).
+            let mut sum_score: u32 = 0;
 
             if let Some(finding) = keyword_match_accumulate(
                 matchers.req_uri.as_ref(),
