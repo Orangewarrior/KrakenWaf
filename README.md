@@ -1,4 +1,4 @@
-# KrakenWaf v2.22.0
+# KrakenWaf v2.23.0
 
 ## 🚀 Overview
 
@@ -63,6 +63,66 @@ full module catalogue.
 ### 🔹 libinjection
 - Detects SQLi and XSS
 - Industry standard approach for injection-focused detection
+
+---
+
+## 🛡️ Rate Limiting
+
+KrakenWaf includes two complementary throttling mechanisms. Full reference: **[docs/rate_limit.md](docs/rate_limit.md)**.
+
+### Per-IP request rate (GCRA / Redis)
+
+Limits the number of requests a single IP may make per minute.
+
+```bash
+# Quick start — 60 req/min, no config file needed
+krakenwaf --rate-limit-per-minute 60 [...]
+
+# Or load from conf/ratelimit.yaml (auto-discovered)
+krakenwaf --ratelimit-by-file-conf conf/ratelimit.yaml [...]
+```
+
+`conf/ratelimit.yaml` controls all rate-limit settings including the Redis backend:
+
+```yaml
+rate_limit_per_minute: 240     # req/min per IP (0 = use CLI flag or default)
+max_coroutines_per_ip: 64      # simultaneous connections per IP (0 = disabled)
+
+# Uncomment to enable Redis distributed rate limiting:
+# redis:
+#   url: "rediss://redis.internal:6380/0"   # rediss:// (TLS) required
+#   pool_size: 4
+#   key_prefix: "krakenwaf:rl"
+#   window_secs: 60
+```
+
+Priority chain: `--rate-limit-per-minute` CLI flag → file value → built-in default (240 req/min).
+
+### Per-IP concurrency cap (`max_coroutines_per_ip`)
+
+Caps simultaneous in-flight connections from the same IP. Excess connections receive `HTTP 429 Retry-After: 5` before any WAF inspection or upstream connection is opened.
+
+| Mechanism | Metric | Response |
+|-----------|--------|----------|
+| GCRA / Redis | requests / minute | `HTTP 403` |
+| Concurrency cap | simultaneous connections | `HTTP 429` |
+
+### Redis — multi-node deployments
+
+When `redis:` is configured, all WAF replicas share the same counter:
+
+```bash
+# Credentials via environment variables (CIS Benchmark — never in config files)
+export REDIS_PASSWORD="strong-secret-here"
+export REDIS_USERNAME="krakenwaf"      # optional: Redis 6+ ACL
+
+krakenwaf --ratelimit-by-file-conf conf/ratelimit.yaml [...]
+```
+
+KrakenWaf enforces CIS Redis Benchmark controls: TLS (`rediss://`) mandatory,
+credentials from env vars only, fail-open on Redis unavailability.
+
+→ Full guide: [docs/rate_limit.md](docs/rate_limit.md)
 
 ---
 
@@ -350,8 +410,9 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--enable-libinjection-sqli` | `false` | Enable libinjection-based SQL injection detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-libinjection-xss` | `false` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-vectorscan` | `false` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature) |
-| `--rate-limit-per-minute` | `240` | Maximum admissions per client IP per minute (GCRA-sharded) — see [docs/rate_limit.md](docs/rate_limit.md) |
-| `--wal-mode` | `sqlite` | Persistence backend for the rate-limiter snapshot: `sqlite` (inspectable, WAL journal) or `bincode` (atomic-rename binary, 10–50× faster) — see [docs/rate_limit.md](docs/rate_limit.md) |
+| `--rate-limit-per-minute` | 240 | Per-IP request budget per 60 s window. Overrides the config file. Default when absent: 240. See [docs/rate_limit.md](docs/rate_limit.md) |
+| `--ratelimit-by-file-conf` | auto-discover | Path to a YAML rate-limit config file. Auto-discovered at `conf/ratelimit.yaml` in the working directory. Enables Redis backend and `max_coroutines_per_ip`. See [docs/rate_limit.md](docs/rate_limit.md) |
+| `--wal-mode` | `sqlite` | Persistence backend for the local rate-limiter snapshot: `sqlite` (inspectable WAL) or `bincode` (atomic-rename binary, ~10–50× faster). Ignored when using Redis. See [docs/rate_limit.md](docs/rate_limit.md) |
 | `--upstream-timeout-secs` | `15` | Timeout in seconds for upstream requests |
 | `--connection-timeout-secs` | `30` | Timeout in seconds for client connections accepted by the WAF |
 | `--max-connections` | `2048` | Maximum simultaneous client connections |
@@ -660,7 +721,7 @@ token handling, DQS zones, and scheduler configuration.
 
 ## Operational notes
 
-- Rate limiting is enforced per-IP and per-process by a lock-free GCRA-sharded limiter (64 shards, ~20–30 ns admission on the hot path) with snapshots persisted to `tmp_cache/` so brief restarts do not give blocked clients a fresh budget. The on-disk format is selectable via `--wal-mode` (`sqlite` or `bincode`). For full algorithm, sharding, persistence and tuning details see [docs/rate_limit.md](docs/rate_limit.md). Clustered/global enforcement across multiple WAF instances still requires a shared backend such as Redis.
+- Rate limiting is enforced per-IP by a **local GCRA sharded limiter** (64 shards, ~20–30 ns/req, snapshot-persisted across restarts) or a **Redis-backed distributed limiter** (consistent enforcement across WAF replicas via atomic Lua script). A separate per-IP **concurrency gate** (`max_coroutines_per_ip`) limits simultaneous in-flight connections before WAF inspection, returning HTTP 429. All settings load from `conf/ratelimit.yaml` or `--ratelimit-by-file-conf`. See **[docs/rate_limit.md](docs/rate_limit.md)** for the full guide including Redis setup, CIS hardening, and config file reference.
 - SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
 - Send `SIGHUP` to hot-reload rule files without restarting the process.
 - `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
