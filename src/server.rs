@@ -5,10 +5,14 @@ use http::{Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn};
 use hyper_util::{rt::{TokioExecutor, TokioIo}, server::conn::auto::Builder};
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::{atomic::{AtomicUsize, Ordering}, Arc},
+    time::Duration,
+};
 use tokio::{net::TcpListener, task, time::timeout};
 use tokio_rustls::TlsAcceptor;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Start the TLS listener (normal production mode).
 pub async fn run(
@@ -168,7 +172,49 @@ pub async fn run_plain(
     Ok(())
 }
 
+/// RAII guard that decrements the per-IP in-flight counter when dropped.
+struct ConnGuard(Arc<AtomicUsize>);
+impl Drop for ConnGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String) -> Response<Full<Bytes>> {
+    // Per-IP concurrency limit (max_coroutines_per_ip).  Health endpoints bypass this
+    // so that operators can always reach the liveness probe even under a flood.
+    let _conn_guard = if state.max_coroutines_per_ip > 0 {
+        let counter = state
+            .ip_connections
+            .entry(client_ip.clone())
+            .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
+            .clone();
+        let prev = counter.fetch_add(1, Ordering::Relaxed);
+        if prev >= state.max_coroutines_per_ip {
+            counter.fetch_sub(1, Ordering::Relaxed);
+            warn!(
+                target: "krakenwaf",
+                ip = %client_ip,
+                limit = state.max_coroutines_per_ip,
+                "per-IP concurrency limit exceeded — returning 429"
+            );
+            state.metrics.inc_rate_limit_hits();
+            let mut resp = plain_response(
+                StatusCode::TOO_MANY_REQUESTS,
+                "Too many simultaneous connections from your IP address",
+            );
+            resp.headers_mut().insert(
+                "Retry-After",
+                http::HeaderValue::from_static("5"),
+            );
+            state.response_header_policy.apply(resp.headers_mut(), false);
+            return resp;
+        }
+        Some(ConnGuard(counter))
+    } else {
+        None
+    };
+
     let path = req.uri().path();
 
     // Health and metrics endpoints respect the addr allowlist.

@@ -20,6 +20,7 @@ mod tls;
 mod waf;
 
 use anyhow::{Context, Result};
+
 use app::AppState;
 use bytes::Bytes;
 use clap::Parser;
@@ -40,7 +41,12 @@ async fn main() -> Result<()> {
     let root_dir = std::env::current_dir()?;
     let network_config = Arc::new(NetworkConfig::load(&root_dir)?);
     let scoring_config = Arc::new(scoring::ScoringConfig::load(&root_dir)?);
-    let rl_config = RateLimitConfig::load(&root_dir)?;
+    let rl_config = match cli.ratelimit_by_file_conf.as_deref() {
+        Some(path) => RateLimitConfig::load_from(&std::path::PathBuf::from(path))
+            .with_context(|| format!("--ratelimit-by-file-conf: failed to load '{path}'"))?,
+        None => RateLimitConfig::load(&root_dir)?,
+    };
+    let effective_rate_limit = cli.effective_rate_limit(rl_config.rate_limit_per_minute);
 
     println!("{}", banner::banner());
 
@@ -61,7 +67,7 @@ async fn main() -> Result<()> {
     let waf = Arc::new(waf::WafEngine::new(
         rules,
         &rl_config,
-        cli.rate_limit_per_minute,
+        effective_rate_limit,
         cli.blocklist_ip,
         cli.libinjection_sqli_enabled(),
         cli.libinjection_xss_enabled(),
@@ -107,6 +113,8 @@ async fn main() -> Result<()> {
         network: network_config.clone(),
         tls_acceptor: tls_acceptor_shared.clone(),
         scoring: scoring_config,
+        ip_connections: Arc::new(dashmap::DashMap::new()),
+        max_coroutines_per_ip: rl_config.max_coroutines_per_ip,
     });
 
     spawn_rule_reload(state.clone());

@@ -6,10 +6,28 @@ use std::{fs, path::Path};
 /// Rate limiter configuration loaded from `conf/ratelimit.yaml`.
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct RateLimitConfig {
+    /// Per-IP request rate limit (requests/minute). `None` / 0 = use CLI default.
+    #[serde(default, deserialize_with = "deser_option_nonzero_u32")]
+    pub rate_limit_per_minute: Option<u32>,
+    /// Maximum simultaneous in-flight connections per client IP.
+    /// 0 = disabled.  Default: 64.
+    #[serde(default = "default_max_coroutines_per_ip")]
+    pub max_coroutines_per_ip: usize,
     #[serde(default)]
     pub local: LocalConfig,
     #[serde(default)]
     pub redis: RedisConfig,
+}
+
+fn default_max_coroutines_per_ip() -> usize { 64 }
+
+/// Deserializes a `u32` from YAML: 0 or absent → `None`; non-zero → `Some(n)`.
+fn deser_option_nonzero_u32<'de, D>(d: D) -> Result<Option<u32>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let n: u32 = serde::Deserialize::deserialize(d)?;
+    Ok(if n == 0 { None } else { Some(n) })
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -77,12 +95,20 @@ pub struct RedisTlsConfig {
 }
 
 impl RateLimitConfig {
+    /// Load from `{root}/conf/ratelimit.yaml`; returns `Default` when the file is absent.
     pub fn load(root: &Path) -> Result<Self> {
-        let path = root.join("conf").join("ratelimit.yaml");
+        Self::load_from(&root.join("conf").join("ratelimit.yaml"))
+    }
+
+    /// Load from an explicit file path; returns `Default` when the file is absent.
+    ///
+    /// # Errors
+    /// Returns an error when the file exists but cannot be read or parsed.
+    pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
             return Ok(Self::default());
         }
-        let content = fs::read_to_string(&path)
+        let content = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
         serde_yaml::from_str(&content)
             .with_context(|| format!("failed to parse {}", path.display()))

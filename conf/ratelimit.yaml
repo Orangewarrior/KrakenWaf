@@ -1,9 +1,8 @@
 # KrakenWaf — Rate Limiter Configuration
 #
-# Controls both the local in-memory limiter (always active) and an optional
-# distributed Redis backend.  The base request limit and window are still
-# set via the --rate-limit-per-minute CLI flag; the values below can override
-# them when redis.enabled = true.
+# Load with --ratelimit-by-file-conf <path> to replace individual CLI flags.
+# When that flag is used, all settings below become the source of truth.
+# --rate-limit-per-minute is still accepted as a final override.
 #
 # CIS Redis Benchmark compliance notes
 # ─────────────────────────────────────
@@ -15,6 +14,16 @@
 # • In container deployments store these variables in a secrets manager
 #   (HashiCorp Vault, AWS Secrets Manager, Kubernetes Secrets, etc.) and mount
 #   them as environment variables at runtime.
+
+# Per-IP request rate limit (requests per minute).
+# 0 = use the --rate-limit-per-minute CLI argument (default: 240).
+rate_limit_per_minute: 0
+
+# Per-IP maximum simultaneous in-flight connections.
+# Caps connection-flood and slowloris attacks independently of the rate limit.
+# When an IP exceeds this ceiling the new request receives HTTP 429 immediately.
+# 0 = disabled.  Recommended: 64 for production, 16-32 for high-security.
+max_coroutines_per_ip: 64
 
 local:
   # Maximum distinct client IPs held in the in-memory table.

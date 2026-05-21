@@ -9,11 +9,14 @@ use crate::{
     response_headers::ResponseHeaderPolicy,
     scoring::ScoringConfig,
     storage::SqliteStore,
-    waf::WafEngine
+    waf::WafEngine,
 };
 use bytes::Bytes;
-use std::path::PathBuf;
-use std::sync::Arc;
+use dashmap::DashMap;
+use std::{
+    path::PathBuf,
+    sync::{atomic::AtomicUsize, Arc},
+};
 use tokio_rustls::TlsAcceptor;
 
 #[derive(Clone)]
@@ -33,4 +36,8 @@ pub struct AppState {
     pub network: Arc<NetworkConfig>,
     pub tls_acceptor: Option<Arc<tokio::sync::RwLock<TlsAcceptor>>>,
     pub scoring: Arc<ScoringConfig>,
+    /// Per-client-IP in-flight request counter. Used by `max_coroutines_per_ip` enforcement.
+    pub ip_connections: Arc<DashMap<String, Arc<AtomicUsize>>>,
+    /// 0 = unlimited (feature disabled).
+    pub max_coroutines_per_ip: usize,
 }

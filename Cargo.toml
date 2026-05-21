@@ -48,6 +48,7 @@ tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 url = "2.5"
+dashmap = "6"
 fred = { version = "10.1", default-features = false, features = ["enable-rustls-ring", "i-keys", "i-scripts", "i-std", "transactions"] }
 vectorscan = { package = "vectorscan-rs", version = "0.0.6", optional = true }
 
@@ -57,6 +58,7 @@ tempfile = "3.13"
 axum = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2", "charset"] }
 tokio = { version = "1.52", features = ["full"] }
+which = "7"
 
 [build-dependencies]
 cc = "1.2"

@@ -43,8 +43,18 @@ pub struct Cli {
     #[arg(long)]
     pub blockmsg: Option<String>,
 
-    #[arg(long, default_value_t = 240)]
-    pub rate_limit_per_minute: u32,
+    /// Per-IP request rate limit (requests per minute).
+    /// When --ratelimit-by-file-conf is also given this value acts as a final
+    /// override; otherwise 240 is the built-in default.
+    #[arg(long)]
+    pub rate_limit_per_minute: Option<u32>,
+
+    /// Load all rate-limit settings from a YAML configuration file.
+    /// Enables Redis distributed mode, per-IP concurrency cap, and custom window
+    /// settings without passing individual CLI flags.  See conf/ratelimit.yaml
+    /// for the full schema and documentation.
+    #[arg(long = "ratelimit-by-file-conf")]
+    pub ratelimit_by_file_conf: Option<String>,
 
     #[arg(long, default_value_t = 15)]
     pub upstream_timeout_secs: u64,
@@ -128,5 +138,13 @@ impl Cli {
 
     pub fn libinjection_xss_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_xss
+    }
+
+    /// Effective rate limit: CLI flag beats file config, file config beats built-in default (240).
+    #[must_use]
+    pub fn effective_rate_limit(&self, file_config: Option<u32>) -> u32 {
+        self.rate_limit_per_minute
+            .or(file_config)
+            .unwrap_or(240)
     }
 }

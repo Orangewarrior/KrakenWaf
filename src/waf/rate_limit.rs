@@ -237,7 +237,25 @@ impl RedisRateLimiter {
             "Redis URL must use rediss:// (TLS required per CIS Redis Benchmark). \
              Plain redis:// connections are not permitted."
         );
+        Self::new_inner(config, cli_limit, false).await
+    }
 
+    /// Test-only constructor that accepts `redis://` (no-TLS) for ephemeral local Redis.
+    ///
+    /// Bypasses the `rediss://` enforcement that is mandatory in production.
+    /// Never use this outside of test code.
+    pub async fn new_for_test(
+        config: &crate::ratelimit_config::RedisConfig,
+        cli_limit: u32,
+    ) -> Result<Self> {
+        Self::new_inner(config, cli_limit, true).await
+    }
+
+    async fn new_inner(
+        config: &crate::ratelimit_config::RedisConfig,
+        cli_limit: u32,
+        skip_tls: bool,
+    ) -> Result<Self> {
         // Credentials via environment variables only — never from the config file.
         let password = std::env::var("REDIS_PASSWORD").ok().filter(|s| !s.is_empty());
         let username = std::env::var("REDIS_USERNAME").ok().filter(|s| !s.is_empty());
@@ -248,20 +266,22 @@ impl RedisRateLimiter {
         fred_config.password = password;
         fred_config.username = username;
 
-        // Build TLS connector: custom CA or system trust store.
-        let tls_connector = if config.tls.ca_cert_path.is_empty() {
-            TlsConnector::default_rustls()
-                .map_err(|e| anyhow::anyhow!("failed to build default TLS connector: {e}"))?
-        } else {
-            build_custom_ca_connector(&config.tls.ca_cert_path)?
-        };
-        fred_config.tls = Some(TlsConfig::from(tls_connector));
+        if !skip_tls {
+            // Build TLS connector: custom CA or system trust store.
+            let tls_connector = if config.tls.ca_cert_path.is_empty() {
+                TlsConnector::default_rustls()
+                    .map_err(|e| anyhow::anyhow!("failed to build default TLS connector: {e}"))?
+            } else {
+                build_custom_ca_connector(&config.tls.ca_cert_path)?
+            };
+            fred_config.tls = Some(TlsConfig::from(tls_connector));
+        }
 
         let pool = Builder::from_config(fred_config)
             .build_pool(config.pool_size)
             .map_err(|e| anyhow::anyhow!("failed to build Redis pool: {e}"))?;
 
-        let _connection_task = pool.init().await
+        pool.init().await
             .map_err(|e| anyhow::anyhow!("Redis connect failed: {e}"))?;
 
         let max_requests = if config.max_requests > 0 { config.max_requests } else { cli_limit };
