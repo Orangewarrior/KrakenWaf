@@ -120,7 +120,7 @@ async fn main() -> Result<()> {
 
     let allow_path_config = match cli.allow_paths_file.as_deref() {
         Some(path) => Some(
-            allowpaths::load_and_validate(&PathBuf::from(path))
+            allowpaths::load_and_validate(&PathBuf::from(path), &root_dir)
                 .with_context(|| format!("--allow-paths: failed to load '{path}'"))?,
         ),
         None => None,

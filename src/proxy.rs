@@ -1,4 +1,5 @@
 use crate::{
+    allowpaths::PathDecision,
     app::AppState,
     cli::WafMode,
     error::KrakenError,
@@ -220,12 +221,35 @@ impl ProxyClient {
             request_id: request_id.to_string(),
         };
 
-        // Check allow-paths: if the URI is explicitly allowed, skip WAF inspection entirely.
-        let skip_inspection = state.allow_path_config.as_ref().and_then(|c| c.is_allowed(&path)).map(|entry| {
-            if entry.log {
-                info!(target: "krakenwaf", uri=%context.uri, title=%entry.title, "allow-paths match: skipping WAF inspection");
+        // Check allow-paths: IP-restricted entries block non-allowed IPs; matched entries
+        // without IP restriction skip WAF inspection entirely.
+        let (skip_inspection, block_by_ip) = if let Some(config) = &state.allow_path_config {
+            match config.check(&path, &uri.to_string(), &effective_ip) {
+                PathDecision::Allow(entry) => {
+                    if entry.log {
+                        info!(
+                            target: "krakenwaf",
+                            uri = %context.uri,
+                            title = %entry.title,
+                            "allow-paths match: skipping WAF inspection"
+                        );
+                    }
+                    (true, false)
+                }
+                PathDecision::Block => (false, true),
+                PathDecision::NoMatch => (false, false),
             }
-        }).is_some();
+        } else {
+            (false, false)
+        };
+
+        if block_by_ip {
+            return block_content_response(
+                state,
+                StatusCode::FORBIDDEN,
+                "Access denied by KrakenWaf IP restriction",
+            );
+        }
 
         if !skip_inspection {
             match state.waf.inspect_early(&context).await {
@@ -900,7 +924,7 @@ fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Optio
         .map(str::to_owned)
 }
 
-fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppState) -> String {
+pub(crate) fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppState) -> String {
     use std::net::IpAddr;
     let Ok(peer) = peer_ip.parse::<IpAddr>() else {
         return peer_ip.to_string();

@@ -1,0 +1,11 @@
+# Addresses allowed to access observability endpoints (/metrics, /healthz, /readyz, /livez).
+# Supports: exact IP, CIDR notation, or start-end range.
+# Examples:
+#   127.0.0.1
+#   10.0.0.0/8
+#   192.168.1.1-192.168.1.50
+#   ::1
+
+# Loopback only — metrics are visible from localhost exclusively.
+127.0.0.1
+::1

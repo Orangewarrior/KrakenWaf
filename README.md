@@ -357,6 +357,24 @@ This is useful for validating:
 curl -k https://localhost/metrics
 ```
 
+Restrict `/metrics` to specific IPs by adding `only_addrs` to `rules/allowpaths/lists.yaml`:
+
+```yaml
+allow:
+  - order: 1
+    title: "Health check endpoint"
+    log: false
+    only_addrs: rules/addr/allowlist/allow_addrs.txt   # localhost only by default
+    paths:
+      - /metrics
+      - /healthz
+      - /readyz
+      - /livez
+```
+
+Edit `rules/addr/allowlist/allow_addrs.txt` to add monitoring subnet IPs (exact,
+CIDR, or start–end range). See [docs/allowpaths.md](docs/allowpaths.md) for details.
+
 ---
 
 ## ❤️ Health
@@ -731,5 +749,6 @@ token handling, DQS zones, and scheduler configuration.
 - SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
 - Send `SIGHUP` to hot-reload rule files without restarting the process.
 - `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
+- **Allow-path IP restriction** (`only_addrs`): add `only_addrs: <path>` to any entry in `rules/allowpaths/lists.yaml` to gate that path by client IP. `rules/addr/allowlist/allow_addrs.txt` ships pre-populated with loopback addresses so observability endpoints are localhost-only by default. Supports exact IPs, CIDR, and start–end ranges. See **[docs/allowpaths.md](docs/allowpaths.md)**.
 
  ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
