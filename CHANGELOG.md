@@ -1,3 +1,101 @@
+## [2.27.0] - 2026-05-22
+
+### Added
+
+#### Per-path IP restriction (`only_addrs`) in allow-paths YAML
+
+A new optional `only_addrs` field in `rules/allowpaths/lists.yaml` restricts
+access to specific URI prefixes by client IP address. When set, only IPs in
+the referenced file may reach the protected paths; all other source IPs
+receive **HTTP 403** — even when the WAF is running in `silent` or
+`detect-only` mode.
+
+```yaml
+allow:
+  - order: 2
+    title: "Health check endpoint"
+    log: false
+    only_addrs: rules/addr/allowlist/allow_addrs.txt  # new field
+    paths:
+      - /metrics
+      - /healthz
+      - /readyz
+      - /livez
+```
+
+The IP allowlist file (`rules/addr/allowlist/allow_addrs.txt`) supports:
+
+- **Exact IP**: `127.0.0.1`
+- **CIDR**: `10.0.0.0/8`, `127.0.0.0/25`
+- **Start–end range**: `192.168.1.1-192.168.1.50`
+
+Lines starting with `#` and blank lines are ignored. Line scanning uses
+`memchr::memchr_iter` for zero-copy performance; range-separator detection
+uses `memchr::memchr` instead of `str::contains`.
+
+The restriction also fires when the protected path appears in the **query
+string** or elsewhere in the full URI (scanned with `memchr::memmem::find`),
+preventing redirect-parameter bypasses such as `GET /api?next=/healthz`.
+
+#### Effective IP resolution for WAF built-in endpoints
+
+The `only_addrs` check on the WAF's own endpoints (`/metrics`, `/readyz`,
+`/livez`, `/__krakenwaf/health`) now uses the **effective client IP** (honours
+`--real-ip-header` / `--trusted-proxy-cidrs`) instead of the raw TCP peer
+address, so the restriction works correctly behind a load balancer.
+
+#### `rules/addr/allowlist/allow_addrs.txt` — default IP allowlist
+
+A new companion file `rules/addr/allowlist/allow_addrs.txt` ships with
+loopback addresses pre-populated. The bundled `lists.yaml` references this
+file for the "Health check endpoint" entry so observability endpoints
+(`/metrics`, `/healthz`, `/readyz`, `/livez`) are restricted to localhost
+out of the box.
+
+### Changed
+
+- `allowpaths::load_and_validate` now requires a `base_dir: &Path` parameter
+  used to resolve relative `only_addrs` paths. `main.rs` passes the WAF root
+  directory (`std::env::current_dir()`).
+- `proxy::effective_client_ip` promoted to `pub(crate)` so `server.rs` can
+  reuse the same IP-resolution logic for built-in endpoint access control.
+- `server.rs` handle function computes the effective IP once at the top of the
+  built-in path handler and passes it to both the `only_addrs` check and the
+  existing `allowlist.txt` check.
+- All file open operations in `allowpaths.rs` (YAML file, `only_addrs` file)
+  use `fs::canonicalize` before opening to prevent path traversal.
+
+### Security
+
+- Path traversal attempts against `only_addrs` file paths are rejected at
+  startup by `fs::canonicalize`.
+- Encoded or obfuscated traversal in request URIs (e.g.
+  `/foo/../healthz`, `%2fhealthz`) normalises to the canonical form before
+  the IP restriction is evaluated.
+- The `only_addrs` Block decision is enforced regardless of WAF mode (`block`,
+  `silent`, `detect-only`).
+
+### Tests
+
+- 10 new unit tests in `src/allowpaths.rs` (`#[cfg(test)]`) covering:
+  exact IP, CIDR, range, comment/blank-line handling, path check variants,
+  URI query-string restriction, and the no-restriction bypass case.
+- 12 new integration tests in `tests/allowpaths_addr.rs` covering:
+  localhost allowed, foreign IP blocked (via `X-Forwarded-For` spoofing),
+  `/healthz` and `/readyz` both proxied and built-in paths, URI query-string
+  blocking, path traversal normalisation, real attack payloads blocked on
+  unrestricted paths (XSS, SQLi), and WAF metrics accessibility.
+
+### Documentation
+
+- `docs/allowpaths.md` — full `only_addrs` reference including file format,
+  CIDR/range syntax, load-balancer interaction, and security notes.
+- `docs/observability.md` — new "Metrics access control" section documenting
+  the `only_addrs` configuration for Prometheus/Grafana scraping.
+- `README.md` — metrics and allow-lists sections updated.
+
+---
+
 ## [2.26.0] - 2026-05-22
 
 ### Added

@@ -1,4 +1,4 @@
-use crate::{app::AppState, proxy::plain_response, tls::TlsConfigStore};
+use crate::{app::AppState, proxy::{effective_client_ip, plain_response}, tls::TlsConfigStore};
 use anyhow::Result;
 use bytes::Bytes;
 use http::{Request, Response, StatusCode};
@@ -233,6 +233,20 @@ async fn handle(
         || path == "/readyz"
         || path == "/metrics"
     {
+        // Resolve the effective IP (honours X-Forwarded-For + trusted proxy CIDRs)
+        // so that IP restrictions apply correctly behind a load balancer.
+        let effective_ip = effective_client_ip(&client_ip, req.headers(), &state);
+
+        // Check YAML-based only_addrs restriction first (if configured).
+        if let Some(config) = &state.allow_path_config {
+            use crate::allowpaths::PathDecision;
+            if matches!(config.check(path, path, &effective_ip), PathDecision::Block) {
+                let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
+                state.response_header_policy.apply(resp.headers_mut(), false);
+                return resp;
+            }
+        }
+        // Fallback: allowlist.txt-based restriction (rules/addr/allowlist.txt).
         let snap = state.waf.rules_snapshot();
         if !snap.is_ip_allowed(&client_ip) {
             let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");

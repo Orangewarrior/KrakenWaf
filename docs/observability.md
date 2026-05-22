@@ -61,6 +61,48 @@ rate(krakenwaf_module_blocks_total{engine="cmc",module="java_deserialize_detect"
 rate(krakenwaf_requests_inspected_total[1m])
 ```
 
+## Metrics access control
+
+By default, any IP address may reach `/metrics`. To restrict it to specific
+addresses (e.g. localhost or a monitoring subnet) use the `only_addrs` field
+in `rules/allowpaths/lists.yaml`:
+
+```yaml
+allow:
+  - order: 1
+    title: "Health check endpoint"
+    description: "Load-balancer liveness probe — restricted to allowed IPs"
+    log: false
+    only_addrs: rules/addr/allowlist/allow_addrs.txt
+    paths:
+      - /metrics
+      - /healthz
+      - /readyz
+      - /livez
+```
+
+The companion file `rules/addr/allowlist/allow_addrs.txt` lists the allowed
+source IPs (one per line, CIDR and start–end ranges supported):
+
+```
+# Loopback only — metrics visible from localhost exclusively.
+127.0.0.1
+::1
+```
+
+Requests from unlisted IPs receive **HTTP 403**. The check works behind a
+load balancer when `--real-ip-header` and `--trusted-proxy-cidrs` are
+configured — KrakenWaf uses the effective client IP for the restriction.
+
+Grafana, Prometheus, and similar scraping tools should have their pod/node
+IPs added to `allow_addrs.txt`, or be configured to scrape through a sidecar
+on loopback.
+
+See **[docs/allowpaths.md](allowpaths.md)** for the full IP-restriction
+feature reference.
+
+---
+
 ## Structured JSON logs
 
 KrakenWaf writes structured JSON logs to `logs/json/krakenwaf.jsonl.<date>`. Every detection event includes:
