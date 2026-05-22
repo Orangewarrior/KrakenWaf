@@ -135,7 +135,47 @@ jobs:
           category: osv-scanner
 
   # ──────────────────────────────────────────────────────────────────────────
-  # 6. Integration — attack sweep (demo_server + WAF + attack --concurrency 25)
+  # 6. SAST — CodeQL (free for public repos, results in Security tab)
+  # ──────────────────────────────────────────────────────────────────────────
+  codeql:
+    name: SAST · CodeQL (Rust)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-codeql-${{ hashFiles('Cargo.lock') }}
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: rust
+          queries: security-and-quality
+
+      # autobuild compiles the project under CodeQL tracing so the engine can
+      # map data-flow edges across crate boundaries. Equivalent to `cargo build`
+      # but with the necessary instrumentation hooks in place.
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: codeql-rust
+
+  # ──────────────────────────────────────────────────────────────────────────
+  # 7. Integration — attack sweep (demo_server + WAF + attack --concurrency 25)
   # ──────────────────────────────────────────────────────────────────────────
   attack-sweep:
     name: Integration · attack sweep (concurrency=25)
