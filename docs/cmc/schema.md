@@ -26,17 +26,33 @@ unknown keys are silently ignored, absent keys default to `false`.
 
 ### `global-options`
 
-A top-level `global-options` section controls parameters that apply across all
-CMC modules:
+A top-level `global-options` section controls parameters that apply across the
+detection engine and all CMC modules.
 
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `Untrust` | integer 0–100 | `60` | Global paranoia level.  Governs the 2-signal and 1-signal blocking thresholds in score-based detectors (currently `Java_deserialize_detect`). |
+| Key | Type | Default | Overridden by CLI | Description |
+|-----|------|---------|-------------------|-------------|
+| `Untrust` | integer 0–100 | `60` | — | Global paranoia level. Governs the 2-signal and 1-signal blocking thresholds in score-based detectors (currently `Java_deserialize_detect`), the response-block gate for `Detect_db_errors` and `Detect_bad_artifacts` (≥ 60 blocks, < 60 logs), and the `Silent_sql_errors` gate (≥ 80 blocks, < 80 scrubs). |
+| `Anomaly_threshold` | integer (u32) | `600` | `--anomaly-threshold` | Detection-engine block threshold (score). Rules with `score >= threshold` block immediately; lower-scored rules accumulate inside a single inspection view until their sum reaches `threshold`. See [../score_rank.md](../score_rank.md). |
+| `Max_inspection_ms` | integer (u64) | `0` (disabled) | `--max-inspection-ms` | Per-request wall-clock cap on WAF inspection (milliseconds). When `> 0` and the deadline elapses, inspection stops scanning additional views and the request proceeds with whatever findings were produced so far. `0` disables the deadline. |
+
+#### Priority chain
+
+For both `Anomaly_threshold` and `Max_inspection_ms` the resolution order is:
+
+```
+CLI flag (highest)  >  global-options field in this file  >  built-in default
+```
+
+This is the same pattern used by `--rate-limit-per-minute` against
+`conf/ratelimit.yaml` — pass the flag only when you want to override the
+file, otherwise the YAML value (or built-in default) takes effect.
 
 ```yaml
 # rules/cmc/config.yaml
 global-options:
-  Untrust: 60   # 0 = lenient; 100 = paranoid
+  Untrust: 60              # 0 = lenient; 100 = paranoid
+  Anomaly_threshold: 600   # overridden by --anomaly-threshold
+  Max_inspection_ms: 0     # 0 = no deadline; overridden by --max-inspection-ms
 
 CMC-Rules:
   SQLi_comments_detect: true
