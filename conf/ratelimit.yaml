@@ -17,6 +17,29 @@ rate_limit_per_minute: 240
 # Set to 0 to disable per-IP concurrency limiting.
 max_coroutines_per_ip: 64
 
+# Slowloris protection: per-frame timeout (seconds) when streaming the
+# request body. If the WAF waits longer than this for a single body chunk
+# it returns 408 and drops the connection.
+# Set to 0 to disable the timeout (falls back to a static safety limit).
+# Overridden by --body-frame-timeout-secs when present.
+# Default: 30
+body_frame_timeout_secs: 30
+
+# Global memory-backpressure cap (bytes) on in-flight request body data
+# summed across all clients. When exceeded, new requests receive HTTP 503
+# with Retry-After: 5.
+# Set to 0 to disable the global cap.
+# Overridden by --max-inflight-body-bytes when present.
+# Default: 1073741824 (1 GiB)
+max_inflight_body_bytes: 1073741824
+
+# Per-IP memory-backpressure cap (bytes) on in-flight request body data.
+# Prevents a single source IP from saturating the global body buffer.
+# Set to 0 to disable the per-IP cap.
+# Overridden by --max-per-ip-body-bytes when present.
+# Default: 209715200 (200 MiB)
+max_per_ip_body_bytes: 209715200
+
 # ── Redis distributed rate limiter ────────────────────────────────────────────
 # When this section is present KrakenWaf replaces the built-in GCRA limiter
 # with a Redis-backed counter, enabling consistent rate limiting across multiple

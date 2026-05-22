@@ -1,3 +1,62 @@
+## [2.26.0] - 2026-05-22
+
+### Added
+
+#### Rate-limit / backpressure CLI flags configurable via `conf/ratelimit.yaml`
+
+The five v2.24.0 backpressure flags now have matching YAML fields, so operators
+can avoid passing every flag on the command line and keep all rate-limit-related
+tuning in one auditable file. Resolution order for every field is identical:
+
+```
+CLI flag (highest)  >  conf/ratelimit.yaml  >  built-in default
+```
+
+New YAML fields under `conf/ratelimit.yaml`:
+
+- `body_frame_timeout_secs` (default 30) — overrides `--body-frame-timeout-secs`
+- `max_inflight_body_bytes` (default 1073741824 / 1 GiB) — overrides
+  `--max-inflight-body-bytes`
+- `max_per_ip_body_bytes` (default 209715200 / 200 MiB) — overrides
+  `--max-per-ip-body-bytes`
+
+Existing fields `rate_limit_per_minute` and `max_coroutines_per_ip` keep the
+same priority chain.
+
+#### Detection-engine globals configurable via `rules/cmc/config.yaml`
+
+The two detection-engine flags now have matching YAML fields under
+`global-options` in the CMC config file:
+
+- `Anomaly_threshold` (default 600) — overrides `--anomaly-threshold`
+- `Max_inspection_ms` (default 0, disabled) — overrides `--max-inspection-ms`
+
+Resolution order:
+
+```
+CLI flag (highest)  >  rules/cmc/config.yaml global-options  >  built-in default
+```
+
+### Changed
+
+- CLI flag types for the five fields above changed from `T` (with `default_value_t`)
+  to `Option<T>` (no clap default) so an absent flag transparently falls through
+  to the YAML / built-in default chain. Passing the flag explicitly overrides
+  any value present in the YAML file, exactly as `--rate-limit-per-minute` has
+  always behaved.
+- README CLI table cross-links each affected flag to its YAML counterpart.
+- `docs/rate_limit.md` documents the unified priority chain and field table.
+- `proxy.rs` reads `body_frame_timeout_secs` from `AppState` instead of the
+  raw `cli` struct so the resolved (CLI-or-YAML-or-default) value is used.
+
+### Tests
+
+- 3 new unit tests in `ratelimit_config.rs` covering defaults, YAML, and
+  CLI-overrides-YAML for the new resolvers.
+- 3 new unit tests in `cmc/mod.rs` covering the same for the
+  detection-engine resolvers.
+- 367 tests total, all passing with vectorscan active.
+
 ## [2.25.0] - 2026-05-21
 
 ### Fixed

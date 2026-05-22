@@ -61,6 +61,17 @@ rate_limit_per_minute: 240
 # 0 = disabled.
 max_coroutines_per_ip: 64
 
+# Slowloris protection: per-frame timeout (seconds) when streaming the
+# request body. 0 disables.
+body_frame_timeout_secs: 30
+
+# Global cap (bytes) on in-flight request body data across all clients.
+# Excess requests receive HTTP 503 + Retry-After: 5. 0 disables.
+max_inflight_body_bytes: 1073741824   # 1 GiB
+
+# Per-IP cap (bytes) on in-flight request body data. 0 disables.
+max_per_ip_body_bytes: 209715200      # 200 MiB
+
 # Redis backend — uncomment to enable distributed rate limiting.
 # redis:
 #   url: "rediss://redis.internal:6380/0"   # rediss:// (TLS) mandatory
@@ -70,14 +81,19 @@ max_coroutines_per_ip: 64
 #   # ca_cert_path: "/etc/ssl/private/redis-ca.pem"   # optional: custom CA
 ```
 
-### Priority chain for `rate_limit_per_minute`
+### Priority chain
+
+Every CLI flag in the rate-limit family follows the same resolution order:
 
 ```
---rate-limit-per-minute  (CLI — highest)
+CLI flag                          (--rate-limit-per-minute,
+                                   --body-frame-timeout-secs,
+                                   --max-inflight-body-bytes,
+                                   --max-per-ip-body-bytes — highest)
         ↓
-rate_limit_per_minute in conf file
+field in conf/ratelimit.yaml
         ↓
-built-in default: 240 req/min
+built-in default
 ```
 
 ### Field reference
@@ -86,6 +102,9 @@ built-in default: 240 req/min
 |-------|------|---------|-------------|
 | `rate_limit_per_minute` | u32 | 240 | Per-IP request budget per 60 s window. `0` defers to CLI flag or default. |
 | `max_coroutines_per_ip` | usize | 64 | Maximum in-flight connections per IP. `0` disables. |
+| `body_frame_timeout_secs` | u64 | 30 | Per-frame timeout (s) when streaming the request body — anti-Slowloris. `0` disables. Overridden by `--body-frame-timeout-secs`. |
+| `max_inflight_body_bytes` | usize | 1073741824 (1 GiB) | Global in-flight body byte cap across all clients. `0` disables. Overridden by `--max-inflight-body-bytes`. |
+| `max_per_ip_body_bytes` | usize | 209715200 (200 MiB) | Per-IP in-flight body byte cap. `0` disables. Overridden by `--max-per-ip-body-bytes`. |
 | `redis.url` | string | — | Redis endpoint. **Must** use `rediss://` (TLS). |
 | `redis.pool_size` | usize | 4 | Number of pooled connections. |
 | `redis.key_prefix` | string | `"krakenwaf:rl"` | Namespace prefix — isolates this WAF from other services on the same Redis instance. |

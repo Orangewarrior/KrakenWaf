@@ -1,4 +1,4 @@
-# KrakenWaf v2.25.0
+# KrakenWaf v2.26.0
 
 ## 🚀 Overview
 
@@ -418,11 +418,11 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--max-connections` | `512` | Maximum simultaneous TCP connections accepted by the WAF. Each connection holds inspection buffers — keep proportional to available memory |
 | `--max-body-bytes` | `104857600` (100 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request |
 | `--max-upstream-response-bytes` | `104857600` (100 MiB) | Hard ceiling on upstream response body buffered in memory; prevents a misbehaving upstream from exhausting WAF heap |
-| `--anomaly-threshold` | `600` | Score-engine block threshold. Detection rules with `score` below this are correlated; when their accumulated `sum_score` within a single inspection view reaches the threshold the request is blocked. See [docs/score_rank.md](docs/score_rank.md) |
-| `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set, inspection stops scanning additional views once the deadline elapses and the request proceeds with whatever findings were produced. `0` disables the deadline |
-| `--body-frame-timeout-secs` | `30` | Per-frame timeout when streaming the request body. If the WAF waits longer than this for a single body chunk it returns 408 and drops the connection |
-| `--max-inflight-body-bytes` | `1073741824` (1 GiB) | Global ceiling on bytes from in-flight request bodies across all clients. When exceeded, new requests receive 503 + `Retry-After: 5` |
-| `--max-per-ip-body-bytes` | `209715200` (200 MiB) | Per-IP ceiling on bytes from in-flight request bodies. Prevents a single client from saturating the global body buffer |
+| `--anomaly-threshold` | `600` | Score-engine block threshold. Detection rules with `score` below this are correlated; when their accumulated `sum_score` within a single inspection view reaches the threshold the request is blocked. Also configurable via `Anomaly_threshold` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml). See [docs/score_rank.md](docs/score_rank.md) |
+| `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set, inspection stops scanning additional views once the deadline elapses and the request proceeds with whatever findings were produced. `0` disables the deadline. Also configurable via `Max_inspection_ms` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml) |
+| `--body-frame-timeout-secs` | `30` | Per-frame timeout when streaming the request body. If the WAF waits longer than this for a single body chunk it returns 408 and drops the connection. Also configurable via `body_frame_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
+| `--max-inflight-body-bytes` | `1073741824` (1 GiB) | Global ceiling on bytes from in-flight request bodies across all clients. When exceeded, new requests receive 503 + `Retry-After: 5`. Also configurable via `max_inflight_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
+| `--max-per-ip-body-bytes` | `209715200` (200 MiB) | Per-IP ceiling on bytes from in-flight request bodies. Prevents a single client from saturating the global body buffer. Also configurable via `max_per_ip_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--internal-header-name` | — | Optional header added to forwarded requests to mark them as processed by KrakenWaf |
 | `--blockmsg` | — | Path to a custom HTML or text file returned when a request is blocked |
 | `--verbose` | `false` | Enable debug-level logging |

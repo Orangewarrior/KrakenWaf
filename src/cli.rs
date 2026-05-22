@@ -143,32 +143,44 @@ pub struct Cli {
 
     /// Anomaly-score block threshold. Rule scores accumulate across all
     /// matches in a single request; when the sum reaches this value the
-    /// request is blocked. Default: 600.
-    #[arg(long = "anomaly-threshold", default_value_t = 600)]
-    pub anomaly_threshold: u32,
+    /// Detection-engine block threshold (score). Overrides the
+    /// `Anomaly_threshold` field under `global-options` in the CMC config
+    /// file (`--cmc-load`). When absent the effective value is taken from
+    /// the CMC file or defaults to 600.
+    #[arg(long = "anomaly-threshold")]
+    pub anomaly_threshold: Option<u32>,
 
     /// Per-request wall-clock cap on WAF inspection (milliseconds).
     /// 0 = unlimited (default). When exceeded the inspection stops and the
     /// request is allowed to proceed with whatever findings were produced.
-    #[arg(long = "max-inspection-ms", default_value_t = 0)]
-    pub max_inspection_ms: u64,
+    /// Overrides the `Max_inspection_ms` field under `global-options` in the
+    /// CMC config file (`--cmc-load`). When absent the effective value is
+    /// taken from the CMC file or defaults to 0 (disabled).
+    #[arg(long = "max-inspection-ms")]
+    pub max_inspection_ms: Option<u64>,
 
     /// Slowloris protection: maximum wall-clock time the WAF waits for a
-    /// single body frame before timing out. Default: 30 s.
-    #[arg(long = "body-frame-timeout-secs", default_value_t = 30)]
-    pub body_frame_timeout_secs: u64,
+    /// single body frame before timing out. Overrides the value in
+    /// `--ratelimit-by-file-conf` or `conf/ratelimit.yaml`. When absent the
+    /// effective value is taken from the config file or defaults to 30 s.
+    #[arg(long = "body-frame-timeout-secs")]
+    pub body_frame_timeout_secs: Option<u64>,
 
     /// Global memory-backpressure cap on in-flight request body bytes.
     /// When exceeded the WAF returns HTTP 503 immediately. 0 = disabled.
-    /// Default: 1 GiB.
-    #[arg(long = "max-inflight-body-bytes", default_value_t = 1024 * 1024 * 1024)]
-    pub max_inflight_body_bytes: usize,
+    /// Overrides the value in `--ratelimit-by-file-conf` or
+    /// `conf/ratelimit.yaml`. When absent the effective value is taken from
+    /// the config file or defaults to 1 GiB (1073741824).
+    #[arg(long = "max-inflight-body-bytes")]
+    pub max_inflight_body_bytes: Option<usize>,
 
     /// Per-IP memory-backpressure cap on in-flight request body bytes.
     /// When exceeded the WAF returns HTTP 503 for that IP. 0 = disabled.
-    /// Default: 200 MiB.
-    #[arg(long = "max-per-ip-body-bytes", default_value_t = 200 * 1024 * 1024)]
-    pub max_per_ip_body_bytes: usize,
+    /// Overrides the value in `--ratelimit-by-file-conf` or
+    /// `conf/ratelimit.yaml`. When absent the effective value is taken from
+    /// the config file or defaults to 200 MiB (209715200).
+    #[arg(long = "max-per-ip-body-bytes")]
+    pub max_per_ip_body_bytes: Option<usize>,
 }
 
 impl Cli {

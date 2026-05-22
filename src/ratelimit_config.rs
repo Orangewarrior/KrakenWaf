@@ -19,6 +19,27 @@ pub struct RateLimitConfig {
     #[serde(default = "default_max_coroutines")]
     pub max_coroutines_per_ip: usize,
 
+    /// Per-frame body inactivity timeout (seconds). Slowloris protection —
+    /// if the WAF waits longer than this for a single request-body chunk it
+    /// returns 408 and drops the connection.
+    /// `None` defers to the CLI flag or the built-in default (30 s).
+    #[serde(default)]
+    pub body_frame_timeout_secs: Option<u64>,
+
+    /// Global memory-backpressure cap on in-flight request body bytes
+    /// across all clients. When exceeded the WAF returns HTTP 503 +
+    /// `Retry-After: 5`. 0 disables the cap.
+    /// `None` defers to the CLI flag or the built-in default (1 GiB).
+    #[serde(default)]
+    pub max_inflight_body_bytes: Option<usize>,
+
+    /// Per-IP memory-backpressure cap on in-flight request body bytes.
+    /// Prevents a single client from saturating the global body buffer.
+    /// 0 disables the cap.
+    /// `None` defers to the CLI flag or the built-in default (200 MiB).
+    #[serde(default)]
+    pub max_per_ip_body_bytes: Option<usize>,
+
     /// Redis distributed rate-limiter settings. When present, replaces the
     /// built-in GCRA limiter with a Redis-backed counter.
     #[serde(default)]
@@ -30,6 +51,9 @@ impl Default for RateLimitConfig {
         Self {
             rate_limit_per_minute: None,
             max_coroutines_per_ip: default_max_coroutines(),
+            body_frame_timeout_secs: None,
+            max_inflight_body_bytes: None,
+            max_per_ip_body_bytes: None,
             redis: None,
         }
     }
@@ -65,6 +89,35 @@ impl RateLimitConfig {
     #[must_use]
     pub fn effective_rate_limit(&self, cli: Option<u32>) -> u32 {
         cli.or(self.rate_limit_per_minute).unwrap_or(240)
+    }
+
+    /// Resolve the effective body-frame timeout (seconds):
+    ///   1. Explicit `--body-frame-timeout-secs` CLI argument
+    ///   2. `body_frame_timeout_secs` from this config file
+    ///   3. Built-in default: 30 s
+    #[must_use]
+    pub fn effective_body_frame_timeout_secs(&self, cli: Option<u64>) -> u64 {
+        cli.or(self.body_frame_timeout_secs).unwrap_or(30)
+    }
+
+    /// Resolve the effective global in-flight body cap (bytes):
+    ///   1. Explicit `--max-inflight-body-bytes` CLI argument
+    ///   2. `max_inflight_body_bytes` from this config file
+    ///   3. Built-in default: 1 GiB (1073741824)
+    #[must_use]
+    pub fn effective_max_inflight_body_bytes(&self, cli: Option<usize>) -> usize {
+        cli.or(self.max_inflight_body_bytes)
+            .unwrap_or(1024 * 1024 * 1024)
+    }
+
+    /// Resolve the effective per-IP in-flight body cap (bytes):
+    ///   1. Explicit `--max-per-ip-body-bytes` CLI argument
+    ///   2. `max_per_ip_body_bytes` from this config file
+    ///   3. Built-in default: 200 MiB (209715200)
+    #[must_use]
+    pub fn effective_max_per_ip_body_bytes(&self, cli: Option<usize>) -> usize {
+        cli.or(self.max_per_ip_body_bytes)
+            .unwrap_or(200 * 1024 * 1024)
     }
 }
 
@@ -111,5 +164,56 @@ where
     match Option::<u32>::deserialize(d)? {
         Some(0) | None => Ok(None),
         Some(n) => Ok(Some(n)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn defaults_are_applied_when_absent_from_yaml() {
+        let cfg = RateLimitConfig::default();
+        assert_eq!(cfg.effective_rate_limit(None), 240);
+        assert_eq!(cfg.effective_body_frame_timeout_secs(None), 30);
+        assert_eq!(
+            cfg.effective_max_inflight_body_bytes(None),
+            1024 * 1024 * 1024
+        );
+        assert_eq!(
+            cfg.effective_max_per_ip_body_bytes(None),
+            200 * 1024 * 1024
+        );
+    }
+
+    #[test]
+    fn yaml_values_override_built_in_defaults() {
+        let yaml = "\
+rate_limit_per_minute: 500
+body_frame_timeout_secs: 10
+max_inflight_body_bytes: 2147483648
+max_per_ip_body_bytes: 104857600
+";
+        let cfg: RateLimitConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+        assert_eq!(cfg.effective_rate_limit(None), 500);
+        assert_eq!(cfg.effective_body_frame_timeout_secs(None), 10);
+        assert_eq!(cfg.effective_max_inflight_body_bytes(None), 2_147_483_648);
+        assert_eq!(cfg.effective_max_per_ip_body_bytes(None), 104_857_600);
+    }
+
+    #[test]
+    fn cli_flag_wins_over_yaml_and_default() {
+        let yaml = "\
+rate_limit_per_minute: 500
+body_frame_timeout_secs: 10
+max_inflight_body_bytes: 2147483648
+max_per_ip_body_bytes: 104857600
+";
+        let cfg: RateLimitConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+        // CLI explicit values override both YAML and built-in defaults.
+        assert_eq!(cfg.effective_rate_limit(Some(99)), 99);
+        assert_eq!(cfg.effective_body_frame_timeout_secs(Some(7)), 7);
+        assert_eq!(cfg.effective_max_inflight_body_bytes(Some(1024)), 1024);
+        assert_eq!(cfg.effective_max_per_ip_body_bytes(Some(512)), 512);
     }
 }

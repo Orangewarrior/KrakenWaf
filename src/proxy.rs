@@ -579,9 +579,11 @@ async fn consume_and_inspect_body(
     let mut tracker =
         BodyTracker::new(Arc::clone(&state.inflight_body_bytes), ip_counter);
 
-    // Body frame timeout: configurable via CLI, falls back to BODY_FRAME_TIMEOUT constant.
-    let frame_timeout = if state.cli.body_frame_timeout_secs > 0 {
-        std::time::Duration::from_secs(state.cli.body_frame_timeout_secs)
+    // Body-frame timeout: resolved at startup (CLI > conf/ratelimit.yaml >
+    // built-in default 30s). 0 means disabled — fall back to the static
+    // BODY_FRAME_TIMEOUT constant for compile-time safety.
+    let frame_timeout = if state.body_frame_timeout_secs > 0 {
+        std::time::Duration::from_secs(state.body_frame_timeout_secs)
     } else {
         BODY_FRAME_TIMEOUT
     };

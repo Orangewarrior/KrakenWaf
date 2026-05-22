@@ -1,5 +1,26 @@
 global-options:
+  # Paranoia level (0–100). Controls 2-signal block + 1-signal log thresholds
+  # for java_deserialize_detect, the response-block gate for detect_db_errors
+  # and detect_bad_artifacts (≥ 60 blocks), and the silent_sql_errors gate
+  # (≥ 80 blocks, < 80 scrubs).
+  # Default: 60
   Untrust: 60
+
+  # Detection-engine block threshold (score). Rules with `score >= threshold`
+  # block on their own; lower-scored rules accumulate inside a single
+  # inspection view until their sum reaches `threshold`. See
+  # docs/score_rank.md.
+  # Overridden by --anomaly-threshold when present.
+  # Default: 600
+  Anomaly_threshold: 600
+
+  # Per-request wall-clock cap on WAF inspection (milliseconds). When > 0
+  # and the deadline elapses, inspection stops scanning additional views and
+  # the request proceeds with whatever findings were produced so far.
+  # 0 disables the deadline.
+  # Overridden by --max-inspection-ms when present.
+  # Default: 0 (disabled)
+  Max_inspection_ms: 0
 
 CMC-Rules:
   SQLi_comments_detect: true

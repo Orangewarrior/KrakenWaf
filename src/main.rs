@@ -70,6 +70,12 @@ async fn main() -> Result<()> {
         Some(path) => CmcConfig::from_file(&PathBuf::from(path))?,
         None => CmcConfig::default(),
     };
+    // Resolve detection-engine globals before moving cmc_config into the
+    // builder. CLI flag > cmc/config.yaml `global-options` > built-in default.
+    let effective_anomaly_threshold =
+        cmc_config.effective_anomaly_threshold(cli.anomaly_threshold);
+    let effective_max_inspection_ms =
+        cmc_config.effective_max_inspection_ms(cli.max_inspection_ms);
     let cmc_manager = Arc::new(
         CmcManagerBuilder::new(cmc_config)
             .vectorscan_enabled(cli.enable_vectorscan)
@@ -100,8 +106,8 @@ async fn main() -> Result<()> {
         vectorscan_enabled: cli.enable_vectorscan,
         metrics: metrics.clone(),
         cmc_manager: cmc_manager.clone(),
-        anomaly_threshold: cli.anomaly_threshold,
-        max_inspection_ms: cli.max_inspection_ms,
+        anomaly_threshold: effective_anomaly_threshold,
+        max_inspection_ms: effective_max_inspection_ms,
     })?);
     let proxy = Arc::new(proxy::ProxyClient::new(
         &cli.upstream,
@@ -136,9 +142,10 @@ async fn main() -> Result<()> {
         ip_connections: Arc::new(DashMap::new()),
         max_coroutines_per_ip: rl_config.max_coroutines_per_ip,
         inflight_body_bytes: Arc::new(AtomicUsize::new(0)),
-        max_inflight_body_bytes: cli.max_inflight_body_bytes,
+        max_inflight_body_bytes: rl_config.effective_max_inflight_body_bytes(cli.max_inflight_body_bytes),
         ip_body_bytes: Arc::new(DashMap::new()),
-        max_per_ip_body_bytes: cli.max_per_ip_body_bytes,
+        max_per_ip_body_bytes: rl_config.effective_max_per_ip_body_bytes(cli.max_per_ip_body_bytes),
+        body_frame_timeout_secs: rl_config.effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
     });
 
     // Build TLS store once; clone it for both the SIGHUP handler and the server.

@@ -44,4 +44,7 @@ pub struct AppState {
     pub ip_body_bytes: Arc<DashMap<String, Arc<AtomicUsize>>>,
     /// Per-IP hard cap on in-flight body bytes. 0 = disabled.
     pub max_per_ip_body_bytes: usize,
+    /// Resolved per-frame body inactivity timeout (seconds). Anti-Slowloris.
+    /// 0 disables the timeout. Resolved from CLI flag, then YAML, then 30 s.
+    pub body_frame_timeout_secs: u64,
 }

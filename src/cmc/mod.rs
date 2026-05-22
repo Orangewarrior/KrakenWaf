@@ -87,6 +87,39 @@ pub struct CmcConfig {
     /// At ≥ 80, `silent_sql_errors` blocks; below 80 it scrubs + low-severity log.
     /// Default: 60.
     pub untrust_level: u8,
+    /// Detection-engine block threshold (score). Rules with `score >= threshold`
+    /// block on their own; lower-scored rules accumulate inside a single
+    /// inspection view until their sum reaches `threshold`.
+    /// `None` defers to the CLI flag `--anomaly-threshold` or the built-in
+    /// default of 600.
+    pub anomaly_threshold: Option<u32>,
+    /// Per-request wall-clock cap on WAF inspection (milliseconds). When
+    /// `Some(n > 0)` and the deadline elapses, inspection stops scanning
+    /// additional views and the request proceeds with whatever findings
+    /// were produced so far. `Some(0)` or `None` disables the deadline.
+    /// `None` defers to the CLI flag `--max-inspection-ms` or the built-in
+    /// default of 0 (disabled).
+    pub max_inspection_ms: Option<u64>,
+}
+
+impl CmcConfig {
+    /// Resolve the effective `anomaly_threshold`:
+    ///   1. Explicit `--anomaly-threshold` CLI argument
+    ///   2. `Anomaly_threshold` from the CMC config file
+    ///   3. Built-in default: 600
+    #[must_use]
+    pub fn effective_anomaly_threshold(&self, cli: Option<u32>) -> u32 {
+        cli.or(self.anomaly_threshold).unwrap_or(600)
+    }
+
+    /// Resolve the effective `max_inspection_ms`:
+    ///   1. Explicit `--max-inspection-ms` CLI argument
+    ///   2. `Max_inspection_ms` from the CMC config file
+    ///   3. Built-in default: 0 (disabled)
+    #[must_use]
+    pub fn effective_max_inspection_ms(&self, cli: Option<u64>) -> u64 {
+        cli.or(self.max_inspection_ms).unwrap_or(0)
+    }
 }
 
 impl Default for CmcConfig {
@@ -108,6 +141,8 @@ impl Default for CmcConfig {
             silent_sql_errors: false,
             detect_bad_artifacts: false,
             untrust_level: 60,
+            anomaly_threshold: None,
+            max_inspection_ms: None,
         }
     }
 }
@@ -781,7 +816,7 @@ fn finding(
     }
 }
 
-#[allow(clippy::unnecessary_wraps)]
+#[allow(clippy::unnecessary_wraps, clippy::too_many_lines)]
 fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
     // Accept both integer (0/1) and YAML-boolean (true/false) values so that
     // `SSTI_detect: true` enables the engine instead of silently coercing to 0.
@@ -819,11 +854,31 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
             })
             .unwrap_or(60);
 
+        let anomaly_threshold = strict
+            .global_options
+            .as_ref()
+            .and_then(|m| m.get("Anomaly_threshold"))
+            .and_then(|v| match v {
+                serde_yaml::Value::Number(n) => n.as_u64().map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+                _ => None,
+            });
+
+        let max_inspection_ms = strict
+            .global_options
+            .as_ref()
+            .and_then(|m| m.get("Max_inspection_ms"))
+            .and_then(|v| match v {
+                serde_yaml::Value::Number(n) => n.as_u64(),
+                _ => None,
+            });
+
         if let Some(map) = strict.cmc_rules {
             let int_map: BTreeMap<String, i64> =
                 map.into_iter().map(|(k, v)| (k, v.into())).collect();
             let mut cfg = from_map(&int_map);
             cfg.untrust_level = untrust_level;
+            cfg.anomaly_threshold = anomaly_threshold;
+            cfg.max_inspection_ms = max_inspection_ms;
             return Ok(cfg);
         }
     }
@@ -832,6 +887,8 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
     let mut map = BTreeMap::new();
     let mut saw_candidate = false;
     let mut untrust_level: u8 = 60;
+    let mut anomaly_threshold: Option<u32> = None;
+    let mut max_inspection_ms: Option<u64> = None;
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty()
@@ -853,6 +910,20 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
             if key == "Untrust" {
                 if let Ok(n) = raw.parse::<u8>() {
                     untrust_level = n.min(100);
+                }
+                continue;
+            }
+
+            // Detection-engine globals: anomaly threshold + inspection deadline.
+            if key == "Anomaly_threshold" {
+                if let Ok(n) = raw.parse::<u32>() {
+                    anomaly_threshold = Some(n);
+                }
+                continue;
+            }
+            if key == "Max_inspection_ms" {
+                if let Ok(n) = raw.parse::<u64>() {
+                    max_inspection_ms = Some(n);
                 }
                 continue;
             }
@@ -883,6 +954,8 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
     }
     let mut cfg = from_map(&map);
     cfg.untrust_level = untrust_level;
+    cfg.anomaly_threshold = anomaly_threshold;
+    cfg.max_inspection_ms = max_inspection_ms;
     Ok(cfg)
 }
 
@@ -905,12 +978,55 @@ fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
         silent_sql_errors: enabled("Silent_sql_errors"),
         detect_bad_artifacts: enabled("Detect_bad_artifacts"),
         untrust_level: 60, // overwritten by caller when global-options is parsed
+        anomaly_threshold: None, // overwritten by caller when global-options is parsed
+        max_inspection_ms: None, // overwritten by caller when global-options is parsed
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_lenient_yaml;
+    use super::{parse_lenient_yaml, CmcConfig};
+
+    #[test]
+    fn detection_engine_resolvers_use_defaults_when_yaml_absent() {
+        let cfg = CmcConfig::default();
+        assert_eq!(cfg.effective_anomaly_threshold(None), 600);
+        assert_eq!(cfg.effective_max_inspection_ms(None), 0);
+    }
+
+    #[test]
+    fn detection_engine_resolvers_pick_up_global_options_from_yaml() {
+        let cfg = parse_lenient_yaml(
+            r"
+global-options:
+  Untrust: 60
+  Anomaly_threshold: 450
+  Max_inspection_ms: 25
+CMC-Rules:
+  CRLF_injection_detect: true
+",
+        )
+        .expect("parse global-options with detection-engine fields");
+        assert_eq!(cfg.effective_anomaly_threshold(None), 450);
+        assert_eq!(cfg.effective_max_inspection_ms(None), 25);
+    }
+
+    #[test]
+    fn detection_engine_cli_flag_overrides_yaml() {
+        let cfg = parse_lenient_yaml(
+            r"
+global-options:
+  Anomaly_threshold: 450
+  Max_inspection_ms: 25
+CMC-Rules:
+  CRLF_injection_detect: true
+",
+        )
+        .expect("parse global-options with detection-engine fields");
+        // Explicit CLI overrides both YAML and built-in defaults.
+        assert_eq!(cfg.effective_anomaly_threshold(Some(700)), 700);
+        assert_eq!(cfg.effective_max_inspection_ms(Some(50)), 50);
+    }
 
     #[test]
     fn parses_crlf_injection_detect_config_key() {
