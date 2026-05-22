@@ -231,7 +231,7 @@ impl AllowPathConfig {
     ///
     /// - `path`:      normalized URI path (percent-decoded, `..` collapsed)
     /// - `full_uri`:  raw request URI including query string; scanned with `memmem`
-    ///                to catch endpoint names embedded in query parameters
+    ///   to catch endpoint names embedded in query parameters
     /// - `client_ip`: effective client IP string (may include `X-Forwarded-For`)
     ///
     /// Returns:
@@ -263,7 +263,7 @@ impl AllowPathConfig {
                 if let Some(restriction) = &entry.addr_restriction {
                     let ip_allowed = client_ip
                         .parse::<IpAddr>()
-                        .map_or(false, |ip| restriction.contains(&ip));
+                        .is_ok_and(|ip| restriction.contains(&ip));
                     return if ip_allowed {
                         PathDecision::Allow(entry)
                     } else {
@@ -319,39 +319,35 @@ pub fn load_and_validate(path: &Path, base_dir: &Path) -> Result<AllowPathConfig
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
 
     fn restriction_from_str(s: &str) -> AddrRestriction {
         AddrRestriction { entries: parse_addr_bytes(s.as_bytes()) }
     }
 
+    fn parse_ip(s: &str) -> IpAddr {
+        s.parse().expect("test IP literal must be valid")
+    }
+
     #[test]
     fn exact_ip_match() {
         let r = restriction_from_str("127.0.0.1\n");
-        let ip: IpAddr = "127.0.0.1".parse().unwrap();
-        assert!(r.contains(&ip));
-        let other: IpAddr = "127.0.0.2".parse().unwrap();
-        assert!(!r.contains(&other));
+        assert!(r.contains(&parse_ip("127.0.0.1")));
+        assert!(!r.contains(&parse_ip("127.0.0.2")));
     }
 
     #[test]
     fn cidr_match() {
         let r = restriction_from_str("127.0.0.0/25\n");
-        let inside: IpAddr = "127.0.0.100".parse().unwrap();
-        assert!(r.contains(&inside));
-        let outside: IpAddr = "127.0.0.200".parse().unwrap();
-        assert!(!r.contains(&outside));
+        assert!(r.contains(&parse_ip("127.0.0.100")));
+        assert!(!r.contains(&parse_ip("127.0.0.200")));
     }
 
     #[test]
     fn range_match() {
         let r = restriction_from_str("127.0.0.1-127.0.0.110\n");
-        let inside: IpAddr = "127.0.0.55".parse().unwrap();
-        assert!(r.contains(&inside));
-        let below: IpAddr = "127.0.0.0".parse().unwrap();
-        assert!(!r.contains(&below));
-        let above: IpAddr = "127.0.0.111".parse().unwrap();
-        assert!(!r.contains(&above));
+        assert!(r.contains(&parse_ip("127.0.0.55")));
+        assert!(!r.contains(&parse_ip("127.0.0.0")));
+        assert!(!r.contains(&parse_ip("127.0.0.111")));
     }
 
     #[test]
@@ -362,11 +358,9 @@ mod tests {
 
     fn make_config_with_restriction(tmpdir: &tempfile::TempDir) -> AllowPathConfig {
         let addr_file = tmpdir.path().join("allow_addrs.txt");
-        let mut f = std::fs::File::create(&addr_file).unwrap();
-        writeln!(f, "127.0.0.1").unwrap();
+        std::fs::write(&addr_file, "127.0.0.1\n").expect("write allow_addrs.txt");
 
-        let yaml = format!(
-            r#"allow:
+        let yaml = r#"allow:
   - order: 1
     title: "Health"
     log: false
@@ -374,63 +368,59 @@ mod tests {
     paths:
       - /healthz
       - /metrics
-"#
-        );
+"#;
         let yaml_file = tmpdir.path().join("lists.yaml");
-        std::fs::write(&yaml_file, &yaml).unwrap();
+        std::fs::write(&yaml_file, yaml).expect("write lists.yaml");
 
-        AllowPathConfig::from_file(&yaml_file, tmpdir.path()).unwrap()
+        AllowPathConfig::from_file(&yaml_file, tmpdir.path()).expect("load allow-paths config")
+    }
+
+    fn expect_allow(decision: &PathDecision<'_>) {
+        assert!(matches!(decision, PathDecision::Allow(_)), "expected Allow variant");
+    }
+
+    fn expect_block(decision: &PathDecision<'_>) {
+        assert!(matches!(decision, PathDecision::Block), "expected Block variant");
+    }
+
+    fn expect_no_match(decision: &PathDecision<'_>) {
+        assert!(matches!(decision, PathDecision::NoMatch), "expected NoMatch variant");
     }
 
     #[test]
     fn check_ip_allowed() {
-        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        match config.check("/healthz", "/healthz", "127.0.0.1") {
-            PathDecision::Allow(_) => {}
-            other => panic!("expected Allow, got {:?}", std::mem::discriminant(&other)),
-        }
+        expect_allow(&config.check("/healthz", "/healthz", "127.0.0.1"));
     }
 
     #[test]
     fn check_ip_blocked() {
-        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        match config.check("/healthz", "/healthz", "203.0.113.1") {
-            PathDecision::Block => {}
-            other => panic!("expected Block, got {:?}", std::mem::discriminant(&other)),
-        }
+        expect_block(&config.check("/healthz", "/healthz", "203.0.113.1"));
     }
 
     #[test]
     fn check_no_match_returns_nomatch() {
-        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        match config.check("/api/users", "/api/users", "203.0.113.1") {
-            PathDecision::NoMatch => {}
-            other => panic!("expected NoMatch, got {:?}", std::mem::discriminant(&other)),
-        }
+        expect_no_match(&config.check("/api/users", "/api/users", "203.0.113.1"));
     }
 
     #[test]
     fn check_uri_qs_blocked_foreign_ip() {
-        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
         // The path itself doesn't match, but full URI contains /healthz in query string.
-        match config.check("/api", "/api?next=/healthz", "1.2.3.4") {
-            PathDecision::Block => {}
-            other => panic!("expected Block, got {:?}", std::mem::discriminant(&other)),
-        }
+        expect_block(&config.check("/api", "/api?next=/healthz", "1.2.3.4"));
     }
 
     #[test]
     fn check_uri_qs_allowed_localhost() {
-        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        match config.check("/api", "/api?next=/healthz", "127.0.0.1") {
-            PathDecision::Allow(_) => {}
-            other => panic!("expected Allow, got {:?}", std::mem::discriminant(&other)),
-        }
+        expect_allow(&config.check("/api", "/api?next=/healthz", "127.0.0.1"));
     }
 
     #[test]
@@ -442,13 +432,11 @@ mod tests {
     paths:
       - /open
 "#;
-        let tmpdir = tempfile::tempdir().unwrap();
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
         let yaml_file = tmpdir.path().join("lists.yaml");
-        std::fs::write(&yaml_file, yaml).unwrap();
-        let config = AllowPathConfig::from_file(&yaml_file, tmpdir.path()).unwrap();
-        match config.check("/open", "/open", "1.2.3.4") {
-            PathDecision::Allow(_) => {}
-            other => panic!("expected Allow, got {:?}", std::mem::discriminant(&other)),
-        }
+        std::fs::write(&yaml_file, yaml).expect("write lists.yaml");
+        let config = AllowPathConfig::from_file(&yaml_file, tmpdir.path())
+            .expect("load allow-paths config");
+        expect_allow(&config.check("/open", "/open", "1.2.3.4"));
     }
 }

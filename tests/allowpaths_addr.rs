@@ -374,7 +374,7 @@ async fn test_attack_blocked_on_unrestricted_path() {
     );
 }
 
-/// SQLi payload is blocked on unrestricted paths (WAF inspection still runs).
+/// `SQLi` payload is blocked on unrestricted paths (WAF inspection still runs).
 #[tokio::test]
 async fn test_sqli_blocked_on_unrestricted_path() {
     ensure_backend();
