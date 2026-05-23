@@ -706,12 +706,15 @@ async fn sqli_payload_sweep_get() {
 }
 
 /// Send a GET with a benign query param but a scanner User-Agent from
-/// scanners.txt — the UA alone must trigger a block (HTTP 403).
+/// scanners.txt — the UA alone must trigger a block (HTTP 403). Scanner
+/// blocking lives in the `Detect_bots_n_scanners` CMC module and is only
+/// active when that module is enabled in `rules/cmc/config.yaml`, so the
+/// WAF is started with `--cmc-load` here.
 #[tokio::test]
 async fn scanner_ua_sweep() {
     ensure_backend();
     let port = alloc_waf_port();
-    let _waf = spawn_waf(port, &[]);
+    let _waf = spawn_waf_with_cmc(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -728,6 +731,46 @@ async fn scanner_ua_sweep() {
             resp.status(),
             StatusCode::FORBIDDEN,
             "Scanner UA not blocked: {ua:?}"
+        );
+    }
+}
+
+/// With `Detect_bots_n_scanners` **disabled** (default `spawn_waf` without
+/// `--cmc-load`), the same scanner User-Agents must NOT be blocked —
+/// otherwise the module would be effectively mandatory and the YAML toggle
+/// would be a no-op.
+#[tokio::test]
+async fn scanner_ua_not_blocked_when_cmc_disabled() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]); // no --cmc-load → module inactive
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    // Five scanner UAs that live ONLY in user_agents/scanners.txt (not in
+    // rules.json:header_keywords).  Some UAs like `nikto` and `sqlmap` are
+    // also referenced by the JSON detection-engine and would block regardless
+    // of the CMC module — we deliberately avoid those here so this test
+    // proves the toggle works.
+    for ua in [
+        "Nmap Scripting Engine",
+        "openvas/21.4",
+        "wfuzz/3.1",
+        "gobuster/3.6",
+        "arachni/1.5",
+    ] {
+        let resp = client
+            .get(format!("{}/test_get", waf_base(port)))
+            .query(&[("payload_test", "hello world")])
+            .header("User-Agent", ua)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("request failed for UA {ua:?}: {e}"));
+
+        assert_ne!(
+            resp.status(),
+            StatusCode::FORBIDDEN,
+            "Scanner UA {ua:?} was blocked even though Detect_bots_n_scanners is off"
         );
     }
 }

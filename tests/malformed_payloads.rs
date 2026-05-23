@@ -44,7 +44,7 @@ fn blocks_malformed_traversal_payload() {
             http_action: HttpAction::Request,
         }],
         allowed_ips: vec![],
-        scanner_agents: vec![],
+
         allow_paths: vec![],
         body_limits: HashMap::new(),
         path_regex: vec![],
@@ -82,7 +82,7 @@ fn blocks_regex_based_rce_pattern() {
         allow_paths: vec![],
         body_limits: HashMap::new(),
         allowed_ips: vec![],
-        scanner_agents: vec![],
+
         path_regex: vec![],
         body_regex: vec![CompiledDetectionRule {
             meta: DetectionRule {
@@ -183,7 +183,7 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
             allow_paths: vec![],
             body_limits: HashMap::new(),
             allowed_ips: vec![],
-            scanner_agents: vec![],
+
             path_regex: vec![],
             body_regex: vec![low_one, low_two, low_three],
             header_regex: vec![],
@@ -270,7 +270,7 @@ fn single_near_threshold_rule_in_full_request_is_not_double_counted_across_views
             allow_paths: vec![],
             body_limits: HashMap::new(),
             allowed_ips: vec![],
-            scanner_agents: vec![],
+
             path_regex: vec![],
             body_regex: vec![near_threshold],
             header_regex: vec![],
@@ -341,7 +341,7 @@ fn blocks_response_when_accumulated_regex_score_reaches_threshold() {
             allow_paths: vec![],
             body_limits: HashMap::new(),
             allowed_ips: vec![],
-            scanner_agents: vec![],
+
             path_regex: vec![],
             body_regex: response_rules,
             header_regex: vec![],

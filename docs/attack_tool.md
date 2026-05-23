@@ -135,6 +135,10 @@ queries (`;DROP TABLE`), time-based (`SLEEP()`, `WAITFOR DELAY`), error-based
 (`EXTRACTVALUE`, `UPDATEXML`), `xp_cmdshell`, and double-quote variants.
 
 Scanner UAs are drawn from `rules/user_agents/scanners.txt` (subset of 15).
+Note: scanner-UA blocking is now owned by the
+[`Detect_bots_n_scanners`](cmc/detect_bots_n_scanners.md) CMC module — start
+the WAF with `--cmc-load rules/cmc/config.yaml` for these payloads to be
+blocked.
 
 ---
 

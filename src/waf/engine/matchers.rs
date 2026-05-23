@@ -25,7 +25,6 @@ pub(super) struct EngineMatchers {
     pub(super) req_uri: Option<KeywordMatcher>,
     pub(super) req_headers: Option<KeywordMatcher>,
     pub(super) req_body: Option<KeywordMatcher>,
-    pub(super) req_scanner_agents: Option<KeywordMatcher>,
     pub(super) resp_headers: Option<KeywordMatcher>,
     pub(super) resp_body: Option<KeywordMatcher>,
     pub(super) blocked_ip_nets: Vec<IpNet>,
@@ -33,8 +32,6 @@ pub(super) struct EngineMatchers {
     pub(super) req_vectorscan: Option<VectorscanMatcher>,
     #[cfg(feature = "vectorscan-engine")]
     pub(super) resp_vectorscan: Option<VectorscanMatcher>,
-    #[cfg(feature = "vectorscan-engine")]
-    pub(super) scanner_vectorscan: Option<VectorscanMatcher>,
 }
 
 #[cfg(feature = "vectorscan-engine")]
@@ -82,26 +79,6 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
         .cloned()
         .collect();
 
-    let scanner_rules: Vec<DetectionRule> = rules
-        .scanner_agents
-        .iter()
-        .enumerate()
-        .map(|(idx, pattern)| DetectionRule {
-            id: format!("{:05}", idx + 1),
-            title: "Scanner/crawler user-agent detected".to_string(),
-            severity: Severity::High,
-            cwe: "CWE-200".to_string(),
-            description: format!("A known scanning tool user-agent was detected: {pattern}"),
-            reference_url:
-                "https://owasp.org/www-project-web-security-testing-guide/".to_string(),
-            rule_match: pattern.clone(),
-            source: "user_agents/scanners.txt".to_string(),
-            line: idx + 1,
-            http_action: HttpAction::Request,
-            score: SCORE_BLOCK_THRESHOLD,
-        })
-        .collect();
-
     #[cfg(feature = "vectorscan-engine")]
     let (req_vs_rules, resp_vs_rules): (Vec<_>, Vec<_>) = {
         let req: Vec<DetectionRule> = rules
@@ -123,7 +100,6 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
         req_uri: build_keyword_matcher(&req_uri_rules)?,
         req_headers: build_keyword_matcher(&req_hdr_rules)?,
         req_body: build_keyword_matcher(&req_body_rules)?,
-        req_scanner_agents: build_keyword_matcher(&scanner_rules)?,
         resp_headers: build_keyword_matcher(&resp_hdr_rules)?,
         resp_body: build_keyword_matcher(&resp_body_rules)?,
         blocked_ip_nets: rules
@@ -140,12 +116,6 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
         #[cfg(feature = "vectorscan-engine")]
         resp_vectorscan: if vectorscan_enabled && !resp_vs_rules.is_empty() {
             Some(build_vectorscan_matcher(&resp_vs_rules)?)
-        } else {
-            None
-        },
-        #[cfg(feature = "vectorscan-engine")]
-        scanner_vectorscan: if vectorscan_enabled && !scanner_rules.is_empty() {
-            Some(build_vectorscan_literal_matcher(&scanner_rules)?)
         } else {
             None
         },
@@ -343,60 +313,6 @@ pub(super) fn build_vectorscan_matcher(rules: &[DetectionRule]) -> Result<Vector
         db,
         keywords: rules.to_vec(),
     })
-}
-
-#[cfg(feature = "vectorscan-engine")]
-pub(super) fn build_vectorscan_literal_matcher(
-    rules: &[DetectionRule],
-) -> Result<VectorscanMatcher> {
-    if rules.is_empty() {
-        anyhow::bail!("vectorscan enabled but no scanner-agent rules were loaded");
-    }
-    let escaped_rules: Vec<DetectionRule> = rules
-        .iter()
-        .map(|r| DetectionRule {
-            rule_match: regex_escape_literal(&r.rule_match),
-            ..r.clone()
-        })
-        .collect();
-    let patterns = escaped_rules
-        .iter()
-        .enumerate()
-        .map(|(idx, rule)| build_vectorscan_pattern(rule, idx))
-        .collect::<Result<Vec<_>>>()?;
-
-    let db = match BlockDatabase::new(patterns) {
-        Ok(db) => db,
-        Err(err) => {
-            if let Some(detailed) = find_vectorscan_rule_error(&escaped_rules) {
-                return Err(detailed);
-            }
-            return Err(anyhow::anyhow!(
-                "failed to compile Vectorscan scanner-agent database from {} rules. Underlying error: {}",
-                rules.len(),
-                err
-            ));
-        }
-    };
-    Ok(VectorscanMatcher {
-        db,
-        keywords: rules.to_vec(),
-    })
-}
-
-#[cfg(feature = "vectorscan-engine")]
-fn regex_escape_literal(s: &str) -> String {
-    let mut out = String::with_capacity(s.len() + 8);
-    for c in s.chars() {
-        if matches!(
-            c,
-            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
-        ) {
-            out.push('\\');
-        }
-        out.push(c);
-    }
-    out
 }
 
 #[cfg(feature = "vectorscan-engine")]

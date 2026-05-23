@@ -59,6 +59,7 @@ full module catalogue.
 - [Detect DB errors](docs/cmc/detect_db_errors.md) — intercepts upstream responses leaking verbose DBMS error messages, cutting off the error-based SQLi/NoSQLi feedback loop; 200+ patterns covering SQL and NoSQL engines sourced from SQLmap/NoSQLmap research (CWE-209, High)
 - [Silent SQL errors](docs/cmc/silent_sql_errors.md) — scrubs (or blocks) upstream responses leaking OWASP-CRS DBMS error fingerprints; below `Untrust=80` the matched literal is replaced with a single space and the response is forwarded with an updated `Content-Length`, above `Untrust=80` the response is blocked. memchr fast path + Vectorscan acceleration (CWE-209, Low→High)
 - [Detect bad artifacts](docs/cmc/detect_bad_artifacts.md) — blocks (or silently logs) requests whose URI path contains a sensitive file artifact: dotfiles (`.env`, `.git/`, `.ssh/`), credential files, framework config leaks (`wp-config.`, `composer.json`), `/proc` and `/sys` kernel entries, and 400+ other patterns sourced from the OWASP CRS `restricted-files.data` research; memchr fast path + Vectorscan acceleration (CWE-538, High)
+- [Detect bots & scanners](docs/cmc/detect_bots_n_scanners.md) — blocks (or silently logs) requests whose `User-Agent` matches a known scanner/crawler/offensive tooling substring (Nikto, sqlmap, Nmap, masscan, Nessus, OpenVAS, gobuster, dirbuster, Arachni, Nuclei, wfuzz, commix, Acunetix, …) loaded from `rules/user_agents/scanners.txt` (OWASP CRS `scanners-user-agents.data`); Aho-Corasick fast path + Vectorscan acceleration. Action gated by `Untrust ≥ 60`; logged as a bot/scanner reconnaissance sweep (CWE-200, Low)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -587,6 +588,7 @@ CMC-Rules:
   Detect_db_errors: true        # Response-body DBMS error fingerprint detection (200+ patterns, CWE-209)
   Silent_sql_errors: true       # Response-body DBMS error scrubber (OWASP CRS sql-errors.data, CWE-209)
   Detect_bad_artifacts: true    # Request URI artifact detection (dotfiles, config, /proc, credentials — OWASP CRS restricted-files.data, CWE-538)
+  Detect_bots_n_scanners: true  # Scanner/crawler User-Agent blocking — OWASP CRS scanners-user-agents.data, gated by Untrust ≥ 60, CWE-200 Low
 ```
 
 Set any key to `false` to disable that detector without recompiling.
