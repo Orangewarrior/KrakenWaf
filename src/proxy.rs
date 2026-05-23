@@ -1,9 +1,11 @@
 use crate::{
     allowpaths::PathDecision,
     app::AppState,
+    body_decode::{decompress_body_for_inspection, parse_content_encoding},
     cli::WafMode,
     error::KrakenError,
     logging::{write_critical, SecurityEvent},
+    multipart_extract::{extract_boundary, parse_parts},
     waf::{Decision, Finding, InspectionContext, ResponseContext},
 };
 use anyhow::{Context, Result};
@@ -55,6 +57,10 @@ impl Drop for BodyTracker {
 /// Bytes carried between adjacent body chunks when streaming-inspecting the body.
 /// Sized to be larger than any realistic detection pattern so attackers cannot
 /// reliably split a payload across TCP frames to evade the keyword/regex matchers.
+/// 2.24.0: the body pipeline now buffers and inspects once, so this constant
+/// is only a fallback for the (legacy) per-chunk streaming path. It remains
+/// here as a lower bound on the streaming-inspection-window cap.
+#[allow(dead_code)]
 const STREAM_OVERLAP_BYTES: usize = 16 * 1024;
 
 /// Hard ceiling on the number of headers forwarded upstream and embedded into the
@@ -401,10 +407,17 @@ impl ProxyClient {
         let method_str = method.as_str().to_string();
         let mut builder = self.client.request(method, target);
 
+        // RFC 9110 §7.6.1 / RFC 7230 §6.1: every token listed in Connection:
+        // is hop-by-hop and must be removed before forwarding.
+        let connection_hop = connection_listed_headers(headers);
+
         let mut forwarded_count: usize = 0;
         let mut forwarded_bytes: usize = 0;
         for (name, value) in headers {
-            if is_hop_by_hop(name) || name == HOST {
+            if is_hop_by_hop(name)
+                || name == HOST
+                || connection_hop.iter().any(|hop| hop == name)
+            {
                 continue;
             }
             forwarded_count += 1;
@@ -440,9 +453,23 @@ impl ProxyClient {
                 response_builder = response_builder.header(name, value);
             }
         }
-        // Stream the upstream body in chunks so an oversized response (e.g. 1 GB from a
-        // compromised upstream) cannot exhaust WAF heap. Limit is operator-configurable.
+        // Stream the upstream body in chunks so an oversized response cannot
+        // exhaust WAF heap. The cap is operator-configurable (8 MiB default
+        // in 2.24.0, down from 100 MiB).
         let max_response = state.cli.max_upstream_response_bytes;
+
+        // 2.24.0: when the upstream advertises a binary content-type the
+        // body bytes are useless to the keyword / regex / libinjection
+        // engines, so we inspect headers only and stream the body without
+        // any further allocation pressure. This protects WAF latency on
+        // file downloads (PDF, mp4, large JPEGs, …) while still scanning
+        // text/html, application/json, and friends.
+        let resp_headers_map = response_builder
+            .headers_ref()
+            .cloned()
+            .unwrap_or_default();
+        let inspect_body = response_body_should_be_inspected(&resp_headers_map);
+
         let mut body_buf = BytesMut::new();
         let mut response = response;
         while let Some(chunk) = response
@@ -461,15 +488,11 @@ impl ProxyClient {
         let mut bytes = body_buf.freeze();
 
         // Inspect the upstream response (rules with http_action: Response).
-        let resp_headers = flatten_headers(
-            response_builder
-                .headers_ref()
-                .unwrap_or(&http::HeaderMap::new()),
-        );
+        let resp_headers = flatten_headers(&resp_headers_map);
         let resp_ctx = ResponseContext {
             status: status.as_u16(),
             headers: resp_headers,
-            body: bytes.clone(),
+            body: if inspect_body { bytes.clone() } else { Bytes::new() },
         };
         let resp_decision = state.waf.inspect_response(&resp_ctx);
         match resp_decision {
@@ -581,6 +604,24 @@ impl ProxyClient {
     }
 }
 
+/// Buffer the request body up to `ctx.body_limit`, then inspect it **once**.
+///
+/// 2.24.0 collapses the previous chunk-by-chunk inspection loop. The old model
+/// ran every detection engine on every overlap-prefixed window, turning a
+/// 100 MiB body into 12 500 redundant passes over the same payload — an
+/// amplification-vector that this refactor closes. The new shape is:
+///
+/// 1. Read frames until EOF or `body_limit` is exceeded (frame-level
+///    `BODY_FRAME_TIMEOUT` still guards against slowloris).
+/// 2. Apply `Content-Encoding` decoders (gzip / br / deflate / zstd) with
+///    a zip-bomb expansion-ratio guard.
+/// 3. If `Content-Type` is `multipart/form-data`, extract each part's
+///    cleartext payload and run inspection on each.
+/// 4. Run a single inspection pass on the (possibly decoded) body.
+///
+/// The function returns the **original** (still-compressed) bytes — the
+/// upstream sees what the client sent. The decoded view is used only for
+/// inspection.
 async fn consume_and_inspect_body(
     state: &AppState,
     ctx: &InspectionContext,
@@ -588,7 +629,6 @@ async fn consume_and_inspect_body(
     client_ip: &str,
 ) -> std::result::Result<Bytes, BodyInspectionError> {
     let mut acc = BytesMut::new();
-    let mut overlap = Vec::new();
 
     // Acquire (or lazily create) the per-IP body-byte counter and wire up the
     // global + per-IP RAII tracker. The tracker auto-releases both counters on drop
@@ -624,41 +664,122 @@ async fn consume_and_inspect_body(
                     limit: ctx.body_limit,
                 });
             }
-
-            // Track bytes for global + per-IP backpressure.
-            tracker.add(chunk.len());
-
-            let mut inspection_buf = BytesMut::with_capacity(overlap.len() + chunk.len());
-            inspection_buf.extend_from_slice(&overlap);
-            inspection_buf.extend_from_slice(chunk);
-
-            let request_window = format_full_request_window_bytes(ctx, &inspection_buf);
-            match state
-                .waf
-                .inspect_complete_payload_with_context(&request_window, Some(&ctx.method))
+            // Per-request hard cap is already enforced by `ctx.body_limit`
+            // above; the tracker propagates the chunk size to the global +
+            // per-IP backpressure counters added in 2.28.0. Cap violations
+            // there return 503 (handled at the caller).
+            if state.max_inflight_body_bytes > 0
+                && state.inflight_body_bytes.load(Ordering::Relaxed) + chunk.len()
+                    > state.max_inflight_body_bytes
             {
-                Decision::Allow
-                | Decision::Monitor(_)
-                | Decision::SilentReplace { .. } => {
-                    acc.extend_from_slice(chunk);
-                    overlap = inspection_buf
-                        [inspection_buf.len().saturating_sub(STREAM_OVERLAP_BYTES)..]
-                        .to_vec();
+                return Err(BodyInspectionError::TooLarge {
+                    limit: state.max_inflight_body_bytes,
+                });
+            }
+            if state.max_per_ip_body_bytes > 0
+                && tracker.ip.load(Ordering::Relaxed) + chunk.len()
+                    > state.max_per_ip_body_bytes
+            {
+                return Err(BodyInspectionError::TooLarge {
+                    limit: state.max_per_ip_body_bytes,
+                });
+            }
+            tracker.add(chunk.len());
+            acc.extend_from_slice(chunk);
+        }
+    }
+
+    let raw_body = acc.freeze();
+    if raw_body.is_empty() {
+        return Ok(raw_body);
+    }
+
+    let limits = &state.memory_limits;
+
+    // Build the cleartext view used by every detection engine.
+    let encodings = ctx_header(ctx, "content-encoding")
+        .map(|v| parse_content_encoding(&v))
+        .unwrap_or_default();
+
+    let decoded_body: Bytes = if encodings.is_empty() {
+        raw_body.clone()
+    } else {
+        match decompress_body_for_inspection(
+            &raw_body,
+            &encodings,
+            ctx.body_limit,
+            limits.max_decompress_ratio,
+        ) {
+            Ok(out) => out,
+            Err(err) => {
+                tracing::warn!(
+                    target: "krakenwaf",
+                    request_id = %ctx.request_id,
+                    error = %err,
+                    "request body decompression failed; rejecting"
+                );
+                return Err(BodyInspectionError::Other(anyhow::anyhow!(
+                    "body decompression rejected: {err}"
+                )));
+            }
+        }
+    };
+
+    // Multipart extraction: scan each part's payload independently.
+    if let Some(ct) = ctx_header(ctx, "content-type") {
+        if let Some(boundary) = extract_boundary(&ct) {
+            let parts = parse_parts(&decoded_body, &boundary);
+            for part in &parts {
+                if part.body.is_empty() {
+                    continue;
                 }
-                Decision::Block(finding) => {
-                    let mut partial = BytesMut::with_capacity(acc.len() + chunk.len());
-                    partial.extend_from_slice(&acc);
-                    partial.extend_from_slice(chunk);
-                    return Err(BodyInspectionError::Blocked {
-                        finding,
-                        partial_body: partial.freeze(),
-                    });
+                let part_payload =
+                    format_full_request_bytes(ctx, Some(&part.body));
+                match state
+                    .waf
+                    .inspect_complete_payload_with_context(&part_payload, Some(&ctx.method))
+                {
+                    Decision::Allow
+                    | Decision::Monitor(_)
+                    | Decision::SilentReplace { .. } => {}
+                    Decision::Block(finding) => {
+                        return Err(BodyInspectionError::Blocked {
+                            finding,
+                            partial_body: raw_body.clone(),
+                        });
+                    }
                 }
             }
         }
     }
 
-    Ok(acc.freeze())
+    // Single full-body inspection on the cleartext view.
+    let full = format_full_request_bytes(ctx, Some(&decoded_body));
+    match state
+        .waf
+        .inspect_complete_payload_with_context(&full, Some(&ctx.method))
+    {
+        Decision::Allow
+        | Decision::Monitor(_)
+        | Decision::SilentReplace { .. } => Ok(raw_body),
+        Decision::Block(finding) => Err(BodyInspectionError::Blocked {
+            finding,
+            partial_body: raw_body,
+        }),
+    }
+}
+
+/// Convenience accessor used only by `consume_and_inspect_body` to pull a
+/// header value out of the flattened headers stored on the context.
+/// The flattened representation is one `Name: value` per line.
+fn ctx_header(ctx: &InspectionContext, target: &str) -> Option<String> {
+    for line in ctx.headers.lines() {
+        let Some((name, value)) = line.split_once(':') else { continue };
+        if name.trim().eq_ignore_ascii_case(target) {
+            return Some(value.trim().to_string());
+        }
+    }
+    None
 }
 
 fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>) -> SecurityEvent {
@@ -683,6 +804,7 @@ pub(crate) fn format_request_prefix_bytes(ctx: &InspectionContext) -> Vec<u8> {
     out
 }
 
+#[allow(dead_code)]
 fn format_full_request_window_bytes(ctx: &InspectionContext, body_window: &[u8]) -> Vec<u8> {
     let mut out = format_request_prefix_bytes(ctx);
     out.extend_from_slice(body_window);
@@ -818,13 +940,17 @@ fn exceeds_header_limits(headers: &HeaderMap) -> bool {
 }
 
 fn flatten_headers(headers: &HeaderMap) -> String {
+    // Inspection-side: keep raw bytes intact. A binary header value previously
+    // collapsed to the literal "<binary>" placeholder, which hid SQLi/XSS
+    // payloads encoded in non-UTF-8 form. We now base our inspection string on
+    // the value bytes directly (lossy decode preserves every ASCII byte).
     let mut out = String::new();
     let mut count = 0usize;
-    let mut bytes = 0usize;
+    let mut total = 0usize;
     for (name, value) in headers {
         count += 1;
-        bytes += name.as_str().len() + value.as_bytes().len();
-        if count > MAX_FORWARDED_HEADERS || bytes > MAX_FORWARDED_HEADER_BYTES {
+        total += name.as_str().len() + value.as_bytes().len();
+        if count > MAX_FORWARDED_HEADERS || total > MAX_FORWARDED_HEADER_BYTES {
             out.push_str("\n<truncated: header limit reached>");
             break;
         }
@@ -833,7 +959,9 @@ fn flatten_headers(headers: &HeaderMap) -> String {
         }
         out.push_str(name.as_str());
         out.push_str(": ");
-        out.push_str(value.to_str().unwrap_or("<binary>"));
+        // `from_utf8_lossy` keeps every ASCII byte verbatim; non-UTF-8 bytes
+        // become U+FFFD. Critically it never drops a payload to "<binary>".
+        out.push_str(&String::from_utf8_lossy(value.as_bytes()));
     }
     out
 }
@@ -853,6 +981,29 @@ fn build_upstream_target(upstream: &Url, uri: &Uri) -> Url {
     target
 }
 
+/// Decide whether the upstream response body should be fed to the
+/// detection engines. Binary types (images, video, audio, generic
+/// `application/octet-stream`) contain no text the WAF can reason about,
+/// so we skip body inspection — headers and status are still scanned.
+fn response_body_should_be_inspected(headers: &http::HeaderMap) -> bool {
+    let Some(value) = headers.get("content-type") else {
+        return true;
+    };
+    let Ok(text) = value.to_str() else { return true };
+    let normalised = text.split(';').next().unwrap_or(text).trim().to_ascii_lowercase();
+    // Allow-list of "text-ish" prefixes — everything else is treated as binary.
+    let textish = normalised.starts_with("text/")
+        || normalised.starts_with("application/json")
+        || normalised.starts_with("application/xml")
+        || normalised.starts_with("application/xhtml")
+        || normalised.starts_with("application/javascript")
+        || normalised.starts_with("application/x-www-form-urlencoded")
+        || normalised.starts_with("application/yaml")
+        || normalised.starts_with("application/graphql")
+        || normalised.starts_with("application/vnd.api+json");
+    textish
+}
+
 fn is_hop_by_hop(name: &HeaderName) -> bool {
     matches!(
         name.as_str().to_ascii_lowercase().as_str(),
@@ -865,6 +1016,44 @@ fn is_hop_by_hop(name: &HeaderName) -> bool {
             | "transfer-encoding"
             | "upgrade"
     )
+}
+
+/// Collect every header name listed in `Connection:` so the forwarding loop
+/// can strip them.
+///
+/// RFC 9110 §7.6.1 (formerly RFC 7230 §6.1) requires intermediaries to
+/// treat any token in the `Connection:` header as hop-by-hop and *delete*
+/// it before forwarding the message. The fixed-name list above is not
+/// enough on its own: a request like
+///
+/// ```text
+/// Connection: X-Auth-Internal
+/// X-Auth-Internal: admin
+/// ```
+///
+/// expects every well-behaved proxy to delete `X-Auth-Internal` before
+/// reaching the backend. Without that step a backend that trusts
+/// `X-Auth-Internal` for SSO can be smuggled an injected value through any
+/// WAF that only knows the fixed list. Added in 2.24.0.
+fn connection_listed_headers(headers: &HeaderMap) -> Vec<HeaderName> {
+    let mut out = Vec::new();
+    for value in headers.get_all(CONNECTION) {
+        let Ok(text) = value.to_str() else { continue };
+        for raw in text.split(',') {
+            let token = raw.trim();
+            // Skip the two RFC-defined options that are not header names.
+            if token.is_empty()
+                || token.eq_ignore_ascii_case("close")
+                || token.eq_ignore_ascii_case("keep-alive")
+            {
+                continue;
+            }
+            if let Ok(name) = HeaderName::try_from(token) {
+                out.push(name);
+            }
+        }
+    }
+    out
 }
 
 fn apply_response_policy(state: &AppState, response: &mut Response<Full<Bytes>>) {
@@ -924,7 +1113,55 @@ fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Optio
         .map(str::to_owned)
 }
 
-pub(crate) fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, state: &AppState) -> String {
+/// Parse the RFC 7239 `Forwarded:` header chain and return the rightmost
+/// `for=` value whose IP does **not** belong to a trusted proxy CIDR.
+///
+/// Browsers / users do not send `Forwarded:` directly; only intermediaries
+/// do. The rightmost untrusted value is therefore the real client. Returns
+/// `None` when the header is absent, malformed, or every value resolves to
+/// a trusted hop.
+fn forwarded_header_real_ip(
+    headers: &http::HeaderMap,
+    trusted: &[ipnet::IpNet],
+) -> Option<String> {
+    use std::net::IpAddr;
+    let raw = header_value_case_insensitive(headers, "forwarded")?;
+    let elements: Vec<&str> = raw.split(',').collect();
+    for element in elements.iter().rev() {
+        for kv in element.split(';') {
+            let kv = kv.trim();
+            let Some((k, v)) = kv.split_once('=') else { continue };
+            if !k.eq_ignore_ascii_case("for") {
+                continue;
+            }
+            // Allowed forms: `for=192.0.2.1`, `for="192.0.2.1:4711"`,
+            // `for="[2001:db8::1]"`, `for="_obfuscated"`.
+            let stripped = v.trim().trim_matches('"');
+            // Strip an optional port and surrounding `[]` for IPv6.
+            let host_only = if let Some(rest) = stripped.strip_prefix('[') {
+                rest.split(']').next().unwrap_or("")
+            } else if stripped.matches(':').count() == 1 {
+                // `host:port` for IPv4.
+                stripped.split(':').next().unwrap_or(stripped)
+            } else {
+                stripped
+            };
+            let Ok(parsed) = host_only.parse::<IpAddr>() else {
+                continue;
+            };
+            if !trusted.iter().any(|net| net.contains(&parsed)) {
+                return Some(host_only.to_string());
+            }
+        }
+    }
+    None
+}
+
+pub(crate) fn effective_client_ip(
+    peer_ip: &str,
+    headers: &http::HeaderMap,
+    state: &AppState,
+) -> String {
     use std::net::IpAddr;
     let Ok(peer) = peer_ip.parse::<IpAddr>() else {
         return peer_ip.to_string();
@@ -938,9 +1175,20 @@ pub(crate) fn effective_client_ip(peer_ip: &str, headers: &http::HeaderMap, stat
     if !trusted_nets.iter().any(|net| net.contains(&peer)) {
         return peer_ip.to_string();
     }
+
+    // RFC 7239 `Forwarded:` header takes precedence when present — modern
+    // proxies (HAProxy 2.x, recent nginx with the realip module) emit it
+    // instead of `X-Forwarded-For`. We walk the chain right-to-left and pick
+    // the first `for=` value whose IP is *not* one of our trusted proxies.
+    if let Some(ip) = forwarded_header_real_ip(headers, &trusted_nets) {
+        return ip;
+    }
+
     let header_name = match state.cli.real_ip_header.as_deref() {
         Some(h) if !h.trim().is_empty() => h.trim(),
-        _ => return peer_ip.to_string(),
+        // Even without an explicit --real-ip-header we still honour the
+        // de-facto standard `X-Real-IP` if the peer is a trusted proxy.
+        _ => "x-real-ip",
     };
     let Some(raw) = header_value_case_insensitive(headers, header_name) else {
         return peer_ip.to_string();

@@ -16,8 +16,8 @@ use crate::{
     waf::rate_limit::RateLimiter,
 };
 use anyhow::Result;
+use arc_swap::ArcSwap;
 use chrono::Utc;
-use parking_lot::RwLock;
 use std::{path::Path, sync::Arc};
 
 use ip_filter::{canonical_ip, extract_header_value};
@@ -119,9 +119,11 @@ impl WafEngineFactory {
 /// Main `KrakenWaf` engine containing rules and optional accelerated detectors.
 #[allow(clippy::struct_excessive_bools)]
 pub struct WafEngine {
-    /// Single lock covers both rules and matchers; readers always see a
-    /// consistent pair because reload replaces the whole Arc at once.
-    snapshot: RwLock<Arc<RulesSnapshot>>,
+    /// Wait-free atomic swap of the immutable `(rules, matchers)` pair.
+    /// Replaces the previous `RwLock<Arc<…>>` — every inspection path now
+    /// performs a single relaxed atomic load instead of acquiring a read
+    /// lock. Hot-reload still publishes a new snapshot atomically.
+    snapshot: ArcSwap<RulesSnapshot>,
     rate_limiter: Arc<RateLimiter>,
     blocklist_ip_enabled: bool,
     libinjection_sqli_enabled: bool,
@@ -155,7 +157,7 @@ impl WafEngine {
             cfg.anomaly_threshold
         };
         Ok(Self {
-            snapshot: RwLock::new(Arc::new(RulesSnapshot {
+            snapshot: ArcSwap::new(Arc::new(RulesSnapshot {
                 rules: cfg.rules,
                 matchers,
             })),
@@ -173,12 +175,12 @@ impl WafEngine {
     }
 
     pub fn body_limit_for_path(&self, path: &str) -> usize {
-        self.snapshot.read().rules.body_limit_for_path(path)
+        self.snapshot.load().rules.body_limit_for_path(path)
     }
 
     /// Expose the current rule set for use by server-layer access control (allowlist).
     pub fn rules_snapshot(&self) -> Arc<RuleSet> {
-        self.snapshot.read().rules.clone()
+        self.snapshot.load().rules.clone()
     }
 
     /// # Errors
@@ -187,16 +189,16 @@ impl WafEngine {
     pub async fn reload_from_dir(&self, root: &Path) -> Result<()> {
         let new_rules = Arc::new(RuleSet::from_dir(root)?);
         let new_matchers = build_matchers(&new_rules, self.vectorscan_enabled)?;
-        *self.snapshot.write() = Arc::new(RulesSnapshot {
+        self.snapshot.store(Arc::new(RulesSnapshot {
             rules: new_rules,
             matchers: new_matchers,
-        });
+        }));
         Ok(())
     }
 
     pub async fn inspect_early(&self, ctx: &InspectionContext) -> Decision {
         self.metrics.inc_inspected();
-        let snap = self.snapshot.read().clone();
+        let snap = self.snapshot.load_full();
         let rules = &snap.rules;
         let matchers = &snap.matchers;
 
@@ -339,7 +341,7 @@ impl WafEngine {
         _method_hint: Option<&str>,
         deadline: Option<Instant>,
     ) -> Decision {
-        let snap = self.snapshot.read().clone();
+        let snap = self.snapshot.load_full();
         let rules = &snap.rules;
         let matchers = &snap.matchers;
         let threshold = self.anomaly_threshold;
@@ -500,7 +502,7 @@ impl WafEngine {
 
     /// Inspect the upstream HTTP response. Only rules with `http_action: Response` fire here.
     pub fn inspect_response(&self, ctx: &ResponseContext) -> Decision {
-        let snap = self.snapshot.read().clone();
+        let snap = self.snapshot.load_full();
         let rules = &snap.rules;
         let matchers = &snap.matchers;
 

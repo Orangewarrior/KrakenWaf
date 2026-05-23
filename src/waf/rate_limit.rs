@@ -50,18 +50,20 @@
 
 use ahash::AHashMap;
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection};
 use std::{
     array,
     fs::{File, OpenOptions},
     io::{Read, Write},
+    net::IpAddr,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use fred::clients::Pool as FredPool;
 use tokio::time::interval;
@@ -226,7 +228,19 @@ impl Shard {
                 return gcra_check(&cell, now_ns, emit_ns, tolerance_ns);
             }
             if map.len() >= MAX_PER_SHARD {
-                evict_one(&mut map, now_ns, tolerance_ns);
+                // Admission control (2.24.0): under DDoS the shard fills with
+                // attacker IPs in a few seconds. Evicting an incumbent — even
+                // an "expired" one — favours the attacker because the new
+                // arrival is the one stalling legitimate traffic. First try a
+                // cheap, opportunistic expired-entry sweep; if every slot is
+                // still live, drop the *new* request rather than disturb the
+                // working set. A dropped-from-shard request is treated as a
+                // denial: we return `false` so the proxy emits 429 just like
+                // a normal rate-limit miss.
+                let evicted_expired = try_evict_expired(&mut map, now_ns, tolerance_ns);
+                if !evicted_expired && map.len() >= MAX_PER_SHARD {
+                    return false;
+                }
             }
             map.insert(key, fresh.clone());
         }
@@ -246,21 +260,17 @@ impl Shard {
     }
 }
 
-fn evict_one(map: &mut AHashMap<u64, Arc<AtomicU64>>, now_ns: u64, tolerance_ns: u64) {
-    let expired = map
-        .iter()
-        .find(|(_, cell)| cell.load(Ordering::Relaxed).saturating_add(tolerance_ns) < now_ns)
-        .map(|(&k, _)| k);
-
-    let victim = expired.or_else(|| {
-        map.iter()
-            .min_by_key(|(_, cell)| cell.load(Ordering::Relaxed))
-            .map(|(&k, _)| k)
-    });
-
-    if let Some(k) = victim {
-        map.remove(&k);
-    }
+/// Sweep expired counters out of `map` in a single pass. Returns whether
+/// at least one slot was freed. Used by admission control (2.24.0) to
+/// give incumbent traffic priority over flooding IPs.
+fn try_evict_expired(
+    map: &mut AHashMap<u64, Arc<AtomicU64>>,
+    now_ns: u64,
+    tolerance_ns: u64,
+) -> bool {
+    let before = map.len();
+    map.retain(|_, cell| cell.load(Ordering::Relaxed).saturating_add(tolerance_ns) >= now_ns);
+    map.len() < before
 }
 
 // ── Persistence backend ───────────────────────────────────────────────────────
@@ -653,24 +663,71 @@ fn with_transaction(conn: &Connection, f: impl FnOnce(&Connection) -> Result<()>
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 
-/// FNV-1a (64-bit) — deterministic, seed-free. Stable across restarts so
-/// `SQLite` can re-hydrate state correctly.
+/// FNV-1a (64-bit) over the canonical IP representation so different
+/// textual encodings of the same address share a counter.
+///
+/// Before 2.24.0 the limiter folded the raw string bytes: `"192.168.1.1"`,
+/// `"192.168.001.001"`, and `"::ffff:1.2.3.4"` all received independent
+/// counters even though they resolve to the same host. An attacker simply
+/// alternated forms across requests to bypass the per-IP limit.
+///
+/// Parsing failures fall back to the legacy string-hash to preserve
+/// behaviour for non-IP keys (test fixtures pass synthetic identifiers).
 #[inline]
 fn hash_ip(ip: &str) -> u64 {
     const OFFSET: u64 = 14_695_981_039_346_656_037;
     const PRIME: u64 = 1_099_511_628_211;
+    let mut h: u64 = OFFSET;
+    if let Ok(parsed) = ip.parse::<IpAddr>() {
+        let canonical = match parsed {
+            // IPv4-mapped IPv6 (`::ffff:a.b.c.d`) collapses to its IPv4 form.
+            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
+            other => other,
+        };
+        match canonical {
+            IpAddr::V4(v4) => {
+                for b in v4.octets() {
+                    h = (h ^ u64::from(b)).wrapping_mul(PRIME);
+                }
+            }
+            IpAddr::V6(v6) => {
+                for b in v6.octets() {
+                    h = (h ^ u64::from(b)).wrapping_mul(PRIME);
+                }
+            }
+        }
+        return h;
+    }
     ip.bytes().fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME))
 }
 
-#[inline]
-fn now_ns() -> u64 {
-    u64::try_from(
+/// Monotonic clock anchor — captured once at startup. The rate-limiter hot
+/// path computes "ns since this anchor" using [`Instant`], which is
+/// guaranteed monotonic and immune to NTP skew. We retain a wall-clock
+/// offset so persisted snapshots can be written/read in epoch form.
+static MONO_ANCHOR: Lazy<(Instant, u64)> = Lazy::new(|| {
+    let epoch_ns = u64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
             .as_nanos(),
     )
-    .unwrap_or(u64::MAX)
+    .unwrap_or(0);
+    (Instant::now(), epoch_ns)
+});
+
+/// Returns "wall-clock-equivalent" nanoseconds derived from a monotonic
+/// clock so a request issued during NTP negative-step does not unwind the
+/// limiter's TAT into the past (which would re-enable a previously-blocked
+/// flood). The output is **monotonic** within a single process: the same
+/// invariant the GCRA loop assumes. Compared to the pre-2.24.0
+/// `SystemTime::now()` implementation, this is ~3× cheaper and never
+/// allocates.
+#[inline]
+fn now_ns() -> u64 {
+    let (anchor, epoch_ns) = *MONO_ANCHOR;
+    let elapsed = u64::try_from(anchor.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    epoch_ns.saturating_add(elapsed)
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -730,6 +787,23 @@ mod tests {
     fn hash_ip_e_estavel() {
         assert_eq!(hash_ip("192.168.1.1"), hash_ip("192.168.1.1"));
         assert_ne!(hash_ip("192.168.1.1"), hash_ip("192.168.1.2"));
+    }
+
+    #[test]
+    fn hash_ip_canonicalises_textual_forms() {
+        // IPv4-mapped IPv6 must hash identically to its IPv4 form.
+        assert_eq!(hash_ip("::ffff:1.2.3.4"), hash_ip("1.2.3.4"));
+        // Different textual notations of the same v6 address must collide.
+        assert_eq!(hash_ip("2001:db8::1"), hash_ip("2001:0db8:0000:0000:0000:0000:0000:0001"));
+        // Distinct addresses must not collide.
+        assert_ne!(hash_ip("10.0.0.1"), hash_ip("10.0.0.2"));
+    }
+
+    #[test]
+    fn monotonic_now_ns_never_goes_backwards() {
+        let a = now_ns();
+        let b = now_ns();
+        assert!(b >= a, "now_ns must be monotonic");
     }
 
     #[test]

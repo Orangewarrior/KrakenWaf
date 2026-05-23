@@ -146,11 +146,26 @@ pub(super) fn keyword_match(
     original_payload: &str,
 ) -> Option<Finding> {
     let matcher = matcher?;
-    let mat = matcher.ac.find(haystack)?;
-    matcher
-        .rules
-        .get(mat.pattern().as_usize())
-        .map(|rule| super::finding::rule_to_finding(rule, original_payload))
+    // Walk every match (not just the leftmost) so additive score-only rules
+    // accumulate properly. Previously the leftmost match short-circuited the
+    // walk, which meant a payload that hit 3 score-200 keywords would never
+    // exceed the score-block threshold even though every detector fired.
+    let mut sum_score = 0u32;
+    for mat in matcher.ac.find_iter(haystack) {
+        let Some(rule) = matcher.rules.get(mat.pattern().as_usize()) else {
+            continue;
+        };
+        // A single keyword whose score is already at/above the block threshold
+        // is sufficient — fire immediately.
+        if rule.score >= SCORE_BLOCK_THRESHOLD {
+            return Some(super::finding::rule_to_finding(rule, original_payload));
+        }
+        sum_score = sum_score.saturating_add(rule.score);
+        if sum_score >= SCORE_BLOCK_THRESHOLD {
+            return Some(super::finding::rule_to_finding(rule, original_payload));
+        }
+    }
+    None
 }
 
 /// Returns `true` when the rule's score alone or the accumulated `sum_score`

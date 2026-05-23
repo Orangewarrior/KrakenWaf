@@ -83,23 +83,24 @@ pub struct Cli {
     #[arg(long, default_value = "")]
     pub internal_header_name: String,
 
-    /// Maximum simultaneous TCP connections the WAF accepts. Each connection
-    /// holds inspection buffers, so keep this proportional to available memory.
-    /// 512 provides solid backpressure; raise for very high-traffic deployments.
-    #[arg(long, default_value_t = 512)]
+    /// Maximum simultaneous TCP connections the WAF accepts.
+    /// 2.24.0: when 0 (the default) KrakenWaf derives a conservative value
+    /// from total RAM at startup (≈ 1 connection per 2 MiB, clamped to
+    /// [64, 4096]). YAML key: `memory-limits.max_connections`.
+    #[arg(long, default_value_t = 0)]
     pub max_connections: usize,
 
-    /// Maximum upstream response body to buffer (bytes). Prevents an upstream returning
-    /// an unbounded body from exhausting WAF memory. Default: 100 MiB.
-    #[arg(long, default_value_t = 100 * 1024 * 1024)]
+    /// Maximum upstream response body to buffer (bytes).
+    /// 2.24.0: default dropped from 100 MiB → 8 MiB. 0 = use the YAML
+    /// value `memory-limits.max_response_body_buffered_bytes`.
+    #[arg(long, default_value_t = 0)]
     pub max_upstream_response_bytes: usize,
 
     /// Hard ceiling on the request body size the WAF will inspect (bytes).
-    /// Per-route limits configured in rules are further bounded by this value —
-    /// no route can exceed it regardless of its rule configuration.
-    /// Requests whose bodies exceed this limit are rejected with HTTP 413.
-    /// Default: 100 MiB.
-    #[arg(long, default_value_t = 100 * 1024 * 1024)]
+    /// 2.24.0: default dropped from 100 MiB → 8 MiB. 0 = use the YAML
+    /// value `memory-limits.max_request_body_buffered_bytes`. Per-route
+    /// rule limits remain bounded by this value.
+    #[arg(long, default_value_t = 0)]
     pub max_body_bytes: usize,
 
     #[arg(long, default_value_t = 30)]

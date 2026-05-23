@@ -1,12 +1,16 @@
 pub mod allowpaths;
 pub mod app;
 pub mod banner;
+pub mod body_decode;
 pub mod cli;
 pub mod error;
 pub mod ffi;
+pub mod limits;
 pub mod logging;
 pub mod metrics;
+pub mod multipart_extract;
 pub mod proxy;
+pub mod ratelimit_config;
 pub mod response_headers;
 pub mod rules;
 pub mod server;

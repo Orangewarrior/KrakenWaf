@@ -1,12 +1,15 @@
 mod allowpaths;
 mod app;
 mod banner;
+mod body_decode;
 mod cli;
 mod cmc;
 mod error;
 mod ffi;
+mod limits;
 mod logging;
 mod metrics;
+mod multipart_extract;
 mod proxy;
 mod ratelimit_config;
 mod response_headers;
@@ -25,6 +28,7 @@ use clap::Parser;
 use cli::{Cli, WalMode};
 use cmc::{CmcConfig, CmcManagerBuilder};
 use dashmap::DashMap;
+use limits::MemoryLimits;
 use metrics::WafMetrics;
 use ratelimit_config::RateLimitConfig;
 use response_headers::ResponseHeaderPolicy;
@@ -53,8 +57,22 @@ async fn main() -> Result<()> {
         });
     }
 
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
     let root_dir = std::env::current_dir()?;
+
+    // ── Memory-pressure limits ───────────────────────────────────────────────
+    // Loaded before anything else allocates inspection buffers so subsequent
+    // construction can read the resolved values straight off `cli`.
+    let memory_limits = Arc::new(MemoryLimits::load(&root_dir)?);
+    if cli.max_body_bytes == 0 {
+        cli.max_body_bytes = memory_limits.max_request_body_buffered_bytes;
+    }
+    if cli.max_upstream_response_bytes == 0 {
+        cli.max_upstream_response_bytes = memory_limits.max_response_body_buffered_bytes;
+    }
+    if cli.max_connections == 0 {
+        cli.max_connections = memory_limits.effective_max_connections(None);
+    }
 
     println!("{}", banner::banner());
 
@@ -142,10 +160,14 @@ async fn main() -> Result<()> {
         ip_connections: Arc::new(DashMap::new()),
         max_coroutines_per_ip: rl_config.max_coroutines_per_ip,
         inflight_body_bytes: Arc::new(AtomicUsize::new(0)),
-        max_inflight_body_bytes: rl_config.effective_max_inflight_body_bytes(cli.max_inflight_body_bytes),
+        max_inflight_body_bytes: rl_config
+            .effective_max_inflight_body_bytes(cli.max_inflight_body_bytes),
         ip_body_bytes: Arc::new(DashMap::new()),
-        max_per_ip_body_bytes: rl_config.effective_max_per_ip_body_bytes(cli.max_per_ip_body_bytes),
-        body_frame_timeout_secs: rl_config.effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
+        max_per_ip_body_bytes: rl_config
+            .effective_max_per_ip_body_bytes(cli.max_per_ip_body_bytes),
+        body_frame_timeout_secs: rl_config
+            .effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
+        memory_limits: memory_limits.clone(),
     });
 
     // Build TLS store once; clone it for both the SIGHUP handler and the server.
@@ -171,6 +193,10 @@ async fn main() -> Result<()> {
         rate_limit_per_minute = effective_limit,
         max_coroutines_per_ip = rl_config.max_coroutines_per_ip,
         redis_backend = rl_config.redis.is_some(),
+        max_body_bytes = cli.max_body_bytes,
+        max_upstream_response_bytes = cli.max_upstream_response_bytes,
+        max_connections = cli.max_connections,
+        max_decompress_ratio = memory_limits.max_decompress_ratio,
         "KrakenWaf initialized"
     );
 
