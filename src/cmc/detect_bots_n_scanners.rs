@@ -2,7 +2,7 @@
 //!
 //! Inspects the request `User-Agent` header for known scanner / crawler /
 //! offensive-tooling substrings (Nikto, sqlmap, Nmap, masscan, Nessus,
-//! OpenVAS, gobuster, dirbuster, Arachni, Nuclei, wfuzz, commix, Acunetix,
+//! `OpenVAS`, gobuster, dirbuster, Arachni, Nuclei, wfuzz, commix, Acunetix,
 //! Havij, …).
 //!
 //! Pattern source: OWASP Core Rule Set
@@ -20,7 +20,7 @@
 //!   regex-escaped literals is used instead.
 //! * **Action** — governed by the global `Untrust` level:
 //!   - `>= 60` → **block** (HTTP 403). The finding is logged at `Low`
-//!     severity to raw, JSONL and SQLite outputs as a bot/scanner sweep.
+//!     severity to raw, `JSONL` and `SQLite` outputs as a bot/scanner sweep.
 //!   - `< 60` → silent log only via `tracing::warn!`, request is forwarded.
 //!
 //! Disabling the module entirely (`Detect_bots_n_scanners: false` in

@@ -617,7 +617,7 @@ impl CmcManager {
     /// Returns `Some(Finding)` when the module is enabled, a pattern matches,
     /// and the global `untrust_level` is `>= 60` — in which case the WAF
     /// should reply with HTTP 403 and log the event at `Low` severity to
-    /// raw, JSONL and SQLite outputs (treated as a bot/scanner sweep).
+    /// raw, `JSONL` and `SQLite` outputs (treated as a bot/scanner sweep).
     /// When `untrust_level < 60` the match is logged via `tracing::warn!`
     /// and `None` is returned so the request proceeds.
     #[must_use]
