@@ -39,3 +39,55 @@ CMC-Rules:
   Silent_sql_errors: true
   Detect_bad_artifacts: true
   Detect_bots_n_scanners: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Memory-pressure limits (2.29.0)
+#
+# These knobs cap every place where KrakenWaf buffers untrusted bytes. The
+# defaults shipped here are deliberately conservative (≤ 8–16 MiB) so a fresh
+# install cannot be turned into a memory-exhaustion DoS by a single attacker.
+#
+# Raise individual values when your workload legitimately needs larger
+# payloads (file uploads, large JSON ingest, etc). The CLI flags
+#   --max-body-bytes, --max-upstream-response-bytes, --max-connections
+# override the YAML when set; otherwise the values below are used.
+#
+# When --max-connections is omitted KrakenWaf derives a value from total
+# system RAM at startup (≈ 1 connection per 2 MiB, clamped to [64, 4096]).
+#
+# Note: the inflight-byte ceilings below (`*_inflight_*`) duplicate the
+# `max_inflight_body_bytes` / `max_per_ip_body_bytes` knobs in
+# `conf/ratelimit.yaml`. The ratelimit.yaml values take precedence at
+# runtime; the keys here exist for self-contained operator templates.
+# ─────────────────────────────────────────────────────────────────────────────
+
+memory-limits:
+  # Maximum request body the WAF will buffer + decompress + inspect (bytes).
+  # 2.29.0 default: 8 MiB (was 100 MiB).
+  max_request_body_buffered_bytes: 8388608
+
+  # Maximum upstream response body the WAF will buffer (bytes).
+  # 2.29.0 default: 8 MiB (was 100 MiB).
+  max_response_body_buffered_bytes: 8388608
+
+  # Streaming inspection window size (bytes). The buffered-and-inspect-once
+  # body pipeline uses this only as the upper bound of pattern overlap.
+  max_streaming_inspection_window_bytes: 262144
+
+  # Aggregate ceiling on in-flight body buffering across ALL connections.
+  # New requests beyond this point are rejected with 503 until pressure
+  # subsides. Defends against a herd of slow uploads.
+  max_inflight_body_bytes_global: 268435456
+
+  # Per-IP ceiling on in-flight body buffering. A single source cannot
+  # monopolise the global pool by opening many connections.
+  max_inflight_body_bytes_per_ip: 16777216
+
+  # Maximum decompressed / compressed expansion ratio (zip-bomb guard).
+  # A POST whose Content-Encoding decompresses past this factor is rejected
+  # before the inspection budget is exhausted.
+  max_decompress_ratio: 32
+
+  # max_connections (optional): pin the TCP accept cap. Comment out to let
+  # KrakenWaf derive it from system RAM at startup.
+  # max_connections: 1024

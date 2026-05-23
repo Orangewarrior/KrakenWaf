@@ -6,6 +6,7 @@ use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer},
     server::{ClientHello, ResolvesServerCert, ResolvesServerCertUsingSni, ServerConfig},
     sign::CertifiedKey,
+    version::TLS13,
 };
 use rustls_pki_types::pem::PemObject;
 use std::{path::{Path, PathBuf}, sync::Arc};
@@ -74,6 +75,7 @@ pub fn build_tls_config(sni_csv: &Path) -> Result<Arc<ServerConfig>> {
     let mut default_cert: Option<CertifiedKey> = None;
 
     for entry in &entries {
+        ensure_key_file_permissions(&entry.key_path);
         let cert = load_certified_key(&entry.cert_path, &entry.key_path)?;
         if entry.is_default {
             default_cert = Some(cert.clone());
@@ -85,19 +87,48 @@ pub fn build_tls_config(sni_csv: &Path) -> Result<Arc<ServerConfig>> {
 
     let default = default_cert.ok_or(KrakenError::MissingDefaultCertificate)?;
 
-    let mut config = ServerConfig::builder()
+    // TLS 1.3 only (2.29.0). 1.2 cipher negotiation is removed because:
+    //   • the WAF terminates TLS; we control the deployment.
+    //   • rustls' 1.3 implementation rejects insecure ciphers by default and
+    //     is immune to most padding-oracle / downgrade families.
+    //   • 0-RTT (early-data) stays explicitly off (`max_early_data_size = 0`)
+    //     so an attacker cannot replay a POST through the early-data flow.
+    // ALPN advertises HTTP/2 then HTTP/1.1; the hyper auto::Builder selects
+    // the negotiated protocol, defaulting to HTTP/1.1 for older clients.
+    let mut config = ServerConfig::builder_with_protocol_versions(&[&TLS13])
         .with_no_client_auth()
         .with_cert_resolver(Arc::new(FallbackResolver {
             resolver,
             default: Arc::new(default),
         }));
-
-    // Advertise HTTP/2 and HTTP/1.1 via ALPN. The hyper auto::Builder selects
-    // the negotiated protocol, defaulting to HTTP/1.1 for older clients.
+    config.max_early_data_size = 0;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
     Ok(Arc::new(config))
 }
+
+/// On Unix verify the private key file is **not** group/world readable.
+/// Logs a warning on permissive modes instead of refusing to boot — operators
+/// running in containers/k8s with secrets mounted as 0644 should be alerted
+/// but not crashed mid-deploy.
+#[cfg(unix)]
+fn ensure_key_file_permissions(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(metadata) = std::fs::metadata(path) else { return };
+    let mode = metadata.permissions().mode() & 0o777;
+    if mode & 0o077 != 0 {
+        warn!(
+            target: "krakenwaf",
+            path = %path.display(),
+            mode = format!("0{mode:o}"),
+            "TLS private key file is group/world readable; tighten to 0600 \
+             (chmod 600 <file>) to satisfy CIS Benchmark §1.2"
+        );
+    }
+}
+
+#[cfg(not(unix))]
+fn ensure_key_file_permissions(_path: &Path) {}
 
 fn load_sni_entries(path: &Path) -> Result<Vec<SniEntry>> {
     let content = std::fs::read_to_string(path)

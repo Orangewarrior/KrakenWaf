@@ -1,3 +1,127 @@
+## [2.29.0] - 2026-05-23
+
+> Large hardening + performance refactor on top of 2.28.0. This release
+> replaces several long-standing assumptions in the request/response
+> pipeline, lowers default memory caps drastically, closes a handful of
+> detection-bypass vectors, and trades a `RwLock` on the hot path for a
+> wait-free atomic. **All 238 upstream tests continue to pass.**
+
+### Memory-pressure overhaul (drastically lower defaults)
+
+- New module `src/limits.rs` centralises every buffering ceiling and is
+  loaded from `rules/cmc/config.yaml :: memory-limits` (or
+  `conf/limits.yaml` as a fallback) at startup. Sits alongside the
+  inflight-byte accounting added in 2.28.0 (which gates *concurrent*
+  buffering); the new knobs cap *per-request* buffer sizes.
+- New YAML knobs (see `rules/cmc/config.yaml`):
+  - `max_request_body_buffered_bytes` — default **8 MiB** (was 100 MiB).
+  - `max_response_body_buffered_bytes` — default **8 MiB** (was 100 MiB).
+  - `max_streaming_inspection_window_bytes` — default 256 KiB.
+  - `max_decompress_ratio` — default 32× (zip-bomb guard).
+  - `max_connections` — optional pin; otherwise RAM-derived.
+- CLI defaults updated:
+  - `--max-body-bytes` / `--max-upstream-response-bytes` now default to **0**
+    (fall through to YAML / built-in 8 MiB). Pass an explicit value to
+    override.
+  - `--max-connections` defaults to **0**; KrakenWaf derives a conservative
+    value from `/proc/meminfo` (≈ 1 connection per 2 MiB, clamped to
+    `[64, 4096]`) when neither CLI nor YAML pin a value.
+- Startup log reports the resolved caps and `max_decompress_ratio`.
+
+### Detection-bypass closures
+
+- **Body decompression before inspection** (`src/body_decode.rs`). The proxy
+  now decodes `Content-Encoding: gzip | x-gzip | deflate | br | zstd` (and
+  any RFC-compliant comma-separated chain, up to 4 layers) before handing
+  bytes to the detection engines. Two guards bound the work: an absolute
+  byte cap equal to the request body limit and an expansion-ratio guard
+  (`max_decompress_ratio`, default 32×). A POST sent with
+  `Content-Encoding: gzip` is no longer free-pass for SQLi/XSS payloads.
+- **`multipart/form-data` parser** (`src/multipart_extract.rs`). Each part's
+  body is extracted and inspected independently; payloads can no longer
+  hide behind boundary + MIME headers. Caps: 256 parts per body, 70-char
+  boundary length (RFC 2046).
+- **`Connection:`-listed headers stripped** (`proxy::connection_listed_headers`).
+  RFC 9110 §7.6.1 / RFC 7230 §6.1: every token in `Connection:` is now
+  deleted before forwarding. Closes `Connection: X-Auth-Internal` smuggling
+  against permissive backends.
+- **Quadratic detection loop removed**. `consume_and_inspect_body` no
+  longer re-runs the full engine stack against every chunk window followed
+  by *another* full-body pass — it buffers and inspects exactly once on
+  the cleartext view. For a 100 MiB body with 8 KiB chunks this removes
+  ≈ 12 500 redundant passes.
+- **Inspect-headers-only for binary response types** (`proxy::response_body_should_be_inspected`).
+  When the upstream advertises an image / video / audio /
+  `application/octet-stream` content-type the WAF scans only the headers
+  and forwards the body without further allocation pressure.
+
+### Security hardening
+
+- **GCRA key canonicalisation** (`src/waf/rate_limit.rs :: hash_ip`).
+  Counters are now keyed by `IpAddr::octets()` so `192.168.1.1`,
+  `192.168.001.001`, and `::ffff:192.168.1.1` collapse to one bucket.
+  Previously each textual form had a separate limiter — trivial bypass
+  closed.
+- **Monotonic clock for the rate limiter**. The hot path derives time from
+  `Instant::now()` anchored to a wall-clock snapshot taken once at
+  startup. Immune to NTP skew and ≈ 3× cheaper than `SystemTime::now()`.
+- **Admission control on shard fill** (`Shard::check`). Under DDoS the
+  shard previously evicted the *oldest TAT*, which despatched the
+  legitimate incumbent and admitted the attacker. The new behaviour
+  sweeps expired entries opportunistically and, when every slot is still
+  live, **rejects the new arrival** — returning the same 429 path a
+  rate-limit miss would.
+- **RFC 7239 `Forwarded:` header parser** (`proxy::forwarded_header_real_ip`)
+  + `X-Real-IP` fallback. Modern proxies (HAProxy 2.x, recent nginx with
+  the realip module) emit `Forwarded:` instead of `X-Forwarded-For`; the
+  real-IP resolver walks the chain right-to-left and selects the first
+  untrusted hop.
+- **TLS 1.3 only** (`src/tls.rs`). `ServerConfig` is built with
+  `&[&TLS13]`; ALPN advertises `h2` then `http/1.1`; 0-RTT
+  (`max_early_data_size`) is pinned to 0 to prevent POST replay through
+  `early_data`. Key-file permissions checked at startup — a permissive
+  `chmod` emits a `tracing::warn!` referencing CIS §1.2.
+
+### Performance
+
+- **`ArcSwap` snapshot** (`src/waf/engine/mod.rs`). The
+  `RwLock<Arc<RulesSnapshot>>` is replaced by
+  `arc_swap::ArcSwap<RulesSnapshot>`. Inspection reads become a single
+  atomic load (wait-free); hot-reload still publishes a new snapshot
+  atomically.
+- **Aho-Corasick walks every overlap** (`matchers::keyword_match`).
+  Previously the leftmost match short-circuited the walk so additive
+  score-only rules could not accumulate. Now `find_iter` aggregates score
+  across every hit until the block threshold is reached.
+- **`flatten_headers` preserves bytes**. The previous
+  `to_str().unwrap_or("<binary>")` dropped non-UTF-8 header values to a
+  static placeholder, hiding payloads carried in binary trailers. We now
+  do a lossy decode that keeps every ASCII byte verbatim.
+- **`tokio` features trimmed**. `["full"]` → `["rt-multi-thread", "net",
+  "time", "signal", "sync", "macros", "io-util", "fs", "process"]`.
+  Reduces compile surface; dev-dependency `tokio` still uses `["full"]`
+  so integration tests are unaffected.
+- **HTTP/2 enabled at the listener**. `hyper = ["http1", "http2",
+  "server"]` and `hyper-util = [..., "http2"]` — clients negotiating ALPN
+  `h2` are now served natively instead of being forced to downgrade.
+
+### New dependencies
+
+- `arc-swap = "1.7"` — wait-free atomic rule snapshot.
+- `flate2 = "1.0"` — gzip / deflate decompression.
+- `brotli = "7.0"` — `Content-Encoding: br`.
+- `zstd = "0.13"` (default-features off) — `Content-Encoding: zstd`.
+
+### Caveats / known gaps (tracked for 2.30.0)
+
+- ReDoS hardening for operator-supplied regex rules (per-match wall-clock
+  deadline via `spawn_blocking`) is **not** in this release. Bound your
+  payload sizes via `max_request_body_buffered_bytes` until the
+  follow-up lands.
+- Hard DNS-pinning for upstream hostnames (custom `reqwest::dns::Resolver`)
+  is still deferred — the startup-time resolution warning remains.
+- Vectorscan `scratch` pooling per worker is deferred to a later release.
+
 ## [2.28.0] - 2026-05-23
 
 ### Added

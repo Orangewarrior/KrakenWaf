@@ -2,6 +2,7 @@
 use crate::{
     allowpaths::AllowPathConfig,
     cli::{Cli, WafMode},
+    limits::MemoryLimits,
     logging::LoggingHandles,
     metrics::WafMetrics,
     proxy::ProxyClient,
@@ -47,4 +48,10 @@ pub struct AppState {
     /// Resolved per-frame body inactivity timeout (seconds). Anti-Slowloris.
     /// 0 disables the timeout. Resolved from CLI flag, then YAML, then 30 s.
     pub body_frame_timeout_secs: u64,
+    /// Memory-pressure limits resolved at startup (YAML > CLI > defaults).
+    /// Read-only at runtime; reloading requires a process restart. Carries
+    /// the 2.29.0 knobs (`max_decompress_ratio`, RAM-derived
+    /// `max_connections`, etc) that the older `max_inflight_*` fields above
+    /// do not cover.
+    pub memory_limits: Arc<MemoryLimits>,
 }
