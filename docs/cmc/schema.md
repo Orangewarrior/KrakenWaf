@@ -70,6 +70,7 @@ CMC-Rules:
   Detect_db_errors: true
   Silent_sql_errors: true
   Detect_bad_artifacts: true
+  Detect_bots_n_scanners: true
 ```
 
 ---
@@ -93,6 +94,7 @@ CMC-Rules:
 | `Detect_db_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | High | [detect_db_errors.md](detect_db_errors.md) |
 | `Silent_sql_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | Low → High | [silent_sql_errors.md](silent_sql_errors.md) |
 | `Detect_bad_artifacts` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | High | [detect_bad_artifacts.md](detect_bad_artifacts.md) |
+| `Detect_bots_n_scanners` | [CWE-200](https://cwe.mitre.org/data/definitions/200.html) | Low | [detect_bots_n_scanners.md](detect_bots_n_scanners.md) |
 
 ---
 
@@ -310,6 +312,33 @@ level:
 
 Patterns are loaded from `rules/artifacts/file_pitfalls.txt` (500+ literals).
 
+### [`Detect_bots_n_scanners`](detect_bots_n_scanners.md)
+
+Inspects the request **`User-Agent`** header for known scanner / crawler /
+offensive-tooling substrings (Nikto, sqlmap, Nmap, masscan, Nessus, OpenVAS,
+gobuster, dirbuster, Arachni, Nuclei, wfuzz, commix, Acunetix, Havij, …).
+Patterns are loaded from `rules/user_agents/scanners.txt` (OWASP CRS
+[`scanners-user-agents.data`](https://github.com/coreruleset/coreruleset/blob/main/rules/scanners-user-agents.data),
+~78 substrings).
+
+All scanner-UA matching now lives in this single CMC module — toggling
+`Detect_bots_n_scanners: false` disables scanner-UA blocking entirely without
+recompilation. CPU fast path uses `aho_corasick::AhoCorasick` (case-insensitive
+multi-pattern); when `--enable-vectorscan` is active, a Hyperscan
+`BlockDatabase` of regex-escaped, `CASELESS | SINGLEMATCH` patterns is used
+instead.
+
+Action depends on the global `Untrust` level:
+
+| `Untrust` | Action | Severity |
+|---|---|---|
+| ≥ 60 (default) | **Block** — WAF returns 403, finding is logged to raw/JSONL/SQLite as a bot/scanner sweep | Low |
+| < 60 | **Silent log** — request forwarded; finding logged via `tracing::warn!` | — |
+
+The match is treated as **reconnaissance** (Low severity, CWE-200) rather
+than confirmed exploitation. The log includes the matched pattern and the
+verbatim `User-Agent` value.
+
 ### [`Silent_sql_errors`](silent_sql_errors.md)
 
 Scrubs (or blocks) upstream HTTP **response bodies** that leak verbose DBMS
@@ -388,6 +417,8 @@ All CMC modules are written in safe Rust with no `unsafe` blocks.  Each module:
 The `CmcManager` struct owns one instance of each enabled detector and exposes the
 following entry points called from the WAF engine:
 
+* `inspect_user_agent(&str)` — `User-Agent`-only check, called from
+  `inspect_early()` before URI inspection (used by `Detect_bots_n_scanners`).
 * `inspect_uri(&str)` — URI-only check, called from `inspect_early()` before body
   assembly (used by `Anti_exposed_backup`).
 * `inspect(&str)` — full-payload check on a lowercased, URL-decoded string, called

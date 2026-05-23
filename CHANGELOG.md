@@ -1,3 +1,54 @@
+## [2.28.0] - 2026-05-23
+
+### Added
+
+#### New CMC module: `Detect_bots_n_scanners`
+
+Scanner / crawler / offensive-tooling `User-Agent` blocking — previously a
+hard-wired check inside the WAF detection engine — has been extracted into a
+dedicated CMC module: [`Detect_bots_n_scanners`](docs/cmc/detect_bots_n_scanners.md)
+(CWE-200, **Low** severity).
+
+```yaml
+# rules/cmc/config.yaml
+global-options:
+  Untrust: 60                    # >= 60 blocks; < 60 silent-logs
+
+CMC-Rules:
+  Detect_bots_n_scanners: true   # set to false to disable scanner-UA blocking
+```
+
+* Patterns are loaded from `rules/user_agents/scanners.txt` (OWASP CRS
+  [`scanners-user-agents.data`](https://github.com/coreruleset/coreruleset/blob/main/rules/scanners-user-agents.data),
+  ~78 substrings). Case-insensitive Aho-Corasick on the CPU fast path; Hyperscan
+  `BlockDatabase` (regex-escaped, `CASELESS | SINGLEMATCH`) when
+  `--enable-vectorscan` is active.
+* Action gating mirrors the other reconnaissance modules:
+  - `Untrust >= 60` (default) → **block** (HTTP 403). Finding is logged at
+    **Low** severity to all three security outputs (raw, JSONL, SQLite) and
+    framed as a bot/scanner reconnaissance sweep.
+  - `Untrust < 60` → silent log via `tracing::warn!`; request is forwarded.
+* Called from `WafEngine::inspect_early()` immediately after IP filtering, via
+  a new `CmcManager::inspect_user_agent(&str) -> Option<Finding>` entry point.
+* Toggling `Detect_bots_n_scanners: false` (or omitting the key) now
+  **disables scanner-UA blocking entirely** — the file is no longer read and
+  the matcher is not built. The YAML toggle is authoritative rather than
+  informational.
+
+### Changed
+
+* `RuleSet::scanner_agents`, `EngineMatchers::req_scanner_agents` and
+  `EngineMatchers::scanner_vectorscan` (plus the now-dead
+  `build_vectorscan_literal_matcher` helper and `regex_escape_literal`
+  companion) are removed — the engine no longer owns scanner-UA matching.
+  The single source of truth is the `Detect_bots_n_scanners` CMC module.
+* Tests: `tests/server_real_test.rs::scanner_ua_sweep` now spawns the WAF
+  with `--cmc-load rules/cmc/config.yaml` (scanner-UA blocking is no longer
+  the default). A new companion test,
+  `scanner_ua_not_blocked_when_cmc_disabled`, asserts that with the module
+  off, representative scanner UAs (Nmap, OpenVAS, wfuzz, gobuster,
+  Arachni — all exclusive to `scanners.txt`) reach the upstream unchanged.
+
 ## [2.27.0] - 2026-05-22
 
 ### Added

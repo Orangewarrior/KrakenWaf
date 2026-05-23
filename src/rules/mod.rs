@@ -55,8 +55,6 @@ pub struct RuleSet {
     pub addr_list_entries: Vec<AddrListEntry>,
     /// IPs allowed to access /metrics and /__krakenwaf/health (from rules/addr/allowlist.txt).
     pub allowed_ips: Vec<String>,
-    /// Scanner/crawler user-agent substrings (from `rules/user_agents/scanners.txt`).
-    pub scanner_agents: Vec<String>,
     pub uri_keywords: Vec<DetectionRule>,
     pub header_keywords: Vec<DetectionRule>,
     pub body_keywords: Vec<DetectionRule>,

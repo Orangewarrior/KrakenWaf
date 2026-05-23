@@ -79,9 +79,15 @@ like `union select` or `' or '1'='1`, this is a non-issue (no metacharacters)
 
 ## `rules/user_agents/scanners.txt` — plain literals
 
+This file is owned by the
+[`Detect_bots_n_scanners`](cmc/detect_bots_n_scanners.md) CMC module. It is
+loaded at WAF startup only when `Detect_bots_n_scanners: true` is set under
+`CMC-Rules` in `rules/cmc/config.yaml`; with the module disabled the file is
+ignored entirely.
+
 Each non-empty, non-comment line is treated as a **plain substring** of the
-incoming `User-Agent` header. The WAF passes every line through
-`regex_escape_literal()` before handing it to Vectorscan, so entries like:
+incoming `User-Agent` header. The WAF passes every line through a
+regex-escape helper before handing it to Vectorscan, so entries like:
 
 ```
 Mozilla/5.0 (compatible; Panoptic

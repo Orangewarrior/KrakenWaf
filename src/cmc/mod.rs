@@ -7,6 +7,7 @@ mod anti_exposed_backup;
 mod anti_passwd_leak;
 mod crlf_injection_detect;
 pub mod detect_bad_artifacts;
+pub mod detect_bots_n_scanners;
 pub mod detect_db_errors;
 mod esi_injection_detect;
 mod java_deserialize_detect;
@@ -80,6 +81,12 @@ pub struct CmcConfig {
     /// /proc entries, credentials). Based on OWASP CRS `restricted-files.data`.
     /// Action depends on `untrust_level`: ≥ 60 blocks, otherwise logs only.
     pub detect_bad_artifacts: bool,
+    /// Block requests whose `User-Agent` matches a known scanner / crawler /
+    /// offensive-tooling substring loaded from `rules/user_agents/scanners.txt`
+    /// (OWASP CRS `scanners-user-agents.data`).
+    /// Action depends on `untrust_level`: ≥ 60 blocks (Low severity), < 60
+    /// logs silently.
+    pub detect_bots_n_scanners: bool,
     /// Global paranoia level (0–100). Controls the 2-signal block threshold
     /// and the 1-signal informative-log threshold in `java_deserialize_detect`.
     /// At ≥ 60, `detect_db_errors` blocks matching responses; below 60 it logs only.
@@ -140,6 +147,7 @@ impl Default for CmcConfig {
             detect_db_errors: false,
             silent_sql_errors: false,
             detect_bad_artifacts: false,
+            detect_bots_n_scanners: false,
             untrust_level: 60,
             anomaly_threshold: None,
             max_inspection_ms: None,
@@ -345,6 +353,35 @@ impl CmcManagerBuilder {
             } else {
                 None
             },
+            detect_bots_n_scanners: if self.config.detect_bots_n_scanners {
+                if let Some(ref dir) = self.rules_dir {
+                    let path = dir.join("user_agents/scanners.txt");
+                    match detect_bots_n_scanners::DetectBotsNScannersCmc::from_file(
+                        &path,
+                        self.vectorscan_enabled,
+                    ) {
+                        Ok(d) => {
+                            tracing::info!(
+                                target: "krakenwaf",
+                                patterns = d.pattern_count(),
+                                path = %path.display(),
+                                "detect_bots_n_scanners: loaded scanner user-agent patterns"
+                            );
+                            Some(d)
+                        }
+                        Err(e) => {
+                            warn!(target: "krakenwaf", error = %e, path = %path.display(),
+                                "detect_bots_n_scanners: failed to load patterns — module disabled");
+                            None
+                        }
+                    }
+                } else {
+                    warn!(target: "krakenwaf", "detect_bots_n_scanners: enabled in config but no rules_dir supplied — module disabled");
+                    None
+                }
+            } else {
+                None
+            },
             untrust_level: self.config.untrust_level,
         }
     }
@@ -367,6 +404,7 @@ pub struct CmcManager {
     detect_db_errors: Option<detect_db_errors::DbErrorDetector>,
     silent_sql_errors: Option<silent_sql_errors::SilentSqlErrorsDetector>,
     detect_bad_artifacts: Option<detect_bad_artifacts::BadArtifactsDetector>,
+    detect_bots_n_scanners: Option<detect_bots_n_scanners::DetectBotsNScannersCmc>,
     untrust_level: u8,
 }
 
@@ -388,6 +426,7 @@ impl Default for CmcManager {
             detect_db_errors: None,
             silent_sql_errors: None,
             detect_bad_artifacts: None,
+            detect_bots_n_scanners: None,
             untrust_level: 60,
         }
     }
@@ -568,6 +607,49 @@ impl CmcManager {
             }
         }
 
+        None
+    }
+
+    /// Inspect the request `User-Agent` header value for known scanner /
+    /// crawler / offensive-tooling substrings.  Called from `inspect_early()`
+    /// before any payload inspection.
+    ///
+    /// Returns `Some(Finding)` when the module is enabled, a pattern matches,
+    /// and the global `untrust_level` is `>= 60` — in which case the WAF
+    /// should reply with HTTP 403 and log the event at `Low` severity to
+    /// raw, JSONL and SQLite outputs (treated as a bot/scanner sweep).
+    /// When `untrust_level < 60` the match is logged via `tracing::warn!`
+    /// and `None` is returned so the request proceeds.
+    #[must_use]
+    pub fn inspect_user_agent(&self, user_agent: &str) -> Option<Finding> {
+        let detector = self.detect_bots_n_scanners.as_ref()?;
+        let matched = detector.detect(user_agent)?;
+        if self.untrust_level >= 60 {
+            return Some(finding(
+                "CMC bot/scanner user-agent detection",
+                Severity::Low,
+                "CWE-200",
+                &format!(
+                    "Blocked request: User-Agent contains a known scanner/crawler/offensive tooling \
+                     substring '{pat}'. Treated as a bot or scanner reconnaissance sweep against the \
+                     protected origin.",
+                    pat = matched.matched_pattern(),
+                ),
+                "https://github.com/coreruleset/coreruleset/blob/main/rules/scanners-user-agents.data",
+                format!(
+                    "cmc::detect_bots_n_scanners:pattern={}",
+                    matched.matched_pattern()
+                ),
+                "cmc/detect_bots_n_scanners.rs:generated",
+                user_agent,
+            ));
+        }
+        warn!(
+            target: "krakenwaf",
+            pattern = %matched.matched_pattern(),
+            user_agent = user_agent,
+            "detect_bots_n_scanners: untrust_level < 60 — scanner UA match, not blocking"
+        );
         None
     }
 
@@ -977,6 +1059,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
         detect_db_errors: enabled("Detect_db_errors"),
         silent_sql_errors: enabled("Silent_sql_errors"),
         detect_bad_artifacts: enabled("Detect_bad_artifacts"),
+        detect_bots_n_scanners: enabled("Detect_bots_n_scanners"),
         untrust_level: 60, // overwritten by caller when global-options is parsed
         anomaly_threshold: None, // overwritten by caller when global-options is parsed
         max_inspection_ms: None, // overwritten by caller when global-options is parsed
@@ -1223,5 +1306,25 @@ CMC-Rules:
     fn detect_bad_artifacts_disabled_by_default() {
         let cfg = parse_lenient_yaml("CMC-Rules:\n  SQLi_comments_detect: true\n").expect("parse");
         assert!(!cfg.detect_bad_artifacts);
+    }
+
+    #[test]
+    fn parses_detect_bots_n_scanners_config_key() {
+        let cfg =
+            parse_lenient_yaml("CMC-Rules:\n  Detect_bots_n_scanners: true\n").expect("parse");
+        assert!(cfg.detect_bots_n_scanners);
+    }
+
+    #[test]
+    fn detect_bots_n_scanners_disabled_by_default() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  SQLi_comments_detect: true\n").expect("parse");
+        assert!(!cfg.detect_bots_n_scanners);
+    }
+
+    #[test]
+    fn detect_bots_n_scanners_explicit_false() {
+        let cfg =
+            parse_lenient_yaml("CMC-Rules:\n  Detect_bots_n_scanners: false\n").expect("parse");
+        assert!(!cfg.detect_bots_n_scanners);
     }
 }

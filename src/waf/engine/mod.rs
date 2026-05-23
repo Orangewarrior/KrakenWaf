@@ -265,31 +265,14 @@ impl WafEngine {
             }
         }
 
-        // Scanner user-agent check.
+        // Scanner / bot user-agent check — fully delegated to the
+        // `Detect_bots_n_scanners` CMC module. The module is responsible for
+        // loading `rules/user_agents/scanners.txt`, gating on the global
+        // `Untrust` level, and emitting a Low-severity finding when a known
+        // scanner substring is matched.
         if let Some(ua) = extract_header_value(&ctx.headers, "user-agent") {
-            if self.vectorscan_enabled {
-                #[cfg(feature = "vectorscan-engine")]
-                {
-                    if let Some(matcher) = &matchers.scanner_vectorscan {
-                        if let Some(finding) = vectorscan_match_scored(matcher, &ua, &ua) {
-                            return Decision::Block(Box::new(finding));
-                        }
-                    }
-                }
-            }
-            #[cfg(not(feature = "vectorscan-engine"))]
-            {
-                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
-                {
-                    return Decision::Block(Box::new(finding));
-                }
-            }
-            #[cfg(feature = "vectorscan-engine")]
-            if matchers.scanner_vectorscan.is_none() || !self.vectorscan_enabled {
-                if let Some(finding) = keyword_match(matchers.req_scanner_agents.as_ref(), &ua, &ua)
-                {
-                    return Decision::Block(Box::new(finding));
-                }
+            if let Some(finding) = self.cmc_manager.inspect_user_agent(&ua) {
+                return Decision::Block(Box::new(finding));
             }
         }
 

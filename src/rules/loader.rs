@@ -64,7 +64,6 @@ pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
         blocked_ips: load_addr_file(root, "addr/blocklist.txt")?,
         allowed_ips: load_addr_file(root, "addr/allowlist.txt")?,
         addr_list_entries: load_addr_list_dirs(root)?,
-        scanner_agents: load_scanner_agents(root, "user_agents/scanners.txt")?,
         blocked_ip_prefixes: main.blocked_ip_prefixes,
         uri_keywords: json_rules_to_detection_rules(main.uri_keywords, "rules.json:uri_keywords"),
         header_keywords: json_rules_to_detection_rules(
@@ -99,12 +98,6 @@ pub fn load_rules_from_dir(root: &Path) -> Result<RuleSet> {
 /// Load an address file (one IPv4/IPv6/CIDR per line) with canonicalization and
 /// anti path-traversal checks so operators cannot point --rules-dir at a crafted tree.
 fn load_addr_file(root: &Path, relative: &str) -> Result<Vec<String>> {
-    let path = safe_join(root, relative)?;
-    load_simple_lines(&path)
-}
-
-/// Load scanner user-agent patterns (one substring per line).
-fn load_scanner_agents(root: &Path, relative: &str) -> Result<Vec<String>> {
     let path = safe_join(root, relative)?;
     load_simple_lines(&path)
 }
