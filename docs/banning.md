@@ -227,7 +227,55 @@ To exercise the cumulative threshold instead, set
 clean one — the fourth is rejected by the BAN list.
 
 For an end-to-end automated regression see
-`tests/banning_real_test.rs`.
+`tests/banning_real_test.rs` (SQLite backend, no TLS),
+`tests/banning_redis_test.rs` (plain Redis backend), and
+`tests/banning_redis_tls_test.rs` (production `rediss://` path).
+
+---
+
+## Running the Redis-backed tests locally
+
+The two Redis integration suites skip cleanly when a backing
+`redis-server` is unreachable. To run them:
+
+```bash
+# Plain Redis on 127.0.0.1:6379 — tests/banning_redis_test.rs
+redis-server --daemonize yes --port 6379 --save "" --appendonly no
+
+# TLS Redis on 127.0.0.1:6380 — tests/banning_redis_tls_test.rs.
+# Tests load the CA from $KRAKENWAF_TEST_TLS_CA or
+# /tmp/krakenwaf-tls/ca.pem by default. Generate a CA + server-cert
+# chain (self-signed CA, server cert signed by it, SAN=IP:127.0.0.1):
+
+mkdir -p /tmp/krakenwaf-tls && cd /tmp/krakenwaf-tls
+
+openssl req -x509 -newkey rsa:2048 -nodes -days 30 \
+    -subj "/CN=KrakenWaf test CA" -keyout ca.key -out ca.pem
+
+openssl req -newkey rsa:2048 -nodes \
+    -subj "/CN=127.0.0.1" -keyout server.key -out server.csr
+
+cat > server.ext <<'EOF'
+subjectAltName = IP:127.0.0.1,DNS:localhost
+extendedKeyUsage = serverAuth
+EOF
+
+openssl x509 -req -in server.csr -CA ca.pem -CAkey ca.key \
+    -CAcreateserial -out server.pem -days 30 -extfile server.ext
+
+redis-server --daemonize yes --port 0 --tls-port 6380 \
+    --tls-cert-file /tmp/krakenwaf-tls/server.pem \
+    --tls-key-file /tmp/krakenwaf-tls/server.key \
+    --tls-ca-cert-file /tmp/krakenwaf-tls/ca.pem \
+    --tls-auth-clients no --save "" --appendonly no
+
+cargo test --test banning_redis_test --test banning_redis_tls_test
+```
+
+The TLS suite exercises the same `RateLimiter::new_redis()`
+constructor the binary uses in production, including the
+`rediss://`-only guard (it has a regression test that proves plain
+`redis://` is rejected).
 
 ---
 
