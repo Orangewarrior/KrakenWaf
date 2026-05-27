@@ -1,0 +1,44 @@
+# KrakenWaf — Banning configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Loaded automatically from `conf/banning.yaml` at startup. When the file is
+# absent OR `Banning_mode` is false, the BAN subsystem is disabled and no
+# IP is added to the BAN list (the WAF behaves exactly like 2.29.0).
+#
+# Backend selection:
+#   • If `conf/ratelimit.yaml :: redis` is present, the same Redis pool is
+#     reused for the BAN list (distributed across WAF instances, fast TTL).
+#   • Otherwise an ACID SQLite database at `logs/db/banning.db` is used
+#     (single-node, durable across restarts).
+#
+# Persistence semantics:
+#   • While `banned_until` is in the future, every request from that IP is
+#     short-circuited at the server layer with HTTP 403 and a Low-severity
+#     log entry titled "Banned IP — request rejected".
+#   • The occurrence counter (toward `tolerance_block_count`) is wiped 30
+#     days after the IP's last block — long-term bans do not snowball
+#     against IPs that fell silent.
+#   • The ban duration grows asymptotically with repeat offenses:
+#       1st ban: 1 × `Ban_wait_time`
+#       2nd ban: 2 × `Ban_wait_time`
+#       Nth ban: N × `Ban_wait_time`
+#     `ban_count` resets to zero after 30 days of inactivity.
+
+# Master switch. `false` disables banning entirely.
+Banning_mode: true
+
+Ban_context:
+  # When `true`, any IP blocked by the `Detect_bots_n_scanners` CMC module
+  # (matching User-Agent in rules/user_agents/scanners.txt — Nikto, sqlmap,
+  # Nmap, masscan, …) is added to the BAN list immediately, without waiting
+  # for `tolerance_block_count` to be reached.
+  security_scanners: true
+
+  # Number of WAF blocks (any engine) that an IP may rack up before being
+  # added to the BAN list. Counts roll up over 30 days and reset to zero
+  # afterwards. Must be >= 1.
+  tolerance_block_count: 3
+
+  # How long an IP stays banned. Format follows `humantime`:
+  #   "30s", "5m", "30m", "2h", "1h30m", "1d"
+  # Second offense doubles this, third triples, etc. (linear).
+  Ban_wait_time: "30m"

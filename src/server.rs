@@ -1,6 +1,13 @@
-use crate::{app::AppState, proxy::{effective_client_ip, plain_response}, tls::TlsConfigStore};
+use crate::{
+    app::AppState,
+    logging::{write_critical, SecurityEvent},
+    proxy::{effective_client_ip, plain_response},
+    rules::Severity,
+    tls::TlsConfigStore,
+};
 use anyhow::Result;
 use bytes::Bytes;
+use chrono::Utc;
 use http::{Request, Response, StatusCode};
 use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn};
@@ -15,6 +22,64 @@ use std::sync::{
 use std::time::Duration;
 use tokio::{net::TcpListener, sync::Notify, task, time::timeout};
 use tracing::{error, info, warn};
+
+/// Compact request-correlation ID matching the WAF engine's format
+/// (32-char lowercase hex, no hyphens). Used by BAN-list short-circuit
+/// rejections so the log entry is consistent with full-WAF blocks.
+fn request_id() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Emit the Low-severity "Banned IP — request rejected" log entry.
+///
+/// The same `SecurityEvent` is persisted to the JSON log, the critical
+/// log, and the SQLite security store so dashboards keep a single source
+/// of truth for blocked requests (including those that never reach the
+/// inspection pipeline).
+fn log_banned_request(
+    state: &AppState,
+    client_ip: &str,
+    method: &str,
+    uri: &str,
+    banned_until: i64,
+) {
+    let event = SecurityEvent {
+        timestamp: Utc::now().to_rfc3339(),
+        request_id: request_id(),
+        client_ip: client_ip.to_string(),
+        method: method.to_string(),
+        uri: uri.to_string(),
+        fullpath_evidence: uri.to_string(),
+        engine: "banning".to_string(),
+        rule_id: "00000".to_string(),
+        title: "Banned IP — request rejected".to_string(),
+        severity: Severity::Low,
+        cwe: "CWE-693".to_string(),
+        description: format!(
+            "Client IP is in the BAN list (banned_until={banned_until}); request rejected without inspection."
+        ),
+        reference_url: "https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/banning.md".to_string(),
+        rule_match: "banning::active_ban".to_string(),
+        rule_line_match: format!("banned_until={banned_until}"),
+        request_payload: String::new(),
+    };
+
+    info!(
+        target: "krakenwaf",
+        request_id = %event.request_id,
+        ip = %event.client_ip,
+        method = %event.method,
+        uri = %event.uri,
+        banned_until,
+        title = %event.title,
+        severity = %event.severity,
+        "banned IP rejected"
+    );
+    write_critical(&state.logging, &event);
+    state.store.enqueue(event);
+    state.metrics.inc_blocked();
+    state.metrics.inc_blocked_by_label("banning:active_ban");
+}
 
 /// Maximum time the listener waits for in-flight connections to drain after
 /// receiving SIGINT/SIGTERM before forcibly returning.
@@ -284,6 +349,27 @@ async fn handle(
             .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
         state.response_header_policy.apply(response.headers_mut(), false);
         return response;
+    }
+
+    // ── BAN-list short-circuit ────────────────────────────────────────────────
+    // Resolve the effective client IP honouring X-Forwarded-For + trusted
+    // proxies, then reject *any* request from a currently-banned IP before
+    // touching concurrency gates, backpressure accounting, the WAF engine,
+    // or the upstream. The block is logged at Low severity.
+    if state.ban_manager.enabled() {
+        let effective_ip = effective_client_ip(&client_ip, req.headers(), &state);
+        if let Some(banned_until) = state.ban_manager.check(&effective_ip).await {
+            log_banned_request(
+                &state,
+                &effective_ip,
+                req.method().as_str(),
+                &req.uri().to_string(),
+                banned_until,
+            );
+            let mut resp = plain_response(StatusCode::FORBIDDEN, "Banned by KrakenWaf");
+            state.response_header_policy.apply(resp.headers_mut(), false);
+            return resp;
+        }
     }
 
     // Per-IP concurrency gate — enforced before any WAF inspection.

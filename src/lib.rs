@@ -1,6 +1,7 @@
 pub mod allowpaths;
 pub mod app;
 pub mod banner;
+pub mod banning;
 pub mod body_decode;
 pub mod cli;
 pub mod error;

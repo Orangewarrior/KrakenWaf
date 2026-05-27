@@ -751,4 +751,26 @@ token handling, DQS zones, and scheduler configuration.
 - `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
 - **Allow-path IP restriction** (`only_addrs`): add `only_addrs: <path>` to any entry in `rules/allowpaths/lists.yaml` to gate that path by client IP. `rules/addr/allowlist/allow_addrs.txt` ships pre-populated with loopback addresses so observability endpoints are localhost-only by default. Supports exact IPs, CIDR, and start–end ranges. See **[docs/allowpaths.md](docs/allowpaths.md)**.
 
+## 🚫 Banning
+
+KrakenWaf 2.30.0 introduces an opt-in **BAN list** that short-circuits
+repeat offenders (and confirmed scanners) at the server layer, before
+any inspection. Configuration lives in `conf/banning.yaml`:
+
+```yaml
+Banning_mode: true
+Ban_context:
+  security_scanners: true       # one Nikto/sqlmap hit → instant ban
+  tolerance_block_count: 3      # 3 blocks (any engine) → ban
+  Ban_wait_time: 30m            # asymptotic: 30m, 60m, 90m, …
+```
+
+The backend is **hybrid** — Redis/Valkey when the rate-limiter pool is
+configured (distributed), SQLite at `logs/db/banning.db` otherwise
+(single-node, ACID). Ban duration grows linearly with repeat offenses;
+all state is wiped 30 days after the last event.
+
+Full reference (lifecycle, log format, storage schema, operational
+caveats, manual-test recipe): **[docs/banning.md](docs/banning.md)**.
+
  ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
