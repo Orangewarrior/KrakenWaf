@@ -22,7 +22,8 @@ mod config;
 mod redis_store;
 mod sqlite_store;
 
-pub use config::BanConfig;
+#[allow(unused_imports)]
+pub use config::{BanConfig, BanConfigFile};
 pub use redis_store::RedisBanStore;
 pub use sqlite_store::SqliteBanStore;
 
