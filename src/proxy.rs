@@ -375,6 +375,25 @@ impl ProxyClient {
             "request detected"
         );
         write_critical(&state.logging, &event);
+
+        // Feed the BAN-list manager *before* we move `event` into the
+        // SQLite queue. Counting only happens when the WAF is going to
+        // actually return 403 (Block mode); Silent / DetectOnly are
+        // observe-only modes and must not poison the ban list.
+        if state.mode == crate::cli::WafMode::Block && state.ban_manager.enabled() {
+            let reason = derive_block_reason(&event);
+            let ip = event.client_ip.clone();
+            let manager = state.ban_manager.clone();
+            // Spawn so we never delay the response on a slow Redis call.
+            // The outcome is interesting for the structured log only; the
+            // actual ban (if newly triggered) becomes effective on the
+            // *next* request from this IP — by which point the BAN-list
+            // check at the server layer will short-circuit it.
+            tokio::spawn(async move {
+                let _ = manager.record_block(&ip, reason).await;
+            });
+        }
+
         state.store.enqueue(event);
 
         if state.mode == WafMode::Silent || state.mode == WafMode::DetectOnly {
@@ -1258,6 +1277,39 @@ fn build_traceparent(incoming: Option<&str>, metrics: &crate::metrics::WafMetric
     let trace_id = format!("{:032x}", Uuid::new_v4().as_u128());
     metrics.inc_traceparent_generated();
     format!("00-{trace_id}-{}-01", new_parent_id())
+}
+
+/// Classify a block event so the BAN-list manager knows whether the
+/// `security_scanners` fast-track applies (User-Agent scanner hit) or whether
+/// the event must roll into the normal `tolerance_block_count` threshold.
+fn derive_block_reason(event: &SecurityEvent) -> crate::banning::BlockReason {
+    use crate::banning::BlockReason;
+
+    // Detect_bots_n_scanners CMC module → potential fast-track.
+    if event.rule_match.starts_with("cmc::detect_bots_n_scanners") {
+        return BlockReason::SecurityScanner;
+    }
+
+    // Rate-limit / per-IP concurrency exhaustion.
+    if event.rule_match == "rate_limiter"
+        || event.rule_match.starts_with("rate_limit")
+        || event.rule_line_match == "window_exceeded"
+    {
+        return BlockReason::RateLimit;
+    }
+
+    // IP-reputation blocks (Spamhaus, Firehol, blocklist/allowlist, DQS).
+    if event.rule_line_match.starts_with("addr/")
+        || event.rule_line_match.starts_with("rules/addr/")
+        || event.rule_match.starts_with("Spamhaus")
+        || event.title.starts_with("Blocked source IP")
+        || event.title.starts_with("Blocked IP range")
+        || event.title.starts_with("Spamhaus")
+    {
+        return BlockReason::IpReputation;
+    }
+
+    BlockReason::RuleDetection
 }
 
 /// Derive an `"engine:module"` label for the per-module Prometheus counter.

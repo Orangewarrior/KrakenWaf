@@ -171,6 +171,17 @@ impl RateLimiter {
             Self::Redis(_) => Ok(()),
         }
     }
+
+    /// Expose a clone of the underlying Redis pool when this limiter is
+    /// Redis-backed. Returns `None` for local-mode limiters. Used by the
+    /// `BanManager` so a single `fred::Pool` serves both subsystems.
+    #[must_use]
+    pub fn redis_pool(&self) -> Option<fred::clients::Pool> {
+        match self {
+            Self::Redis(inner) => Some(inner.pool.clone()),
+            Self::Local(_) => None,
+        }
+    }
 }
 
 // ── Tunables ─────────────────────────────────────────────────────────────────

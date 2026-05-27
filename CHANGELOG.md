@@ -1,3 +1,95 @@
+## [2.30.0] - 2026-05-27
+
+> Adds a first-class **BAN list** that short-circuits repeat offenders
+> and confirmed scanners at the server layer, before any WAF inspection
+> runs. The subsystem is opt-in via `conf/banning.yaml` — when the file
+> is absent or `Banning_mode: false`, KrakenWaf behaves exactly like
+> 2.29.0. **All 307 tests pass (lib + 8 integration binaries).**
+
+### New `Banning` subsystem (`src/banning/`)
+
+- New module `src/banning/{mod,config,sqlite_store,redis_store}.rs`
+  exposes `BanManager` with two methods on the request hot path:
+  - `check(ip) -> Option<banned_until>` (server-layer short-circuit)
+  - `record_block(ip, reason)` (called from `proxy.rs::log_and_enforce`)
+- New configuration file **`conf/banning.yaml`** (auto-discovered at
+  startup):
+  ```yaml
+  Banning_mode: true
+  Ban_context:
+    security_scanners: true     # one Detect_bots_n_scanners hit → ban
+    tolerance_block_count: 3    # 3 blocks (any engine) → ban
+    Ban_wait_time: 30m          # asymptotic: N × Ban_wait_time
+  ```
+  Validator enforces `tolerance_block_count >= 1` and a non-zero
+  `humantime` duration. Both canonical (`Banning_mode`) and snake_case
+  (`banning_mode`) keys are accepted.
+- **Hybrid storage backend** — Redis/Valkey when
+  `conf/ratelimit.yaml :: redis` is set (the existing `fred::Pool` is
+  reused, no second connection), SQLite at `logs/db/banning.db`
+  otherwise. The SQLite file is `chmod 0600` on Unix to match the
+  existing `vulns_alert.db`.
+- **Asymptotic ban duration** — 1st offense `= Ban_wait_time`, 2nd
+  `= 2× …`, Nth `= N × …`. Counter resets after 30 days of inactivity.
+- **Single Lua-scripted atomic operation** for the Redis backend with a
+  150 ms per-call timeout. Fails open on Redis errors so a hung Redis
+  cannot brick the WAF.
+
+### Server / proxy wiring
+
+- `src/server.rs::handle` now runs `ban_manager.check(effective_ip)`
+  before the per-IP concurrency gate, the memory-backpressure gate, or
+  the WAF engine. Rejected requests get HTTP 403 with body
+  `"Banned by KrakenWaf"` and a `Low` severity log entry
+  (`engine="banning"`, `title="Banned IP — request rejected"`,
+  `rule_match="banning::active_ban"`, `cwe="CWE-693"`).
+- `src/proxy.rs::log_and_enforce` records every Block-mode rejection
+  through the BAN manager via `tokio::spawn`, so a slow Redis never
+  delays the WAF response. The block reason is classified
+  (`SecurityScanner` / `RateLimit` / `IpReputation` / `RuleDetection`)
+  so the `security_scanners` fast-track only triggers for
+  `Detect_bots_n_scanners` hits.
+- New Prometheus label: `krakenwaf_blocked_total{engine="banning:active_ban"}`.
+
+### Validator + tests
+
+- 13 unit tests for `BanConfig` (parse / alias / required fields /
+  zero/missing rejections / canonical YAML round-trip).
+- 7 unit tests for `SqliteBanStore` (threshold, asymptotic extension,
+  scanner fast-track, lookup expiry, retention reset, purge).
+- 3 unit tests for `RedisBanStore` outcome parsing (pure, no Redis
+  required for the test).
+- New integration binary **`tests/banning_real_test.rs`** spawns the
+  real `krakenwaf` binary in `--no-tls` mode with
+  `--trusted-proxy-cidrs 127.0.0.0/8 --real-ip-header x-forwarded-for`
+  and a backing Axum server, then forges different attacker IPs via
+  `X-Forwarded-For` (the simulated "free proxy" path). Three scenarios:
+  - `nikto_request_then_clean_request_is_banned` — one scanner UA →
+    instant ban → next clean request is rejected by the BAN list.
+  - `three_blocks_triggers_ban_on_fourth_request` — cumulative
+    tolerance path.
+  - `banning_is_per_ip_other_clients_unaffected` — proves the ban is
+    keyed on the *effective* client IP (X-Forwarded-For), not the
+    loopback peer.
+
+### Misc
+
+- `RateLimiter::redis_pool()` helper exposes the underlying
+  `fred::Pool` so the BAN manager can reuse it (single TLS pool serves
+  both subsystems).
+- New `humantime = "2.1"` dependency (small, no transitive bloat) for
+  `Ban_wait_time` parsing.
+- New docs at **[`docs/banning.md`](docs/banning.md)** — full lifecycle
+  diagram, schema reference, log/metric format, and a manual-test
+  recipe with `curl`.
+- README gains a "🚫 Banning" section that links into the new doc.
+
+### Version bump
+
+`Cargo.toml :: version` 2.29.0 → **2.30.0**.
+
+---
+
 ## [2.29.0] - 2026-05-23
 
 > Large hardening + performance refactor on top of 2.28.0. This release

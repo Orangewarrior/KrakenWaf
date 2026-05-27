@@ -1,6 +1,7 @@
 
 use crate::{
     allowpaths::AllowPathConfig,
+    banning::BanManager,
     cli::{Cli, WafMode},
     limits::MemoryLimits,
     logging::LoggingHandles,
@@ -54,4 +55,8 @@ pub struct AppState {
     /// `max_connections`, etc) that the older `max_inflight_*` fields above
     /// do not cover.
     pub memory_limits: Arc<MemoryLimits>,
+    /// BAN-list manager. Resolved from `conf/banning.yaml` at startup.
+    /// When `Banning_mode: false` (or the file is absent) the manager is
+    /// inert and every method is a cheap no-op.
+    pub ban_manager: Arc<BanManager>,
 }

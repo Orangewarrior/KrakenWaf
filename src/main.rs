@@ -1,6 +1,7 @@
 mod allowpaths;
 mod app;
 mod banner;
+mod banning;
 mod body_decode;
 mod cli;
 mod cmc;
@@ -23,6 +24,7 @@ mod waf;
 
 use anyhow::{Context, Result};
 use app::AppState;
+use banning::BanManager;
 use bytes::Bytes;
 use clap::Parser;
 use cli::{Cli, WalMode};
@@ -113,6 +115,10 @@ async fn main() -> Result<()> {
 
     let rate_limiter = Arc::new(build_rate_limiter(&cli, &rl_config, effective_limit, &root_dir).await?);
 
+    // ── BAN list manager ──────────────────────────────────────────────────────
+
+    let ban_manager = build_ban_manager(&root_dir, rate_limiter.as_ref()).await?;
+
     // ── WAF engine ────────────────────────────────────────────────────────────
 
     let waf = Arc::new(waf::WafEngineFactory::create(waf::WafEngineConfig {
@@ -168,6 +174,7 @@ async fn main() -> Result<()> {
         body_frame_timeout_secs: rl_config
             .effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
         memory_limits: memory_limits.clone(),
+        ban_manager,
     });
 
     // Build TLS store once; clone it for both the SIGHUP handler and the server.
@@ -205,6 +212,43 @@ async fn main() -> Result<()> {
     } else {
         let store = tls_store.expect("tls_store is Some when !cli.no_tls");
         server::run(cli.listen, store, state).await
+    }
+}
+
+/// Build the BAN-list manager. Reuses the rate-limiter's Redis pool when
+/// configured (distributed); otherwise opens a local SQLite store under
+/// `logs/db/banning.db` (single-node, durable).
+async fn build_ban_manager(
+    root_dir: &std::path::Path,
+    rate_limiter: &RateLimiter,
+) -> Result<Arc<BanManager>> {
+    let cfg = banning::BanConfig::load(root_dir)
+        .context("failed to load conf/banning.yaml")?;
+
+    if !cfg.enabled {
+        info!(target: "krakenwaf", "banning subsystem disabled (Banning_mode: false or conf/banning.yaml absent)");
+        return Ok(BanManager::disabled());
+    }
+
+    if let Some(pool) = rate_limiter.redis_pool() {
+        info!(
+            target: "krakenwaf",
+            tolerance_block_count = cfg.tolerance_block_count,
+            ban_wait_secs = cfg.ban_wait_time.as_secs(),
+            security_scanners = cfg.security_scanners,
+            "banning subsystem initialised (Redis backend, sharing rate-limiter pool)"
+        );
+        Ok(BanManager::new_redis(cfg, pool, "krakenwaf:ban"))
+    } else {
+        info!(
+            target: "krakenwaf",
+            tolerance_block_count = cfg.tolerance_block_count,
+            ban_wait_secs = cfg.ban_wait_time.as_secs(),
+            security_scanners = cfg.security_scanners,
+            "banning subsystem initialised (SQLite backend at logs/db/banning.db)"
+        );
+        BanManager::new_sqlite(cfg, root_dir)
+            .context("failed to initialise SQLite ban store")
     }
 }
 
