@@ -106,35 +106,52 @@ async fn main() -> Result<()> {
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
 
     // ── GeoIP reader ─────────────────────────────────────────────────────────
-    let geo_db_path = root_dir.join("db/geo/GeoLite2-City.mmdb");
-    let geo_reader: Option<Arc<geo::GeoIpReader>> = if geo_db_path.exists() {
-        match geo::GeoIpReader::builder(&geo_db_path).build() {
-            Ok(reader) => {
+    // Respects conf/update.yaml `maxmind-geo.active`. When false, geo lookup
+    // is disabled and country/continent_name are saved as empty strings.
+    let geo_reader: Option<Arc<geo::GeoIpReader>> = {
+        let update_config_path = root_dir.join(update::DEFAULT_UPDATE_CONFIG);
+        let geo_active = update::load_update_config(&update_config_path)
+            .map(|c| c.maxmind_geo.active)
+            .unwrap_or(true);
+
+        if !geo_active {
+            info!(
+                target: "krakenwaf",
+                "GeoIP enrichment disabled (maxmind-geo.active: false in conf/update.yaml)"
+            );
+            None
+        } else {
+            let geo_db_path = root_dir.join("db/geo/GeoLite2-City.mmdb");
+            if geo_db_path.exists() {
+                match geo::GeoIpReader::builder(&geo_db_path).build() {
+                    Ok(reader) => {
+                        info!(
+                            target: "krakenwaf",
+                            path = %geo_db_path.display(),
+                            "GeoLite2-City database loaded — GeoIP enrichment active"
+                        );
+                        Some(Arc::new(reader))
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "krakenwaf",
+                            path = %geo_db_path.display(),
+                            error = %err,
+                            "failed to open GeoLite2-City.mmdb; GeoIP enrichment disabled"
+                        );
+                        None
+                    }
+                }
+            } else {
                 info!(
                     target: "krakenwaf",
                     path = %geo_db_path.display(),
-                    "GeoLite2-City database loaded — GeoIP enrichment active"
-                );
-                Some(Arc::new(reader))
-            }
-            Err(err) => {
-                tracing::warn!(
-                    target: "krakenwaf",
-                    path = %geo_db_path.display(),
-                    error = %err,
-                    "failed to open GeoLite2-City.mmdb; GeoIP enrichment disabled"
+                    "GeoLite2-City.mmdb not found; GeoIP enrichment disabled. \
+                     Run soldier_update --geo-update after configuring conf/update.yaml."
                 );
                 None
             }
         }
-    } else {
-        info!(
-            target: "krakenwaf",
-            path = %geo_db_path.display(),
-            "GeoLite2-City.mmdb not found; GeoIP enrichment disabled. \
-             Run soldier_update --geo-update after configuring conf/update.yaml."
-        );
-        None
     };
 
     // ── Rate-limit configuration ──────────────────────────────────────────────

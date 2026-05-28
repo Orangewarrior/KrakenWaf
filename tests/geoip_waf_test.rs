@@ -80,11 +80,16 @@ fn spawn_backend() -> (u16, std::thread::JoinHandle<()>) {
     (port, handle)
 }
 
-/// Spawn the KrakenWaf binary with geo enrichment enabled.
+/// Spawn the KrakenWaf binary.
 ///
-/// Creates a temp work directory with db/geo/GeoLite2-City.mmdb (symlinked
-/// from the project root) so the WAF can load the GeoIP database.
+/// `geo_active` controls whether `conf/update.yaml` in the tmpdir marks
+/// `maxmind-geo.active` as true or false.  When false the WAF must not load
+/// the GeoIP database even if the `.mmdb` file is present.
 fn spawn_geo_waf(waf_port: u16, backend_port: u16) -> Option<WafGuard> {
+    spawn_geo_waf_with_active(waf_port, backend_port, true)
+}
+
+fn spawn_geo_waf_with_active(waf_port: u16, backend_port: u16, geo_active: bool) -> Option<WafGuard> {
     let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let db_src = project_root.join("db/geo/GeoLite2-City.mmdb");
     if !db_src.exists() {
@@ -105,6 +110,17 @@ fn spawn_geo_waf(waf_port: u16, backend_port: u16) -> Option<WafGuard> {
     std::os::unix::fs::symlink(&db_src, &db_dst).expect("symlink mmdb");
     #[cfg(not(unix))]
     std::fs::copy(&db_src, &db_dst).expect("copy mmdb");
+
+    // Write conf/update.yaml so the WAF respects the active flag.
+    let conf_dir = tmpdir.path().join("conf");
+    std::fs::create_dir_all(&conf_dir).expect("create conf");
+    std::fs::write(
+        conf_dir.join("update.yaml"),
+        format!(
+            "maxmind-geo:\n  active: {geo_active}\n  account_id: \"\"\n  key: \"\"\n  cron: \"0 18 1 * *\"\n"
+        ),
+    )
+    .expect("write update.yaml");
 
     let rules_dir = project_root.join("rules");
     let listen = format!("127.0.0.1:{waf_port}");
@@ -303,6 +319,55 @@ async fn geo_fields_empty_for_private_ip() {
     assert!(
         continent.is_empty(),
         "loopback IP must yield empty continent, got: {continent}"
+    );
+
+    drop(waf);
+}
+
+/// When `maxmind-geo.active: false` in conf/update.yaml, the WAF must NOT
+/// load the GeoIP database and must save empty country/continent_name even
+/// for public IPs — the .mmdb file is present but should be ignored.
+#[tokio::test]
+async fn geo_disabled_via_active_false_saves_empty_fields() {
+    let (backend_port, _backend) = spawn_backend();
+    let waf_port = pick_free_port();
+
+    let Some(waf) = spawn_geo_waf_with_active(waf_port, backend_port, false) else {
+        return;
+    };
+
+    let client = http_client();
+    wait_for_waf(&client, waf_port).await;
+
+    // 8.8.8.8 would normally resolve to United States, but geo is disabled.
+    let resp = client
+        .get(format!("{}/search?q=' OR 1=1--", waf_base(waf_port)))
+        .header("x-forwarded-for", "8.8.8.8")
+        .send()
+        .await
+        .expect("request");
+
+    assert_eq!(resp.status().as_u16(), 403, "WAF must still block the SQLi");
+
+    tokio::time::sleep(Duration::from_millis(800)).await;
+
+    let db_path = waf._tmpdir.path().join("logs/db/vulns_alert.db");
+    let conn = Connection::open(&db_path).expect("open db");
+    let (country, continent): (String, String) = conn
+        .query_row(
+            "SELECT country, continent_name FROM vulnerabilities ORDER BY id DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("query");
+
+    assert!(
+        country.is_empty(),
+        "active: false must yield empty country even for public IP 8.8.8.8, got: {country}"
+    );
+    assert!(
+        continent.is_empty(),
+        "active: false must yield empty continent even for public IP 8.8.8.8, got: {continent}"
     );
 
     drop(waf);
