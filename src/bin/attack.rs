@@ -6,6 +6,16 @@
 //!   cargo run --bin attack                                     # target <http://127.0.0.1:8080>
 //!   cargo run --bin attack -- --target http://... --verbose
 //!   cargo run --bin attack -- --concurrency 50                 # 50 requests in-flight at once
+//!   cargo run --bin attack -- --target https://waf:8443 --cacert /path/to/ca.pem
+//!   cargo run --bin attack -- --target https://waf:8443 --insecure-skip-verify
+//!
+//! TLS notes
+//! ---------
+//! When `--target` is `https://`, reqwest validates the server cert against
+//! the system trust store unless one of the TLS flags is set:
+//!
+//!   --cacert <PEM>          add a custom CA root for this run
+//!   --insecure-skip-verify  disable cert validation (debug-only)
 
 use reqwest::StatusCode;
 use std::sync::Arc;
@@ -408,6 +418,14 @@ struct Config {
     target: String,
     verbose: bool,
     concurrency: usize,
+    /// Path to a PEM-encoded CA certificate to trust when the target is
+    /// HTTPS. Useful for the WAF's self-signed deployments and integration
+    /// tests where the operator owns the CA but does not want to globally
+    /// install it. Mutually exclusive with `--insecure-skip-verify`.
+    cacert: Option<String>,
+    /// Disable TLS certificate validation outright. Only intended for
+    /// debugging — never use this against a production target.
+    insecure_skip_verify: bool,
 }
 
 fn parse_args() -> Config {
@@ -415,6 +433,8 @@ fn parse_args() -> Config {
     let mut target = "http://127.0.0.1:8080".to_string();
     let mut verbose = false;
     let mut concurrency = 20usize;
+    let mut cacert: Option<String> = None;
+    let mut insecure_skip_verify = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -433,6 +453,15 @@ fn parse_args() -> Config {
                     concurrency = v.parse().unwrap_or(20);
                 }
             }
+            "--cacert" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    cacert = Some(v.clone());
+                }
+            }
+            "--insecure-skip-verify" | "-k" => {
+                insecure_skip_verify = true;
+            }
             _ => {}
         }
         i += 1;
@@ -441,6 +470,8 @@ fn parse_args() -> Config {
         target,
         verbose,
         concurrency,
+        cacert,
+        insecure_skip_verify,
     }
 }
 
@@ -805,10 +836,21 @@ async fn collect_ordered(set: &mut JoinSet<(usize, SweepResult)>, len: usize) ->
 async fn main() {
     let cfg = parse_args();
 
-    let client = reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("failed to build HTTP client");
+    let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(10));
+
+    if let Some(ca_path) = &cfg.cacert {
+        let pem = std::fs::read(ca_path)
+            .unwrap_or_else(|e| panic!("failed to read --cacert {ca_path}: {e}"));
+        let cert = reqwest::Certificate::from_pem(&pem)
+            .unwrap_or_else(|e| panic!("invalid PEM in --cacert {ca_path}: {e}"));
+        builder = builder.add_root_certificate(cert);
+    }
+
+    if cfg.insecure_skip_verify {
+        builder = builder.danger_accept_invalid_certs(true);
+    }
+
+    let client = builder.build().expect("failed to build HTTP client");
 
     println!();
     println!("╔══════════════════════════════════════════════════════════╗");
