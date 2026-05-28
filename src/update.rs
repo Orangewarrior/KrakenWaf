@@ -308,6 +308,9 @@ pub async fn update_addr_list(
                 .await
                 .inspect_err(|err| log_update_error(repo_root, err))
         }
+        "maxmind-geo" => update_maxmind_geo(repo_root, config)
+            .await
+            .inspect_err(|err| log_update_error(repo_root, err)),
         other => {
             let err = anyhow::anyhow!("unknown addr list: {other}");
             log_update_error(repo_root, &err);
@@ -595,7 +598,7 @@ pub fn scheduled_soldier_jobs_for_values(
             .matches_values(minute, hour, day, month, weekday)
     {
         jobs.push(ScheduledSoldierJob {
-            args: vec!["--geo-update".to_string()],
+            args: vec!["--addr-list".to_string(), "maxmind-geo".to_string()],
         });
     }
 

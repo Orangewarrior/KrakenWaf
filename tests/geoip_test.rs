@@ -7,7 +7,7 @@
 //! full suite:
 //!
 //! 1. Fill in `conf/update.yaml` with your MaxMind credentials.
-//! 2. Run `./target/debug/soldier_update --geo-update`.
+//! 2. Run `./target/debug/soldier_update --addr-list maxmind-geo`.
 //! 3. Run `cargo test --test geoip_test`.
 //!
 //! # BAN mode during geo tests
@@ -46,7 +46,7 @@ fn open_reader() -> Option<GeoIpReader> {
     if !p.exists() {
         eprintln!(
             "[geoip_test] SKIP: {} not found. \
-             Run soldier_update --geo-update after setting credentials in conf/update.yaml.",
+             Run soldier_update --addr-list maxmind-geo after setting credentials in conf/update.yaml.",
             p.display()
         );
         return None;
@@ -248,7 +248,7 @@ fn geo_update_scheduled_on_1st_at_18h() {
     let config = geo_config_for_cron("0 18 1 * *");
     let jobs = scheduled_soldier_jobs_for_values(&config, 0, 18, 1, 5, 3).unwrap();
     assert!(
-        jobs.iter().any(|j| j.args == vec!["--geo-update"]),
+        jobs.iter().any(|j| j.args == vec!["--addr-list", "maxmind-geo"]),
         "geo update job must be scheduled on day=1 hour=18"
     );
 }
@@ -258,7 +258,7 @@ fn geo_update_not_scheduled_on_other_days() {
     let config = geo_config_for_cron("0 18 1 * *");
     let jobs = scheduled_soldier_jobs_for_values(&config, 0, 18, 15, 5, 3).unwrap();
     assert!(
-        !jobs.iter().any(|j| j.args == vec!["--geo-update"]),
+        !jobs.iter().any(|j| j.args == vec!["--addr-list", "maxmind-geo"]),
         "geo update must NOT fire on day=15"
     );
 }
@@ -275,7 +275,7 @@ fn geo_update_not_scheduled_when_inactive() {
     };
     let jobs = scheduled_soldier_jobs_for_values(&config, 0, 18, 1, 5, 3).unwrap();
     assert!(
-        !jobs.iter().any(|j| j.args == vec!["--geo-update"]),
+        !jobs.iter().any(|j| j.args == vec!["--addr-list", "maxmind-geo"]),
         "inactive geo module must not produce a job"
     );
 }
@@ -285,7 +285,7 @@ fn geo_update_not_scheduled_when_inactive() {
 // These tests spin up the WAF + backend and verify that security events contain
 // country/continent enrichment when the GeoIP database is present.
 // They are marked `#[ignore]` because they require:
-//   1. `db/geo/GeoLite2-City.mmdb` to be populated (soldier_update --geo-update).
+//   1. `db/geo/GeoLite2-City.mmdb` to be populated (soldier_update --addr-list maxmind-geo).
 //   2. `Banning_mode: false` in conf/banning.yaml (to avoid banning 127.0.0.1).
 //
 // Run with:

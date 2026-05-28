@@ -10,7 +10,7 @@
 //! queries the SQLite DB and asserts country/continent_name are populated.
 //!
 //! # Prerequisites
-//! - `db/geo/GeoLite2-City.mmdb` must exist (run `soldier_update --geo-update`).
+//! - `db/geo/GeoLite2-City.mmdb` must exist (run `soldier_update --addr-list maxmind-geo`).
 //! - `Banning_mode: false` should be set in `conf/banning.yaml` before running
 //!   any test loop to avoid banning 127.0.0.1.
 
@@ -94,7 +94,7 @@ fn spawn_geo_waf_with_active(waf_port: u16, backend_port: u16, geo_active: bool)
     let db_src = project_root.join("db/geo/GeoLite2-City.mmdb");
     if !db_src.exists() {
         eprintln!(
-            "[geoip_waf_test] SKIP: {} not found — run soldier_update --geo-update",
+            "[geoip_waf_test] SKIP: {} not found — run soldier_update --addr-list maxmind-geo",
             db_src.display()
         );
         return None;
