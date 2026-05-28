@@ -18,32 +18,46 @@ Register at <https://www.maxmind.com/en/> and navigate to
 
 Note your **Account ID** and **License Key**.
 
-### 2. Configure credentials
+### 2. Set credentials as environment variables
 
-Edit `conf/update.yaml` and fill in the `maxmind-geo` section:
+Credentials are **never stored in YAML files** — they are read exclusively from
+environment variables.  Set them in the shell where you run the updater:
+
+```bash
+export MAXMIND_ACCOUNT_ID='1234567'          # your numeric Account ID
+export MAXMIND_LICENSE_KEY='AbCdEf_yourkey'  # your License Key
+```
+
+For permanent deployments add these to the system service unit, Docker secret,
+or secrets manager used by your infrastructure.  Do **not** commit them to the
+repository.
+
+### 3. Configure `conf/update.yaml`
+
+The YAML section only carries non-sensitive settings:
 
 ```yaml
 maxmind-geo:
   title: "Maxmind GeoLite2 city"
   active: true
-  account_id: "YOUR_ACCOUNT_ID"
-  key: "YOUR_LICENSE_KEY"
   url_file:
     - "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz"
   cron: "0 18 1 * *"   # 1st of every month at 18:00
 ```
 
-### 3. Download the database
+No `account_id` or `key` fields — those come from the environment.
 
-Run the updater once manually:
+### 4. Download the database
+
+Run the updater once manually (credentials must be exported first):
 
 ```bash
-./target/release/soldier_update --geo-update
+./target/release/soldier_update --addr-list maxmind-geo
 ```
 
 The `.mmdb` file is saved to `db/geo/GeoLite2-City.mmdb`.
 
-### 4. Restart KrakenWaf
+### 5. Restart KrakenWaf
 
 The WAF loads the database at startup.  After the first download (or any update)
 restart the process:
@@ -61,9 +75,13 @@ pkill krakenwaf && ./target/release/krakenwaf [flags…]
 ## Automatic updates
 
 `watch_tower` picks up the `cron` field from `conf/update.yaml` and calls
-`soldier_update --geo-update` on schedule.  With the default `"0 18 1 * *"` the
-database is refreshed on the **1st of each month at 18:00 local time** — matching
-MaxMind's own monthly release cadence.
+`soldier_update --addr-list maxmind-geo` on schedule.  With the default
+`"0 18 1 * *"` the database is refreshed on the **1st of each month at 18:00
+local time** — matching MaxMind's own monthly release cadence.
+
+The `watch_tower` process inherits the shell environment, so the
+`MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY` variables must be present in its
+environment when it starts.
 
 Start the scheduler:
 
@@ -73,13 +91,30 @@ Start the scheduler:
 
 ---
 
+## Credential error handling
+
+If the environment variables are missing or empty when a scheduled or manual
+geo update runs, `soldier_update` exits with a non-zero status and appends a
+timestamped error message to `logs/console_local/errors.txt`:
+
+```
+2026-05-28T18:00:05Z maxmind-geo: MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY
+  environment variables must be set. Register at https://www.maxmind.com/en/
+  to obtain free credentials.
+```
+
+The WAF itself is unaffected — it does not read credentials at runtime; it only
+opens the pre-downloaded `.mmdb` file.
+
+---
+
 ## Bundled database
 
 A copy of `db/geo/GeoLite2-City.mmdb` is committed to the repository so the WAF
 works out of the box without needing credentials.  This copy may be **several
 months out of date** by the time you deploy; it is strongly recommended to run
-`soldier_update --geo-update` after configuring your credentials to get the
-latest release.
+`soldier_update --addr-list maxmind-geo` after exporting your credentials to get
+the latest release.
 
 If the database file is absent or cannot be opened, GeoIP enrichment is
 silently disabled (the WAF operates normally; `country` and `continent_name`

@@ -40,8 +40,8 @@ pub struct UpdateConfig {
 
 /// Configuration for the MaxMind GeoLite2-City auto-update.
 ///
-/// Credentials (`account_id` / `key`) are read from `conf/update.yaml`.
-/// Leave them empty in the committed file and fill them in on each deployment.
+/// Credentials are read from the environment variables `MAXMIND_ACCOUNT_ID`
+/// and `MAXMIND_LICENSE_KEY` — never stored in YAML.
 #[derive(Debug, Clone, Deserialize)]
 pub struct MaxmindGeoConfig {
     #[serde(default)]
@@ -50,12 +50,6 @@ pub struct MaxmindGeoConfig {
     /// the rest of the configuration.
     #[serde(default = "default_geo_active")]
     pub active: bool,
-    /// MaxMind account ID (numeric string).
-    #[serde(default)]
-    pub account_id: String,
-    /// MaxMind license key.
-    #[serde(default)]
-    pub key: String,
     /// Download URLs. Typically one entry pointing to the GeoLite2-City tar.gz.
     #[serde(default)]
     pub url_file: UrlFileList,
@@ -69,8 +63,6 @@ impl Default for MaxmindGeoConfig {
         Self {
             title: String::new(),
             active: default_geo_active(),
-            account_id: String::new(),
-            key: String::new(),
             url_file: UrlFileList::default(),
             cron: default_geo_cron(),
         }
@@ -620,13 +612,13 @@ pub async fn update_maxmind_geo_from_config(
 
 /// Download and extract the MaxMind GeoLite2-City database to `db/geo/`.
 ///
-/// Uses HTTP Basic Authentication with the configured `account_id` and `key`.
-/// The archive is streamed, decompressed, and the `GeoLite2-City.mmdb` entry
-/// is extracted atomically (write to `.tmp`, then rename).
+/// Credentials are read from the `MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY`
+/// environment variables.  The archive is extracted atomically (write to `.tmp`,
+/// then rename) so the WAF never sees a partially-written database.
 ///
 /// # Errors
-/// Returns an error when `active` is false, credentials are empty, the HTTP
-/// request fails, or the `.mmdb` file is not found in the downloaded archive.
+/// Returns an error when `active` is false, env var credentials are missing,
+/// the HTTP request fails, or the `.mmdb` file is not found in the archive.
 pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Result<()> {
     let cfg = &config.maxmind_geo;
 
@@ -634,12 +626,15 @@ pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Resu
         return Ok(());
     }
 
-    let account_id = cfg.account_id.trim();
-    let key = cfg.key.trim();
+    let account_id = std::env::var("MAXMIND_ACCOUNT_ID").unwrap_or_default();
+    let account_id = account_id.trim();
+    let key = std::env::var("MAXMIND_LICENSE_KEY").unwrap_or_default();
+    let key = key.trim();
+
     if account_id.is_empty() || key.is_empty() {
         anyhow::bail!(
-            "maxmind-geo: account_id and key must be set in conf/update.yaml. \
-             Register at https://www.maxmind.com/en/ to obtain free credentials."
+            "maxmind-geo: MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY environment variables \
+             must be set. Register at https://www.maxmind.com/en/ to obtain free credentials."
         );
     }
 

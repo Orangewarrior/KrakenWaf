@@ -787,12 +787,18 @@ recommended to refresh it periodically using the built-in updater:
 **Setup:**
 
 1. Create a free account at <https://www.maxmind.com/en/> and generate a license key.
-2. Edit `conf/update.yaml` and fill in `account_id` and `key` under `maxmind-geo`.
-3. Run the updater once: `./soldier_update --geo-update`
+2. Export credentials as environment variables — **never commit them to YAML**:
+   ```bash
+   export MAXMIND_ACCOUNT_ID='1234567'
+   export MAXMIND_LICENSE_KEY='YourLicenseKey'
+   ```
+3. Run the updater once: `./soldier_update --addr-list maxmind-geo`
 4. Restart KrakenWaf to load the new database.
 
-`watch_tower` automatically re-runs `soldier_update --geo-update` on the
-schedule defined by `maxmind-geo.cron` (default: 1st of each month at 18:00).
+`watch_tower` automatically re-runs `soldier_update --addr-list maxmind-geo` on
+the schedule defined by `maxmind-geo.cron` (default: 1st of each month at 18:00).
+It inherits the environment, so the variables above must be set when `watch_tower`
+starts.  Credential errors are written to `logs/console_local/errors.txt`.
 
 Geo lookup is performed **entirely on-host** — no data leaves the machine at
 request time.  When the database file is absent or `active: false` is set, the

@@ -166,8 +166,6 @@ firehol:
 maxmind-geo:
   title: "Maxmind GeoLite2 city"
   active: true
-  account_id: "1324306"
-  key: "testkey"
   url_file:
     - "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz"
   cron: "0 18 1 * *"
@@ -179,8 +177,6 @@ maxmind-geo:
     let geo = &config.maxmind_geo;
     assert_eq!(geo.title, "Maxmind GeoLite2 city");
     assert!(geo.active);
-    assert_eq!(geo.account_id, "1324306");
-    assert_eq!(geo.key, "testkey");
     assert_eq!(geo.cron, "0 18 1 * *");
     assert_eq!(geo.url_file.values().len(), 1);
 }
@@ -203,8 +199,6 @@ KrakenWaf:
     let geo = &config.maxmind_geo;
     // Defaults should be applied when the section is absent.
     assert!(geo.active, "geo active defaults to true");
-    assert!(geo.account_id.is_empty());
-    assert!(geo.key.is_empty());
     assert_eq!(geo.cron, "0 18 1 * *");
 }
 
@@ -218,8 +212,6 @@ fn maxmind_geo_can_be_disabled() {
         r#"
 maxmind-geo:
   active: false
-  account_id: ""
-  key: ""
   cron: "0 18 1 * *"
 "#,
     )

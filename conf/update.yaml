@@ -27,9 +27,10 @@ firehol:
 maxmind-geo:
   title: "Maxmind GeoLite2 city"
   active: true
+  # Credentials are read from environment variables — never hardcode them here.
+  # export MAXMIND_ACCOUNT_ID='your_account_id'
+  # export MAXMIND_LICENSE_KEY='your_license_key'
   # Register at https://www.maxmind.com/en/ to obtain free credentials.
-  account_id: ""
-  key: ""
   url_file:
     - "https://download.maxmind.com/geoip/databases/GeoLite2-City/download?suffix=tar.gz"
   # Update on the 1st of each month at 18:00 (MaxMind releases monthly updates).
