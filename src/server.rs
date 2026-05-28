@@ -47,6 +47,8 @@ fn log_banned_request(
         timestamp: Utc::now().to_rfc3339(),
         request_id: request_id(),
         client_ip: client_ip.to_string(),
+        country: String::new(),
+        continent_name: String::new(),
         method: method.to_string(),
         uri: uri.to_string(),
         fullpath_evidence: uri.to_string(),

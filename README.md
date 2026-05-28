@@ -773,4 +773,31 @@ all state is wiped 30 days after the last event.
 Full reference (lifecycle, log format, storage schema, operational
 caveats, manual-test recipe): **[docs/banning.md](docs/banning.md)**.
 
+## 🌍 GeoIP Enrichment (MaxMind GeoLite2-City)
+
+KrakenWaf enriches every security event with the **country** and **continent**
+of the attacker's IP, sourced from the MaxMind GeoLite2-City database.  The
+fields appear in the SQLite vulnerability log, the JSONL structured log, and the
+raw critical log — enabling per-region attack analysis without additional tooling.
+
+A bundled copy of `db/geo/GeoLite2-City.mmdb` ships with the repository so the
+WAF works out of the box.  Because MaxMind releases monthly updates, it is
+recommended to refresh it periodically using the built-in updater:
+
+**Setup:**
+
+1. Create a free account at <https://www.maxmind.com/en/> and generate a license key.
+2. Edit `conf/update.yaml` and fill in `account_id` and `key` under `maxmind-geo`.
+3. Run the updater once: `./soldier_update --geo-update`
+4. Restart KrakenWaf to load the new database.
+
+`watch_tower` automatically re-runs `soldier_update --geo-update` on the
+schedule defined by `maxmind-geo.cron` (default: 1st of each month at 18:00).
+
+Geo lookup is performed **entirely on-host** — no data leaves the machine at
+request time.  When the database file is absent or `active: false` is set, the
+WAF operates normally with empty geo fields.
+
+Full reference: **[docs/geoip.md](docs/geoip.md)**.
+
  ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)

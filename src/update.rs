@@ -3,6 +3,7 @@ use chrono::{Datelike, Local, Timelike};
 use reqwest::Client;
 use serde::Deserialize;
 use std::{
+    ffi::OsStr,
     fs::{self, OpenOptions},
     io::Write as _,
     net::IpAddr,
@@ -20,6 +21,8 @@ const DEFAULT_UPDATE_CONFIG: &str = "conf/update.yaml";
 const ADDR_RULES_DIR: &str = "rules/addr";
 const ERROR_LOG: &str = "logs/console_local/errors.txt";
 const ADDR_LIST_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
+const GEO_DB_DIR: &str = "db/geo";
+const GEO_DB_FILE: &str = "GeoLite2-City.mmdb";
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct UpdateConfig {
@@ -31,6 +34,55 @@ pub struct UpdateConfig {
     pub firehol: AddrListUpdateConfig,
     #[serde(default)]
     pub spamhaus: SpamhausUpdateConfig,
+    #[serde(rename = "maxmind-geo", default)]
+    pub maxmind_geo: MaxmindGeoConfig,
+}
+
+/// Configuration for the MaxMind GeoLite2-City auto-update.
+///
+/// Credentials (`account_id` / `key`) are read from `conf/update.yaml`.
+/// Leave them empty in the committed file and fill them in on each deployment.
+#[derive(Debug, Clone, Deserialize)]
+pub struct MaxmindGeoConfig {
+    #[serde(default)]
+    pub title: String,
+    /// Set to `false` to disable periodic GeoIP DB updates without removing
+    /// the rest of the configuration.
+    #[serde(default = "default_geo_active")]
+    pub active: bool,
+    /// MaxMind account ID (numeric string).
+    #[serde(default)]
+    pub account_id: String,
+    /// MaxMind license key.
+    #[serde(default)]
+    pub key: String,
+    /// Download URLs. Typically one entry pointing to the GeoLite2-City tar.gz.
+    #[serde(default)]
+    pub url_file: UrlFileList,
+    /// Cron expression controlling update frequency (default: 1st of each month at 18:00).
+    #[serde(default = "default_geo_cron")]
+    pub cron: String,
+}
+
+impl Default for MaxmindGeoConfig {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            active: default_geo_active(),
+            account_id: String::new(),
+            key: String::new(),
+            url_file: UrlFileList::default(),
+            cron: default_geo_cron(),
+        }
+    }
+}
+
+fn default_geo_active() -> bool {
+    true
+}
+
+fn default_geo_cron() -> String {
+    "0 18 1 * *".to_string()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -73,7 +125,7 @@ impl Default for SpamhausUpdateConfig {
     }
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct AddrListUpdateConfig {
     #[serde(default)]
     pub title: String,
@@ -81,6 +133,16 @@ pub struct AddrListUpdateConfig {
     pub lists: AddrListsConfig,
     #[serde(default = "default_addr_list_cron")]
     pub cron: String,
+}
+
+impl Default for AddrListUpdateConfig {
+    fn default() -> Self {
+        Self {
+            title: String::new(),
+            lists: AddrListsConfig::default(),
+            cron: default_addr_list_cron(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -528,8 +590,148 @@ pub fn scheduled_soldier_jobs_for_values(
             args: vec!["--addr-list".to_string(), "spamhaus".to_string()],
         });
     }
+    if config.maxmind_geo.active
+        && CronSchedule::parse(&config.maxmind_geo.cron)?
+            .matches_values(minute, hour, day, month, weekday)
+    {
+        jobs.push(ScheduledSoldierJob {
+            args: vec!["--geo-update".to_string()],
+        });
+    }
 
     Ok(jobs)
+}
+
+/// Load update configuration and trigger a MaxMind GeoIP database refresh.
+///
+/// # Errors
+/// Returns an error when the config cannot be loaded, credentials are missing,
+/// the download fails, or the archive cannot be extracted.
+pub async fn update_maxmind_geo_from_config(
+    repo_root: &Path,
+    config_path: &Path,
+) -> Result<()> {
+    let config = load_update_config(config_path)?;
+    update_maxmind_geo(repo_root, &config).await
+}
+
+/// Download and extract the MaxMind GeoLite2-City database to `db/geo/`.
+///
+/// Uses HTTP Basic Authentication with the configured `account_id` and `key`.
+/// The archive is streamed, decompressed, and the `GeoLite2-City.mmdb` entry
+/// is extracted atomically (write to `.tmp`, then rename).
+///
+/// # Errors
+/// Returns an error when `active` is false, credentials are empty, the HTTP
+/// request fails, or the `.mmdb` file is not found in the downloaded archive.
+pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Result<()> {
+    let cfg = &config.maxmind_geo;
+
+    if !cfg.active {
+        return Ok(());
+    }
+
+    let account_id = cfg.account_id.trim();
+    let key = cfg.key.trim();
+    if account_id.is_empty() || key.is_empty() {
+        anyhow::bail!(
+            "maxmind-geo: account_id and key must be set in conf/update.yaml. \
+             Register at https://www.maxmind.com/en/ to obtain free credentials."
+        );
+    }
+
+    let urls = cfg.url_file.values();
+    if urls.is_empty() {
+        anyhow::bail!("maxmind-geo: url_file has no download URLs configured");
+    }
+
+    let out_dir = repo_root.join(GEO_DB_DIR);
+    fs::create_dir_all(&out_dir).with_context(|| {
+        format!("failed to create GeoIP DB directory {}", out_dir.display())
+    })?;
+
+    let client = Client::builder()
+        .use_rustls_tls()
+        .timeout(ADDR_LIST_DOWNLOAD_TIMEOUT)
+        .build()?;
+
+    for raw_url in &urls {
+        download_and_extract_mmdb(repo_root, &client, account_id, key, raw_url).await?;
+    }
+
+    Ok(())
+}
+
+async fn download_and_extract_mmdb(
+    repo_root: &Path,
+    client: &Client,
+    account_id: &str,
+    key: &str,
+    url: &str,
+) -> Result<()> {
+    let parsed = Url::parse(url)
+        .with_context(|| format!("invalid MaxMind download URL: {url}"))?;
+
+    let response = client
+        .get(parsed.clone())
+        .basic_auth(account_id, Some(key))
+        .send()
+        .await
+        .with_context(|| format!("MaxMind DB download request failed: {url}"))?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "MaxMind DB download failed from {} with HTTP {}",
+            url,
+            response.status()
+        );
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("failed to read MaxMind DB response body from {url}"))?;
+
+    extract_mmdb_from_targz(repo_root, &bytes)
+        .with_context(|| format!("failed to extract {GEO_DB_FILE} from archive downloaded from {url}"))
+}
+
+fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<()> {
+    use flate2::read::GzDecoder;
+    use tar::Archive;
+
+    let gz = GzDecoder::new(std::io::Cursor::new(data));
+    let mut archive = Archive::new(gz);
+
+    let out_dir = repo_root.join(GEO_DB_DIR);
+
+    for entry in archive
+        .entries()
+        .context("failed to iterate tar archive entries")?
+    {
+        let mut entry = entry.context("failed to read tar entry")?;
+        let path = entry.path().context("failed to get tar entry path")?;
+
+        if path.file_name() == Some(OsStr::new(GEO_DB_FILE)) {
+            // Write to a temporary file first, then rename atomically so the
+            // WAF never sees a partially-written database.
+            let tmp_path = out_dir.join(format!("{GEO_DB_FILE}.tmp"));
+            entry
+                .unpack(&tmp_path)
+                .context("failed to unpack GeoLite2-City.mmdb")?;
+            let final_path = out_dir.join(GEO_DB_FILE);
+            fs::rename(&tmp_path, &final_path).with_context(|| {
+                format!(
+                    "failed to rename {} → {}",
+                    tmp_path.display(),
+                    final_path.display()
+                )
+            })?;
+            return Ok(());
+        }
+    }
+
+    anyhow::bail!("{GEO_DB_FILE} not found inside the downloaded archive")
 }
 
 /// Query a Spamhaus DQS zone for a single IP address.

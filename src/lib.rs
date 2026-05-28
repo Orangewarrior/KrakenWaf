@@ -1,5 +1,6 @@
 pub mod allowpaths;
 pub mod app;
+pub mod geo;
 pub mod banner;
 pub mod banning;
 pub mod body_decode;

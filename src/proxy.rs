@@ -4,6 +4,7 @@ use crate::{
     body_decode::{decompress_body_for_inspection, parse_content_encoding},
     cli::WafMode,
     error::KrakenError,
+    geo::GeoIpResult,
     logging::{write_critical, SecurityEvent},
     multipart_extract::{extract_boundary, parse_parts},
     waf::{Decision, Finding, InspectionContext, ResponseContext},
@@ -217,6 +218,12 @@ impl ProxyClient {
             .body_limit_for_path(&path)
             .min(state.cli.max_body_bytes);
 
+        let geo = state
+            .geo_reader
+            .as_ref()
+            .map(|r| r.lookup(&effective_ip))
+            .unwrap_or_else(GeoIpResult::empty);
+
         let context = InspectionContext {
             client_ip: effective_ip.clone(),
             method: method.to_string(),
@@ -225,6 +232,8 @@ impl ProxyClient {
             headers: headers_flat.clone(),
             body_limit,
             request_id: request_id.to_string(),
+            country: geo.country_name,
+            continent_name: geo.continent_name,
         };
 
         // Check allow-paths: IP-restricted entries block non-allowed IPs; matched entries
@@ -526,6 +535,8 @@ impl ProxyClient {
                         headers: String::new(),
                         body_limit: 0,
                         request_id: request_id.to_string(),
+                        country: String::new(),
+                        continent_name: String::new(),
                     },
                     finding.request_payload.clone(),
                 );
@@ -545,6 +556,8 @@ impl ProxyClient {
                         headers: String::new(),
                         body_limit: 0,
                         request_id: request_id.to_string(),
+                        country: String::new(),
+                        continent_name: String::new(),
                     },
                     finding.request_payload.clone(),
                 );
@@ -581,6 +594,8 @@ impl ProxyClient {
                         headers: String::new(),
                         body_limit: 0,
                         request_id: request_id.to_string(),
+                        country: String::new(),
+                        continent_name: String::new(),
                     },
                     finding.request_payload.clone(),
                 );

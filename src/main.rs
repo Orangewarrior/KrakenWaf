@@ -7,6 +7,7 @@ mod cli;
 mod cmc;
 mod error;
 mod ffi;
+mod geo;
 mod limits;
 mod logging;
 mod metrics;
@@ -104,6 +105,38 @@ async fn main() -> Result<()> {
     );
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
 
+    // ── GeoIP reader ─────────────────────────────────────────────────────────
+    let geo_db_path = root_dir.join("db/geo/GeoLite2-City.mmdb");
+    let geo_reader: Option<Arc<geo::GeoIpReader>> = if geo_db_path.exists() {
+        match geo::GeoIpReader::builder(&geo_db_path).build() {
+            Ok(reader) => {
+                info!(
+                    target: "krakenwaf",
+                    path = %geo_db_path.display(),
+                    "GeoLite2-City database loaded — GeoIP enrichment active"
+                );
+                Some(Arc::new(reader))
+            }
+            Err(err) => {
+                tracing::warn!(
+                    target: "krakenwaf",
+                    path = %geo_db_path.display(),
+                    error = %err,
+                    "failed to open GeoLite2-City.mmdb; GeoIP enrichment disabled"
+                );
+                None
+            }
+        }
+    } else {
+        info!(
+            target: "krakenwaf",
+            path = %geo_db_path.display(),
+            "GeoLite2-City.mmdb not found; GeoIP enrichment disabled. \
+             Run soldier_update --geo-update after configuring conf/update.yaml."
+        );
+        None
+    };
+
     // ── Rate-limit configuration ──────────────────────────────────────────────
 
     let rl_config = match cli.ratelimit_by_file_conf.as_deref() {
@@ -175,6 +208,7 @@ async fn main() -> Result<()> {
             .effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
         memory_limits: memory_limits.clone(),
         ban_manager,
+        geo_reader,
     });
 
     // Build TLS store once; clone it for both the SIGHUP handler and the server.
