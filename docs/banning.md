@@ -226,10 +226,17 @@ To exercise the cumulative threshold instead, set
 `security_scanners: false`, send three SQLi-style requests, then a
 clean one — the fourth is rejected by the BAN list.
 
-For an end-to-end automated regression see
-`tests/banning_real_test.rs` (SQLite backend, no TLS),
-`tests/banning_redis_test.rs` (plain Redis backend), and
-`tests/banning_redis_tls_test.rs` (production `rediss://` path).
+For an end-to-end automated regression see:
+
+* `tests/banning_real_test.rs` — SQLite backend, no TLS
+* `tests/banning_redis_test.rs` — plain `redis://` backend
+* `tests/banning_redis_tls_test.rs` — production `rediss://` BAN list
+* `tests/ratelimit_rediss_test.rs` — rate-limiter standalone over
+  `rediss://` (`check()` allow/deny, per-IP isolation, TTL window
+  reset, atomic INCR)
+* `tests/server_tls_test.rs` — full WAF binary terminating TLS via a
+  custom SNI map, with `reqwest` and the in-tree `attack` binary as
+  HTTPS clients
 
 ---
 
@@ -269,13 +276,36 @@ redis-server --daemonize yes --port 0 --tls-port 6380 \
     --tls-ca-cert-file /tmp/krakenwaf-tls/ca.pem \
     --tls-auth-clients no --save "" --appendonly no
 
-cargo test --test banning_redis_test --test banning_redis_tls_test
+cargo test --test banning_redis_test --test banning_redis_tls_test \
+           --test ratelimit_rediss_test
 ```
 
 The TLS suite exercises the same `RateLimiter::new_redis()`
 constructor the binary uses in production, including the
 `rediss://`-only guard (it has a regression test that proves plain
 `redis://` is rejected).
+
+To also run the WAF-binary TLS-termination test (`server_tls_test`):
+
+```bash
+# Generate a server cert signed by the same CA (used for the WAF's
+# own ServerHello, separate from the Redis cert above).
+openssl req -newkey rsa:2048 -nodes \
+    -subj "/CN=127.0.0.1" -keyout waf.key -out waf.csr
+cat > waf.ext <<'EOF'
+subjectAltName = IP:127.0.0.1,DNS:localhost
+extendedKeyUsage = serverAuth
+EOF
+openssl x509 -req -in waf.csr -CA ca.pem -CAkey ca.key \
+    -CAcreateserial -out waf.pem -days 30 -extfile waf.ext
+
+# The test loads the cert from /tmp/krakenwaf-tls/{ca.pem,waf.pem,waf.key}
+# (override with KRAKENWAF_TEST_TLS_DIR). It spins up the krakenwaf
+# binary WITHOUT --no-tls, writes a single-entry sni_map.csv
+# pointing at waf.{pem,key}, and connects via HTTPS using the CA root.
+
+cargo test --test server_tls_test
+```
 
 ---
 
