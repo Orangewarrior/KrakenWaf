@@ -86,6 +86,8 @@ async fn redis_tls_reachable() -> bool {
         ),
         1,
         Some(ca_path().to_str().unwrap()),
+        true,
+        None,
     )
     .await.map_or_else(|err| {
         eprintln!("rediss:// probe failed: {err:#} — skipping test");

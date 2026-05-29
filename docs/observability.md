@@ -17,6 +17,8 @@ Returns metrics in the [Prometheus text exposition format](https://prometheus.io
 | `krakenwaf_requests_inspected_total` | counter | Every request that entered the WAF pipeline |
 | `krakenwaf_requests_blocked_total` | counter | Every request (or response) that was blocked |
 | `krakenwaf_rate_limit_hits_total` | counter | Requests that hit the per-IP rate limit |
+| `krakenwaf_redis_rate_limit_failopen_total` | counter | Requests allowed without a decision because Redis was unavailable (fail-open). **Alert if climbing — rate limiting is not being enforced.** |
+| `krakenwaf_redis_rate_limit_failclosed_total` | counter | Requests denied (429) because Redis was unavailable and `redis.fail_open: false` |
 
 ### Per-engine/module breakdown
 
@@ -63,9 +65,13 @@ rate(krakenwaf_requests_inspected_total[1m])
 
 ## Metrics access control
 
-By default, any IP address may reach `/metrics`. To restrict it to specific
-addresses (e.g. localhost or a monitoring subnet) use the `only_addrs` field
-in `rules/allowpaths/lists.yaml`:
+**`/metrics` is fail-closed by default (since 2.32.0):** when no IP allowlist is
+configured it is served **only to loopback** (`127.0.0.0/8`, `::1`), because the
+endpoint reveals operational intelligence (per-module block counts, latency,
+which engines fire). Liveness/readiness endpoints are unaffected. To allow
+**remote** scraping, add the scraper's IP to the allowlist — either
+`rules/addr/allowlist.txt` (honoured directly) or the `only_addrs` field in
+`rules/allowpaths/lists.yaml`:
 
 ```yaml
 allow:

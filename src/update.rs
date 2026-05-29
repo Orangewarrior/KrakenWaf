@@ -338,13 +338,16 @@ pub async fn update_spamhaus(repo_root: &Path, config: &UpdateConfig) -> Result<
         return Ok(());
     }
 
-    let token = match std::env::var("SPAMHAUS_DQS_KEY") {
-        Ok(value) if !value.trim().is_empty() => value,
-        _ => {
-            let err = anyhow::anyhow!("SPAMHAUS_DQS_KEY environment variable is missing");
-            log_update_error(repo_root, &err);
-            return Err(err);
-        }
+    // File-first secret: SPAMHAUS_DQS_KEY_FILE, then
+    // /run/secrets/krakenwaf/SPAMHAUS_DQS_KEY, then the SPAMHAUS_DQS_KEY env var.
+    let Some(token) = crate::secrets::load_secret("SPAMHAUS_DQS_KEY") else {
+        let err = anyhow::anyhow!(
+            "SPAMHAUS_DQS_KEY is not set — provide it via a file secret \
+             (SPAMHAUS_DQS_KEY_FILE or /run/secrets/krakenwaf/SPAMHAUS_DQS_KEY) \
+             or the SPAMHAUS_DQS_KEY environment variable"
+        );
+        log_update_error(repo_root, &err);
+        return Err(err);
     };
 
     validate_spamhaus_dqs_zones(repo_root, &token, &config.spamhaus.zones)
@@ -626,15 +629,17 @@ pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Resu
         return Ok(());
     }
 
-    let account_id = std::env::var("MAXMIND_ACCOUNT_ID").unwrap_or_default();
-    let account_id = account_id.trim();
-    let key = std::env::var("MAXMIND_LICENSE_KEY").unwrap_or_default();
-    let key = key.trim();
+    // File-first secrets (see `crate::secrets`): `<NAME>_FILE`, then
+    // `/run/secrets/krakenwaf/<NAME>`, then the plain env var. `load_secret`
+    // already trims surrounding whitespace and treats empty as absent.
+    let account_id = crate::secrets::load_secret("MAXMIND_ACCOUNT_ID").unwrap_or_default();
+    let key = crate::secrets::load_secret("MAXMIND_LICENSE_KEY").unwrap_or_default();
 
     if account_id.is_empty() || key.is_empty() {
         anyhow::bail!(
-            "maxmind-geo: MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY environment variables \
-             must be set. Register at https://www.maxmind.com/en/ to obtain free credentials."
+            "maxmind-geo: MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY must be set. Provide them \
+             as file secrets (/run/secrets/krakenwaf/<NAME> or <NAME>_FILE) or environment \
+             variables. Register at https://www.maxmind.com/en/ to obtain free credentials."
         );
     }
 
@@ -654,7 +659,7 @@ pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Resu
         .build()?;
 
     for raw_url in &urls {
-        download_and_extract_mmdb(repo_root, &client, account_id, key, raw_url).await?;
+        download_and_extract_mmdb(repo_root, &client, &account_id, &key, raw_url).await?;
     }
 
     Ok(())

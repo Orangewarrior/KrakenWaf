@@ -59,7 +59,8 @@ async fn tls_ready() -> Option<String> {
     // give each test its own key namespace so the probe never collides
     // with previous probes in the same `cargo test` run.
     let probe_prefix = unique_prefix("probe");
-    let probe = RateLimiter::new_redis(REDISS_URL, 1000, 60, &probe_prefix, 1, Some(&ca)).await;
+    let probe =
+        RateLimiter::new_redis(REDISS_URL, 1000, 60, &probe_prefix, 1, Some(&ca), true, None).await;
     match probe {
         Ok(rl) => {
             if !rl.check("127.0.0.1").await {
@@ -106,7 +107,7 @@ async fn banning_over_rediss_with_custom_ca() {
     let Some(ca) = tls_ready().await else { return };
 
     let rl_prefix = unique_prefix("rl");
-    let rl = RateLimiter::new_redis(REDISS_URL, 10, 60, &rl_prefix, 2, Some(&ca))
+    let rl = RateLimiter::new_redis(REDISS_URL, 10, 60, &rl_prefix, 2, Some(&ca), true, None)
         .await
         .expect("rediss:// rate-limiter must connect with the custom CA");
 
@@ -146,9 +147,10 @@ async fn banning_over_rediss_with_custom_ca() {
 async fn security_scanner_fast_track_over_rediss() {
     let Some(ca) = tls_ready().await else { return };
 
-    let rl = RateLimiter::new_redis(REDISS_URL, 100, 60, &unique_prefix("rl-scan"), 2, Some(&ca))
-        .await
-        .expect("rediss://");
+    let rl =
+        RateLimiter::new_redis(REDISS_URL, 100, 60, &unique_prefix("rl-scan"), 2, Some(&ca), true, None)
+            .await
+            .expect("rediss://");
     let pool = rl.redis_pool().expect("pool");
     // Tolerance set high so the only way an IP can be banned is via
     // the fast-track.
@@ -180,6 +182,8 @@ async fn concurrent_records_remain_atomic_over_rediss() {
         &unique_prefix("rl-atomic"),
         4,
         Some(&ca),
+        true,
+        None,
     )
     .await
     .expect("rediss://");
@@ -228,6 +232,8 @@ async fn plain_redis_url_is_rejected_by_production_constructor() {
         60,
         "krakenwaf-tls-test:should-fail",
         1,
+        None,
+        true,
         None,
     )
     .await;

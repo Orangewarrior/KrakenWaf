@@ -29,9 +29,14 @@ Relevant Spamhaus references:
    feeds you want to use.
 3. Copy the issued token/key. Spamhaus documents DQS keys as customer-specific
    values used for authenticated access.
-4. Export it for the updater process:
+4. Provide it to the updater as a file secret (preferred) or env var. See
+   [docs/secrets.md](secrets.md) for the full resolution order.
 
 ```bash
+# File secret (preferred): /run/secrets/krakenwaf/SPAMHAUS_DQS_KEY (or *_FILE)
+printf '%s' 'your-token-here' > /run/secrets/krakenwaf/SPAMHAUS_DQS_KEY
+
+# Environment variable (fallback):
 export SPAMHAUS_DQS_KEY="your-token-here"
 ```
 

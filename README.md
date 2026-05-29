@@ -111,7 +111,9 @@ Caps simultaneous in-flight connections from the same IP. Excess connections rec
 When `redis:` is configured, all WAF replicas share the same counter:
 
 ```bash
-# Credentials via environment variables (CIS Benchmark — never in config files)
+# Credentials are loaded file-first, then env vars (never in config files).
+# Preferred: /run/secrets/krakenwaf/REDIS_PASSWORD (see docs/secrets.md).
+# Fallback:
 export REDIS_PASSWORD="strong-secret-here"
 export REDIS_USERNAME="krakenwaf"      # optional: Redis 6+ ACL
 
@@ -119,7 +121,8 @@ krakenwaf --ratelimit-by-file-conf conf/ratelimit.yaml [...]
 ```
 
 KrakenWaf enforces CIS Redis Benchmark controls: TLS (`rediss://`) mandatory,
-credentials from env vars only, fail-open on Redis unavailability.
+credentials loaded file-first with an env-var fallback, and a configurable
+fail mode on Redis unavailability (`redis.fail_open`, default fail-open).
 
 → Full guide: [docs/rate_limit.md](docs/rate_limit.md)
 
@@ -282,10 +285,14 @@ cd KrakenWaf
 cargo clean
 cargo build --release --features "vectorscan-engine"
 ```
-Prepare certs:
+Prepare a **self-signed dev certificate** (git-ignored — never commit private
+keys; production uses CA/ACME-issued certs):
 ```bash
-mkdir certs
-openssl req -x509 -nodes -days 365 -newkey rsa:4096   -keyout certs/key.pem   -out certs/cert.pem   -config rules/tls/localhost.cnf
+./scripts/gen-dev-certs.sh
+# equivalent to:
+#   openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
+#     -keyout certs/key.pem -out certs/cert.pem -config rules/tls/localhost.cnf
+#   chmod 600 certs/key.pem
 ```
 Set `rules/tls/sni_map.csv` like this:
 
@@ -787,8 +794,11 @@ recommended to refresh it periodically using the built-in updater:
 **Setup:**
 
 1. Create a free account at <https://www.maxmind.com/en/> and generate a license key.
-2. Export credentials as environment variables — **never commit them to YAML**:
+2. Provide credentials as **file secrets** (preferred) or env vars — **never
+   commit them to YAML** (see [docs/secrets.md](docs/secrets.md)):
    ```bash
+   # File secret (preferred): /run/secrets/krakenwaf/MAXMIND_LICENSE_KEY, …
+   # Environment variable (fallback):
    export MAXMIND_ACCOUNT_ID='1234567'
    export MAXMIND_LICENSE_KEY='YourLicenseKey'
    ```

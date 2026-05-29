@@ -62,6 +62,15 @@ pub struct WafMetrics {
     pub requests_blocked: AtomicU64,
     pub rate_limit_hits: AtomicU64,
 
+    /// Requests allowed without a rate-limit decision because the Redis
+    /// limiter was unreachable/slow and the configured policy is fail-open.
+    /// A climbing value means rate limiting is currently NOT enforced — alert
+    /// on `rate(...[5m]) > 0`.
+    pub redis_rate_limit_failopen: AtomicU64,
+    /// Requests denied (HTTP 429) because the Redis limiter was unreachable/slow
+    /// and the operator selected fail-closed.
+    pub redis_rate_limit_failclosed: AtomicU64,
+
     /// W3C traceparent counters.
     pub traceparent_forwarded: AtomicU64,
     pub traceparent_generated: AtomicU64,
@@ -86,6 +95,17 @@ impl WafMetrics {
 
     pub fn inc_rate_limit_hits(&self) {
         self.rate_limit_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Record a Redis rate-limiter unavailability that was resolved by the
+    /// configured fail mode. `allowed == true` ⇒ fail-open (request let through);
+    /// `allowed == false` ⇒ fail-closed (request denied with 429).
+    pub fn inc_redis_rate_limit_fail(&self, allowed: bool) {
+        if allowed {
+            self.redis_rate_limit_failopen.fetch_add(1, Ordering::Relaxed);
+        } else {
+            self.redis_rate_limit_failclosed.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     /// Increment the counter for a specific engine+module label.
@@ -122,6 +142,12 @@ impl WafMetrics {
                 "krakenwaf_requests_blocked_total {}\n",
                 "# TYPE krakenwaf_rate_limit_hits_total counter\n",
                 "krakenwaf_rate_limit_hits_total {}\n",
+                "# TYPE krakenwaf_redis_rate_limit_failopen_total counter\n",
+                "# HELP krakenwaf_redis_rate_limit_failopen_total Requests allowed without a rate-limit decision because Redis was unavailable (fail-open).\n",
+                "krakenwaf_redis_rate_limit_failopen_total {}\n",
+                "# TYPE krakenwaf_redis_rate_limit_failclosed_total counter\n",
+                "# HELP krakenwaf_redis_rate_limit_failclosed_total Requests denied because Redis was unavailable and the fail mode is fail-closed.\n",
+                "krakenwaf_redis_rate_limit_failclosed_total {}\n",
                 "# TYPE krakenwaf_traceparent_forwarded_total counter\n",
                 "krakenwaf_traceparent_forwarded_total {}\n",
                 "# TYPE krakenwaf_traceparent_generated_total counter\n",
@@ -130,6 +156,8 @@ impl WafMetrics {
             self.requests_inspected.load(Ordering::Relaxed),
             self.requests_blocked.load(Ordering::Relaxed),
             self.rate_limit_hits.load(Ordering::Relaxed),
+            self.redis_rate_limit_failopen.load(Ordering::Relaxed),
+            self.redis_rate_limit_failclosed.load(Ordering::Relaxed),
             self.traceparent_forwarded.load(Ordering::Relaxed),
             self.traceparent_generated.load(Ordering::Relaxed),
         );

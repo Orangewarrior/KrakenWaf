@@ -18,10 +18,22 @@ Register at <https://www.maxmind.com/en/> and navigate to
 
 Note your **Account ID** and **License Key**.
 
-### 2. Set credentials as environment variables
+### 2. Set credentials (file secret preferred, env var fallback)
 
-Credentials are **never stored in YAML files** — they are read exclusively from
-environment variables.  Set them in the shell where you run the updater:
+Credentials are **never stored in YAML files**. They are loaded file-first, with
+an environment-variable fallback (see [docs/secrets.md](secrets.md)):
+
+1. **`<NAME>_FILE`** → 2. **`/run/secrets/krakenwaf/<NAME>`** → 3. the env var.
+
+**File secret (preferred for production):**
+
+```bash
+# Docker/K8s mount these automatically; or create them by hand:
+printf '%s' '1234567'          > /run/secrets/krakenwaf/MAXMIND_ACCOUNT_ID
+printf '%s' 'AbCdEf_yourkey'   > /run/secrets/krakenwaf/MAXMIND_LICENSE_KEY
+```
+
+**Environment variables (fallback, fine for local/dev):**
 
 ```bash
 export MAXMIND_ACCOUNT_ID='1234567'          # your numeric Account ID

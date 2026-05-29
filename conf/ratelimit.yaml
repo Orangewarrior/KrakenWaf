@@ -47,11 +47,14 @@ max_per_ip_body_bytes: 209715200
 #
 # CIS Redis Benchmark requirements enforced by KrakenWaf:
 #   • TLS mandatory — URL MUST use the rediss:// scheme (encrypted transport).
-#   • Credentials via environment variables only — never hardcode in this file.
-#     REDIS_PASSWORD — AUTH password (required when Redis has requirepass set).
-#     REDIS_USERNAME — ACL username (optional, Redis 6+ ACL AUTH).
-#   • Fail-open policy — if Redis is unreachable a request is allowed through
-#     and a tracing warning is emitted. The local GCRA limiter is NOT used as
+#   • Credentials are loaded file-first, then from env vars — never hardcode here.
+#     File (preferred): /run/secrets/krakenwaf/REDIS_PASSWORD (or REDIS_PASSWORD_FILE),
+#                       /run/secrets/krakenwaf/REDIS_USERNAME. See docs/secrets.md.
+#     Env (fallback):   REDIS_PASSWORD — AUTH password; REDIS_USERNAME — ACL user.
+#   • Fail mode (fail_open, default true) — on Redis unavailability a request is
+#     allowed (fail-open) or denied with 429 (fail-closed). Either way a warning
+#     and a Prometheus counter (krakenwaf_redis_rate_limit_failopen_total /
+#     _failclosed_total) are emitted. The local GCRA limiter is NOT used as a
 #     fallback; disable the redis section to fall back to local mode.
 #
 # Example — uncomment and adjust to enable:
@@ -72,3 +75,9 @@ max_per_ip_body_bytes: 209715200
 #   # Path to a custom CA certificate (PEM) for private PKI / mTLS deployments.
 #   # Omit to use the system trust store.
 #   # ca_cert_path: "/etc/ssl/private/redis-ca.pem"
+#
+#   # Behaviour when Redis is unreachable / a check times out.
+#   #   true  (default) — fail-open: allow the request (favours availability).
+#   #   false           — fail-closed: deny with HTTP 429 (favours the limit).
+#   # Both modes emit a warning + Prometheus counter so an outage is observable.
+#   fail_open: true

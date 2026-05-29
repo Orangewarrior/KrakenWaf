@@ -2,3 +2,7 @@
 /logs
 /tmp_cache
 /.claude/
+
+# Local TLS material — never commit private keys. A self-signed dev pair can be
+# (re)generated with scripts/gen-dev-certs.sh; production certs come from your CA.
+/certs/*.pem

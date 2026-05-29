@@ -16,6 +16,7 @@ mod proxy;
 mod ratelimit_config;
 mod response_headers;
 mod rules;
+mod secrets;
 mod server;
 mod storage;
 mod tls;
@@ -162,7 +163,8 @@ async fn main() -> Result<()> {
     };
     let effective_limit = rl_config.effective_rate_limit(cli.rate_limit_per_minute);
 
-    let rate_limiter = Arc::new(build_rate_limiter(&cli, &rl_config, effective_limit, &root_dir).await?);
+    let rate_limiter =
+        Arc::new(build_rate_limiter(&cli, &rl_config, effective_limit, &root_dir, &metrics).await?);
 
     // ── BAN list manager ──────────────────────────────────────────────────────
 
@@ -235,6 +237,9 @@ async fn main() -> Result<()> {
     };
 
     spawn_rule_reload(state.clone(), tls_store.clone());
+    // Reap idle per-IP counter entries so the concurrency/body-byte maps cannot
+    // grow without bound under source-IP rotation (e.g. an IPv6 /64 flood).
+    server::spawn_ip_map_janitor(state.clone());
 
     info!(
         target: "krakenwaf",
@@ -308,9 +313,15 @@ async fn build_rate_limiter(
     rl_config: &RateLimitConfig,
     effective_limit: u32,
     root_dir: &std::path::Path,
+    metrics: &Arc<WafMetrics>,
 ) -> Result<RateLimiter> {
     if let Some(redis_cfg) = &rl_config.redis {
-        info!(target: "krakenwaf", url = %redis_cfg.url, "using Redis rate-limiter backend");
+        info!(
+            target: "krakenwaf",
+            url = %redis_cfg.url,
+            fail_open = redis_cfg.fail_open,
+            "using Redis rate-limiter backend"
+        );
         return RateLimiter::new_redis(
             &redis_cfg.url,
             effective_limit,
@@ -318,6 +329,8 @@ async fn build_rate_limiter(
             &redis_cfg.key_prefix,
             redis_cfg.pool_size,
             redis_cfg.ca_cert_path.as_deref(),
+            redis_cfg.fail_open,
+            Some(metrics.clone()),
         )
         .await
         .context("failed to initialise Redis rate-limiter");

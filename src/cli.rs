@@ -106,6 +106,14 @@ pub struct Cli {
     #[arg(long, default_value_t = 30)]
     pub connection_timeout_secs: u64,
 
+    /// Anti-Slowloris: maximum wall-clock time the WAF waits for a client to
+    /// complete the TLS handshake before dropping the connection. A client that
+    /// opens a socket but never finishes the handshake would otherwise hold a
+    /// connection slot (and a `--max-connections` permit) indefinitely. Only
+    /// applies to TLS mode. 0 disables the bound (not recommended). Default: 10.
+    #[arg(long = "tls-handshake-timeout-secs", default_value_t = 10)]
+    pub tls_handshake_timeout_secs: u64,
+
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,
 

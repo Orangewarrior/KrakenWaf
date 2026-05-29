@@ -416,16 +416,38 @@ impl WafEngine {
             None
         };
 
+        // Views are inspected from up to three forms so detection does not hinge
+        // on the WAF and the upstream agreeing on how many times to percent-decode
+        // or whether `+` means space (see `normalize` module docs):
+        //   • the normalised form (fully percent-decoded, `+`→space),
+        //   • the raw/original form — brings the keyword/regex matchers to parity
+        //     with the CMC, libinjection and vectorscan engines above (which
+        //     already inspect the original), catching rules written against the
+        //     encoded bytes and payloads a decode pass would otherwise destroy,
+        //   • a Latin-1 fallback when lossy UTF-8 introduced replacement chars.
+        // Views are de-duplicated, so the common case (no encoding present,
+        // original == normalised) adds no extra scanning.
         let views = inspection_views(normalized_text.as_ref());
+        let original_views: Vec<&str> = if normalized_bytes.as_ref() == payload {
+            Vec::new()
+        } else {
+            inspection_views(original_text.as_ref())
+        };
         let latin1_views: Option<Vec<&str>> =
             latin1_text.as_deref().map(inspection_views);
-        let all_views = views.iter().copied().chain(
-            latin1_views
-                .as_ref()
-                .map(|v| v.iter().copied())
-                .into_iter()
-                .flatten(),
-        );
+        let mut seen_views: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let all_views = views
+            .iter()
+            .copied()
+            .chain(original_views.iter().copied())
+            .chain(
+                latin1_views
+                    .as_ref()
+                    .map(|v| v.iter().copied())
+                    .into_iter()
+                    .flatten(),
+            )
+            .filter(move |view| seen_views.insert(*view));
 
         for view in all_views {
             if let Some(d) = deadline {
@@ -646,8 +668,10 @@ fn load_spamhaus_dqs_config(blocklist_ip_enabled: bool) -> Option<SpamhausDqsCon
     if !config.spamhaus.dqs_key {
         return None;
     }
-    let token = std::env::var("SPAMHAUS_DQS_KEY").ok()?;
-    (!token.trim().is_empty()).then(|| SpamhausDqsConfig {
+    // File-first secret (see `crate::secrets`); falls back to the
+    // SPAMHAUS_DQS_KEY env var. `load_secret` already trims and rejects empty.
+    let token = crate::secrets::load_secret("SPAMHAUS_DQS_KEY")?;
+    Some(SpamhausDqsConfig {
         token,
         zones: normalized_dqs_zones(&config.spamhaus.zones),
     })

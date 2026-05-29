@@ -1,5 +1,44 @@
+//! Request normalisation applied before keyword / regex / CMC matching.
+//!
+//! ## The normalisation contract
+//!
+//! A WAF inspects a *view* of the request that may differ from what the
+//! upstream eventually parses. Every divergence is a potential false negative
+//! (the WAF sees something benign, the app sees an attack) or false positive
+//! (the reverse). `KrakenWaf`'s contract is therefore deliberately explicit:
+//!
+//! * **Percent-decoding** — [`url_decode`] decodes `%XX` repeatedly, up to
+//!   [`MAX_URL_DECODE_PASSES`] (4) times, stopping early once a pass changes
+//!   nothing. This defeats single/double/triple-encoding evasion
+//!   (`%252e%252e` → `..`). The cap bounds CPU on pathological inputs; a
+//!   payload that only reveals an attack after **5+** decode layers is not
+//!   matched on the decoded form, but no mainstream backend decodes that many
+//!   times either, and the engine additionally inspects the **raw** form (see
+//!   below).
+//! * **`+` → space** — applied everywhere, matching `application/x-www-form-
+//!   urlencoded` semantics. This is intentionally aggressive: it lets rules
+//!   like `union select` match `union+select`. In a URL *path* `+` is literal,
+//!   so the decoded view can differ from the path the app sees — to cover both
+//!   interpretations the engine inspects the raw form in addition to the
+//!   decoded one.
+//! * **Multi-form inspection** — the engine never relies on a single view. It
+//!   inspects the normalised form, the raw/original form, and (when lossy UTF-8
+//!   produced `\u{FFFD}`) a Latin-1 form. See [`as_latin1`].
+//! * **Null-byte dual-form** — [`inspection_views`] splits on `\0` so both the
+//!   full string and the null-truncated prefix are inspected, defeating
+//!   `foo\0../etc/passwd` truncation tricks.
+//!
+//! What is **not** done here (documented so operators understand the limits):
+//! Unicode normalisation (NFKC), overlong-UTF-8 and fullwidth folding, and
+//! HTML-entity decoding are not applied. Rules needing those must encode the
+//! variants explicitly. The behaviours above are pinned by the unit tests at
+//! the bottom of this file so they cannot regress silently.
+
 use std::borrow::Cow;
 
+/// Maximum number of percent-decode passes applied by [`url_decode`]. Bounds
+/// CPU on adversarial multi-encoded input while still peeling the
+/// single/double/triple-encoding seen in real evasion attempts.
 const MAX_URL_DECODE_PASSES: usize = 4;
 
 pub(super) fn url_decode_once(input: &[u8]) -> (Vec<u8>, bool) {
@@ -114,5 +153,50 @@ mod tests {
             views.len() > 1,
             "expected the normalized payload to also be split into per-segment views"
         );
+    }
+
+    #[test]
+    fn plus_decodes_to_space() {
+        // `+` → space is applied everywhere so `union+select` matches a
+        // space-delimited rule. Pinned because changing it silently would open
+        // an evasion.
+        assert_eq!(url_decode(b"union+select"), b"union select");
+        // A percent-encoded plus (`%2b`) decodes to `+` on the first pass, which
+        // the second pass then folds to a space — so an attacker cannot hide a
+        // separator by encoding the plus. This multi-pass interaction is part of
+        // the documented contract.
+        assert_eq!(url_decode(b"a%2bb"), b"a b");
+    }
+
+    #[test]
+    fn decode_pass_cap_is_four() {
+        // A `%` nested five times needs five decode passes; the 4-pass cap must
+        // leave exactly one `%25` layer un-peeled rather than loop unbounded.
+        assert_eq!(url_decode(b"%2525252525"), b"%25");
+        // Four-or-fewer layers still fully resolve.
+        assert_eq!(url_decode(b"%2525"), b"%");
+    }
+
+    #[test]
+    fn normalize_request_bytes_borrows_when_unchanged() {
+        // No `%`/`+` present ⇒ zero-copy borrow (hot-path allocation avoided).
+        assert!(matches!(normalize_request_bytes(b"plain/path"), Cow::Borrowed(_)));
+        assert!(matches!(normalize_request_bytes(b"a%2Fb"), Cow::Owned(_)));
+    }
+
+    #[test]
+    fn inspection_views_split_on_null_byte() {
+        // The null-truncated prefix must be inspected as its own view so
+        // `foo\0../etc/passwd` cannot hide behind a C-string truncation.
+        let views = inspection_views("foo\0../etc/passwd");
+        assert!(views.contains(&"foo"));
+        assert!(views.contains(&"../etc/passwd"));
+    }
+
+    #[test]
+    fn as_latin1_maps_high_bytes_one_to_one() {
+        // 0xFF is invalid UTF-8; the Latin-1 fallback maps it to U+00FF rather
+        // than the U+FFFD replacement char that would mask a byte pattern.
+        assert_eq!(as_latin1(&[0xFF, b'A']), "\u{FF}A");
     }
 }
