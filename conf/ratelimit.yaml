@@ -25,6 +25,17 @@ max_coroutines_per_ip: 64
 # Default: 30
 body_frame_timeout_secs: 30
 
+# Anti-Slowloris (TLS accept path): maximum wall-clock time (seconds) the WAF
+# waits for a client to complete the TLS handshake before dropping the
+# connection. A client that opens a socket but never finishes the handshake
+# would otherwise pin a connection slot (and a --max-connections permit)
+# indefinitely — a handful of half-open sockets could exhaust capacity.
+# Only applies to TLS mode (ignored under --no-tls).
+# Set to 0 to disable the bound (NOT recommended — removes the anti-DoS guard).
+# Overridden by --tls-handshake-timeout-secs when present.
+# Default: 10 (a safe, conservative anti-DoS value)
+tls_handshake_timeout_secs: 10
+
 # Global memory-backpressure cap (bytes) on in-flight request body data
 # summed across all clients. When exceeded, new requests receive HTTP 503
 # with Retry-After: 5.

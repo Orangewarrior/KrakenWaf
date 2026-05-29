@@ -110,9 +110,12 @@ pub struct Cli {
     /// complete the TLS handshake before dropping the connection. A client that
     /// opens a socket but never finishes the handshake would otherwise hold a
     /// connection slot (and a `--max-connections` permit) indefinitely. Only
-    /// applies to TLS mode. 0 disables the bound (not recommended). Default: 10.
-    #[arg(long = "tls-handshake-timeout-secs", default_value_t = 10)]
-    pub tls_handshake_timeout_secs: u64,
+    /// applies to TLS mode. 0 disables the bound (not recommended).
+    /// Overrides the value in `--ratelimit-by-file-conf` or
+    /// `conf/ratelimit.yaml`. When absent the effective value is taken from
+    /// the config file or defaults to 10 s.
+    #[arg(long = "tls-handshake-timeout-secs")]
+    pub tls_handshake_timeout_secs: Option<u64>,
 
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,

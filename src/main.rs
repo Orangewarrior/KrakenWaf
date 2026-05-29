@@ -224,6 +224,8 @@ async fn main() -> Result<()> {
             .effective_max_per_ip_body_bytes(cli.max_per_ip_body_bytes),
         body_frame_timeout_secs: rl_config
             .effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
+        tls_handshake_timeout_secs: rl_config
+            .effective_tls_handshake_timeout_secs(cli.tls_handshake_timeout_secs),
         memory_limits: memory_limits.clone(),
         ban_manager,
         geo_reader,
@@ -259,6 +261,7 @@ async fn main() -> Result<()> {
         max_upstream_response_bytes = cli.max_upstream_response_bytes,
         max_connections = cli.max_connections,
         max_decompress_ratio = memory_limits.max_decompress_ratio,
+        tls_handshake_timeout_secs = state.tls_handshake_timeout_secs,
         "KrakenWaf initialized"
     );
 

@@ -246,7 +246,7 @@ pub async fn run(
             // socket but never finishes the handshake would otherwise pin this
             // task — and its semaphore permit — indefinitely, letting a handful
             // of stalled sockets exhaust `--max-connections`.
-            let handshake_secs = state.cli.tls_handshake_timeout_secs;
+            let handshake_secs = state.tls_handshake_timeout_secs;
             let accepted = if handshake_secs > 0 {
                 timeout(Duration::from_secs(handshake_secs), acceptor.accept(stream))
                     .await
