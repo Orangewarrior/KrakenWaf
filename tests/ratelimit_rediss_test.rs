@@ -46,7 +46,7 @@ async fn build_rl(limit: u32, window: u64, name: &str) -> Option<RateLimiter> {
         return None;
     }
     let prefix = unique_prefix(name);
-    match RateLimiter::new_redis(REDISS_URL, limit, window, &prefix, 2, Some(&ca)).await {
+    match RateLimiter::new_redis(REDISS_URL, limit, window, &prefix, 2, Some(&ca), true, None).await {
         Ok(rl) => Some(rl),
         Err(err) => {
             eprintln!("rediss:// rate-limiter unreachable: {err:#} — skipping");

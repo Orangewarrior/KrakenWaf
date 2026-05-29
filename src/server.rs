@@ -2,7 +2,7 @@ use crate::{
     app::AppState,
     logging::{write_critical, SecurityEvent},
     proxy::{effective_client_ip, plain_response},
-    rules::Severity,
+    rules::{RuleSet, Severity},
     tls::TlsConfigStore,
 };
 use anyhow::Result;
@@ -96,6 +96,66 @@ impl Drop for ConnGuard {
     }
 }
 
+/// Outcome of a (timeout-bounded) TLS handshake. Distinguishes a genuine
+/// handshake failure from a Slowloris-style stall so the two are logged at
+/// different levels and can be separated on a dashboard.
+enum TlsAcceptOutcome {
+    Timeout,
+    Failed(std::io::Error),
+}
+
+/// Interval at which idle per-IP counter entries are reaped from the
+/// concurrency and body-byte maps.
+const IP_MAP_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Periodically evict zero-valued entries from the per-IP concurrency
+/// (`ip_connections`) and per-IP body-byte (`ip_body_bytes`) maps.
+///
+/// Without this sweep those `DashMap`s grow without bound — one entry per
+/// distinct source IP, never removed — so a client rotating source addresses
+/// (trivial across an IPv6 /64) drives a slow memory-exhaustion `DoS`. An entry
+/// is removed **only when its counter is zero**, i.e. the IP has no in-flight
+/// connection and no buffered body at that instant, so a live request is never
+/// disturbed (a racing increment simply re-creates the entry). This mirrors the
+/// GCRA rate-limiter's existing shard sweep.
+pub fn spawn_ip_map_janitor(state: Arc<AppState>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(IP_MAP_SWEEP_INTERVAL);
+        // The first tick fires immediately; skip it so we do not sweep empty maps.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            state
+                .ip_connections
+                .retain(|_, counter| counter.load(Ordering::Relaxed) > 0);
+            state
+                .ip_body_bytes
+                .retain(|_, counter| counter.load(Ordering::Relaxed) > 0);
+        }
+    });
+}
+
+/// True if `ip` parses to a loopback address (127.0.0.0/8 or `::1`).
+fn ip_is_loopback(ip: &str) -> bool {
+    ip.parse::<std::net::IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback())
+}
+
+/// Decide whether `/metrics` may be served to this client.
+///
+/// The Prometheus endpoint exposes operational intelligence (per-module block
+/// counts, latency, which engines fire) and must not be world-readable by
+/// default. When an IP allowlist **is** configured the caller has already
+/// passed [`RuleSet::is_ip_allowed`], so remote scraping is an explicit opt-in
+/// and is permitted. When **no** allowlist is configured we restrict `/metrics`
+/// to loopback (node-local / sidecar scrapers) instead of failing open.
+fn metrics_access_allowed(snap: &RuleSet, effective_ip: &str, peer_ip: &str) -> bool {
+    if !snap.allowed_ips.is_empty() {
+        return true;
+    }
+    ip_is_loopback(effective_ip) || ip_is_loopback(peer_ip)
+}
+
 /// Resolves when the process receives SIGINT or, on Unix, SIGTERM.
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
@@ -182,7 +242,22 @@ pub async fn run(
         in_flight.fetch_add(1, Ordering::AcqRel);
         task::spawn(async move {
             let _permit = permit;
-            match acceptor.accept(stream).await {
+            // Anti-Slowloris: bound the TLS handshake. A client that opens the
+            // socket but never finishes the handshake would otherwise pin this
+            // task — and its semaphore permit — indefinitely, letting a handful
+            // of stalled sockets exhaust `--max-connections`.
+            let handshake_secs = state.cli.tls_handshake_timeout_secs;
+            let accepted = if handshake_secs > 0 {
+                timeout(Duration::from_secs(handshake_secs), acceptor.accept(stream))
+                    .await
+                    .map_or_else(
+                        |_elapsed| Err(TlsAcceptOutcome::Timeout),
+                        |res| res.map_err(TlsAcceptOutcome::Failed),
+                    )
+            } else {
+                acceptor.accept(stream).await.map_err(TlsAcceptOutcome::Failed)
+            };
+            match accepted {
                 Ok(tls_stream) => {
                     let io = TokioIo::new(tls_stream);
                     let timeout_secs = state.cli.connection_timeout_secs;
@@ -203,7 +278,13 @@ pub async fn run(
                         Err(_) => error!(target: "krakenwaf", "connection timed out"),
                     }
                 }
-                Err(err) => {
+                Err(TlsAcceptOutcome::Timeout) => warn!(
+                    target: "krakenwaf",
+                    peer = %peer,
+                    timeout_secs = handshake_secs,
+                    "TLS handshake timed out; dropping connection (anti-Slowloris)"
+                ),
+                Err(TlsAcceptOutcome::Failed(err)) => {
                     error!(target: "krakenwaf", "TLS handshake failed for {}: {}", peer, err);
                 }
             }
@@ -342,6 +423,22 @@ async fn handle(
                 plain_response(StatusCode::SERVICE_UNAVAILABLE, "KrakenWaf not ready");
             state.response_header_policy.apply(response.headers_mut(), false);
             return response;
+        }
+        // /metrics exposes operational intelligence (per-module block counts,
+        // latency, which engines fire). Unlike liveness/readiness it must not be
+        // world-readable by default: with no allowlist configured, restrict it to
+        // loopback. Remote scraping is opt-in via rules/addr/allowlist.txt (or the
+        // allow-paths YAML), both already enforced above.
+        if !metrics_access_allowed(&snap, &effective_ip, &client_ip) {
+            warn!(
+                target: "krakenwaf",
+                ip = %effective_ip,
+                "denied /metrics from non-loopback client with no allowlist configured; \
+                 add the scraper IP to rules/addr/allowlist.txt to permit remote scraping"
+            );
+            let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
+            state.response_header_policy.apply(resp.headers_mut(), false);
+            return resp;
         }
         // /metrics
         let mut response = Response::builder()

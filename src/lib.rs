@@ -15,6 +15,7 @@ pub mod proxy;
 pub mod ratelimit_config;
 pub mod response_headers;
 pub mod rules;
+pub mod secrets;
 pub mod server;
 pub mod storage;
 pub mod tls;

@@ -1,3 +1,79 @@
+## [2.32.0] - 2026-05-29
+
+> **Security hardening release.** Closes seven findings from an AppSec / blue-team
+> review of the request path and operational surface: a TLS-handshake Slowloris
+> vector, unbounded per-IP memory growth, a world-readable `/metrics` default, a
+> committed dev TLS key, silent rate-limiter fail-open, env-only secret handling,
+> and the request-normalisation contract. No detection-engine behaviour was
+> weakened — all ~330 tests pass and `cargo clippy --all-targets -D warnings` is
+> clean.
+
+### Anti-Slowloris: bounded TLS handshake (`src/server.rs`, `src/cli.rs`)
+
+- The TLS `accept()` call is now wrapped in a timeout. Previously a client could
+  open a socket and never finish the handshake, pinning the connection task **and
+  its `--max-connections` semaphore permit** indefinitely; a few dozen stalled
+  sockets could exhaust the accept budget and lock out legitimate traffic.
+- New flag **`--tls-handshake-timeout-secs`** (default **10**, `0` disables).
+  Handshake timeouts are logged at `warn` (distinct from genuine handshake
+  failures) so they can be alerted on separately.
+
+### Bounded per-IP state — memory-exhaustion fix (`src/server.rs`, `src/main.rs`)
+
+- The `ip_connections` and `ip_body_bytes` `DashMap`s previously grew without
+  bound — one entry per distinct source IP, never reclaimed — so a client
+  rotating addresses (trivial across an IPv6 /64) could drive a slow OOM.
+- A background **janitor task** (`spawn_ip_map_janitor`, 30 s interval) now reaps
+  entries whose counter is zero (no in-flight connection/body), mirroring the
+  GCRA rate-limiter's existing shard sweep. Live requests are never disturbed.
+
+### `/metrics` is fail-closed by default (`src/server.rs`, `src/rules`)
+
+- `/metrics` exposes operational intelligence (per-module block counts, latency,
+  which engines fire). It previously fell **open** when no IP allowlist was
+  configured. It is now restricted to **loopback** unless the scraper IP is in
+  `rules/addr/allowlist.txt` (or the allow-paths YAML). Liveness/readiness
+  endpoints are unchanged (orchestrator probes keep working).
+
+### Dev TLS key removed from version control (`.gitignore`, `scripts/`)
+
+- `certs/key.pem` / `certs/cert.pem` (a self-signed `CN=localhost` dev pair) are
+  **untracked** and `certs/*.pem` is git-ignored. Added
+  **`scripts/gen-dev-certs.sh`** to (re)generate the pair locally with `chmod 600`
+  on the key. Production deployments mount CA/ACME-issued certs.
+
+### Rate-limiter fail mode is observable and configurable (`src/waf/rate_limit.rs`, `src/metrics.rs`, `conf/ratelimit.yaml`)
+
+- A Redis outage that silently disabled rate limiting is now visible: new
+  counters **`krakenwaf_redis_rate_limit_failopen_total`** and
+  **`…_failclosed_total`** plus a structured `warn` on every fall-through.
+- New `redis.fail_open` config key (**default `true`** = preserve prior
+  fail-open). Set `false` for **fail-closed** (HTTP 429 on Redis unavailability)
+  when the limiter is a hard security control.
+
+### File-based secrets with env fallback (`src/secrets.rs`, new)
+
+- New `secrets::load_secret(NAME)` resolves, in order: **`<NAME>_FILE`** →
+  **`/run/secrets/krakenwaf/<NAME>`** → the **`NAME`** environment variable.
+  This keeps credentials out of `/proc/<pid>/environ`, crash dumps, and child
+  process environments while remaining backward compatible.
+- Applied to `MAXMIND_ACCOUNT_ID`, `MAXMIND_LICENSE_KEY`, `SPAMHAUS_DQS_KEY`,
+  `REDIS_PASSWORD`, `REDIS_USERNAME`. Example: a Docker/K8s secret mounted at
+  `/run/secrets/krakenwaf/MAXMIND_LICENSE_KEY` is picked up with no config.
+- Documented in **`docs/secrets.md`**; every env-var reference in the docs and
+  config now notes the file option.
+
+### Request-normalisation contract documented & hardened (`src/waf/engine/normalize.rs`, `src/waf/engine/mod.rs`)
+
+- The normalisation model (percent-decode passes, `+`→space, null-byte and
+  Latin-1 dual-forms, and what is intentionally *not* normalised) is now
+  documented in the module and in **`docs/normalization.md`**, and **pinned by
+  regression tests** so it cannot drift silently.
+- The keyword/regex matchers now also inspect the **raw (pre-decode) views**,
+  de-duplicated — bringing them to parity with the CMC, libinjection and
+  vectorscan engines (which already inspected the original form) and closing an
+  encoding-evasion inconsistency. Additive only: no detection was removed.
+
 ## [2.31.0] - 2026-05-29
 
 > Adds **GeoIP enrichment** (MaxMind GeoLite2-City) to every security event,

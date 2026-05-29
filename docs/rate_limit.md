@@ -78,6 +78,7 @@ max_per_ip_body_bytes: 209715200      # 200 MiB
 #   pool_size: 4
 #   key_prefix: "krakenwaf:rl"
 #   window_secs: 60
+#   fail_open: true   # on Redis outage: true=allow (default), false=deny (429)
 #   # ca_cert_path: "/etc/ssl/private/redis-ca.pem"   # optional: custom CA
 ```
 
@@ -110,6 +111,7 @@ built-in default
 | `redis.key_prefix` | string | `"krakenwaf:rl"` | Namespace prefix — isolates this WAF from other services on the same Redis instance. |
 | `redis.window_secs` | u64 | 60 | Rate-limit window length in seconds. |
 | `redis.ca_cert_path` | string | — | Path to a PEM CA certificate for private PKI / mTLS. Omit to use the system trust store. |
+| `redis.fail_open` | bool | `true` | Behaviour on Redis unavailability: `true` = allow the request (fail-open), `false` = deny with HTTP 429 (fail-closed). Both emit a warning + Prometheus counter. |
 
 ---
 
@@ -319,19 +321,23 @@ redis:
   ca_cert_path: "/etc/ssl/private/my-ca.pem"
 ```
 
-### 2. Credentials via environment variables
+### 2. Credentials via file secrets (env-var fallback)
 
-**Never store passwords in `conf/ratelimit.yaml`.**
+**Never store passwords in `conf/ratelimit.yaml`.** Credentials are loaded
+file-first, then from environment variables — see
+[docs/secrets.md](secrets.md) for the full resolution order.
 
-| Environment variable | Purpose |
-|---------------------|---------|
-| `REDIS_PASSWORD` | `AUTH` password (Redis `requirepass`) |
-| `REDIS_USERNAME` | ACL username (Redis 6+ `ACL AUTH`) — optional |
+| Secret | Purpose | File (preferred) | Env (fallback) |
+|--------|---------|------------------|----------------|
+| `REDIS_PASSWORD` | `AUTH` password (Redis `requirepass`) | `/run/secrets/krakenwaf/REDIS_PASSWORD` | `REDIS_PASSWORD` |
+| `REDIS_USERNAME` | ACL username (Redis 6+ `ACL AUTH`) — optional | `/run/secrets/krakenwaf/REDIS_USERNAME` | `REDIS_USERNAME` |
 
 KrakenWaf reads these at startup and injects them into the connection
 configuration. The values never appear in log output or error messages.
 
-In Docker / Kubernetes, mount these from a secrets manager:
+In Docker / Kubernetes, prefer mounting them as files on the conventional path
+(`/run/secrets/krakenwaf/<NAME>`), which KrakenWaf picks up with no further
+config. The environment-variable form below still works:
 
 ```yaml
 # Kubernetes example

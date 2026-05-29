@@ -147,6 +147,15 @@ pub struct RedisConfig {
     /// Omit to use the system trust store.
     #[serde(default)]
     pub ca_cert_path: Option<String>,
+
+    /// Behaviour when Redis is unreachable or a rate-limit check times out.
+    /// `true` (default) — **fail-open**: the request is allowed and a metric +
+    /// warning are emitted (favours availability). `false` — **fail-closed**:
+    /// the request is denied with HTTP 429 (favours the rate-limit guarantee).
+    /// Choose fail-closed when the limiter is a hard security control and a
+    /// Redis outage must not silently disable it.
+    #[serde(default = "default_redis_fail_open")]
+    pub fail_open: bool,
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -155,6 +164,7 @@ fn default_max_coroutines() -> usize { 64 }
 fn default_pool_size() -> usize { 4 }
 fn default_window_secs() -> u64 { 60 }
 fn default_key_prefix() -> String { "krakenwaf:rl".to_string() }
+fn default_redis_fail_open() -> bool { true }
 
 /// Deserialise an optional u32 where 0 and the absent case are both `None`.
 fn deser_opt_nonzero_u32<'de, D>(d: D) -> Result<Option<u32>, D::Error>

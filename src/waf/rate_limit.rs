@@ -33,12 +33,18 @@
 //! ## Redis / distributed
 //!
 //! An atomic Lua script (`INCR` + conditional `EXPIRE`) runs server-side —
-//! no MULTI/EXEC round-trips. On unavailability the limiter **fails open**
-//! (request is allowed) and emits a `tracing::warn!`.
+//! no MULTI/EXEC round-trips. On unavailability the limiter applies the
+//! configured fail mode (`redis.fail_open`, default **fail-open** = allow the
+//! request) and emits a `tracing::warn!` plus a Prometheus counter
+//! (`krakenwaf_redis_rate_limit_failopen_total` /
+//! `krakenwaf_redis_rate_limit_failclosed_total`).
 //!
 //! Security (CIS Redis Benchmark):
 //! * URL must use `rediss://` (TLS mandatory).
-//! * Credentials are read from `REDIS_PASSWORD` / `REDIS_USERNAME` env vars.
+//! * Credentials are loaded **file-first** (`REDIS_PASSWORD_FILE` or
+//!   `/run/secrets/krakenwaf/REDIS_PASSWORD`) with a fallback to the
+//!   `REDIS_PASSWORD` / `REDIS_USERNAME` environment variables — see
+//!   [`crate::secrets`].
 //! * Custom CA certificate supported for private PKI / mTLS deployments.
 //!
 //! ## Persistence (local only)
@@ -67,6 +73,8 @@ use std::{
 use fred::clients::Pool as FredPool;
 use tokio::time::interval;
 use tracing::warn;
+
+use crate::metrics::WafMetrics;
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -106,11 +114,15 @@ impl RateLimiter {
     /// Construct a Redis-backed distributed rate limiter.
     ///
     /// `url` **must** use `rediss://` (TLS, CIS Benchmark requirement).
-    /// Credentials are read from `REDIS_PASSWORD` and `REDIS_USERNAME` env vars.
+    /// Credentials are loaded file-first (`REDIS_PASSWORD_FILE` /
+    /// `/run/secrets/krakenwaf/REDIS_PASSWORD`) with an env-var fallback.
+    /// `fail_open` selects the behaviour when Redis is unreachable; `metrics`,
+    /// when supplied, records each fail-open/closed event.
     ///
     /// # Errors
     /// Returns an error if the URL is not `rediss://`, or if the connection pool
     /// cannot be initialised (e.g. Redis unreachable at startup).
+    #[allow(clippy::too_many_arguments)]
     pub async fn new_redis(
         url: &str,
         limit: u32,
@@ -118,10 +130,14 @@ impl RateLimiter {
         key_prefix: &str,
         pool_size: usize,
         ca_cert_path: Option<&str>,
+        fail_open: bool,
+        metrics: Option<Arc<WafMetrics>>,
     ) -> Result<Self> {
         Ok(Self::Redis(Arc::new(
-            RedisRateLimiter::new(url, limit, window_secs, key_prefix, pool_size, ca_cert_path)
-                .await?,
+            RedisRateLimiter::new(
+                url, limit, window_secs, key_prefix, pool_size, ca_cert_path, fail_open, metrics,
+            )
+            .await?,
         )))
     }
 
@@ -138,8 +154,10 @@ impl RateLimiter {
         key_prefix: &str,
     ) -> Result<Self> {
         Ok(Self::Redis(Arc::new(
-            RedisRateLimiter::new_inner(url, limit, window_secs, key_prefix, 2, None, false)
-                .await?,
+            RedisRateLimiter::new_inner(
+                url, limit, window_secs, key_prefix, 2, None, false, true, None,
+            )
+            .await?,
         )))
     }
 
@@ -476,13 +494,21 @@ pub struct RedisRateLimiter {
     window_secs: u64,
     /// Per-call timeout for `EVAL` operations. Bounds the worst-case latency the
     /// WAF can spend waiting on a hung Redis (network blip, GC stall) before
-    /// failing open. Keeps tail latency under control on heavy load.
+    /// applying the fail mode. Keeps tail latency under control on heavy load.
     op_timeout: Duration,
+    /// Behaviour on Redis unavailability: `true` allows the request
+    /// (fail-open), `false` denies it with 429 (fail-closed).
+    fail_open: bool,
+    /// Optional metrics sink so each fail-open/closed event is observable on
+    /// the `/metrics` endpoint.
+    metrics: Option<Arc<WafMetrics>>,
 }
 
 impl RedisRateLimiter {
     /// Production constructor: enforces `rediss://` (TLS) and injects
-    /// credentials from `REDIS_PASSWORD` / `REDIS_USERNAME` env vars.
+    /// credentials loaded file-first (see [`crate::secrets`]) with an env-var
+    /// fallback.
+    #[allow(clippy::too_many_arguments)]
     async fn new(
         url: &str,
         limit: u32,
@@ -490,12 +516,17 @@ impl RedisRateLimiter {
         key_prefix: &str,
         pool_size: usize,
         ca_cert_path: Option<&str>,
+        fail_open: bool,
+        metrics: Option<Arc<WafMetrics>>,
     ) -> Result<Self> {
         anyhow::ensure!(
             url.starts_with("rediss://"),
             "Redis URL must use rediss:// (TLS) per CIS Benchmark — got: {url}"
         );
-        Self::new_inner(url, limit, window_secs, key_prefix, pool_size, ca_cert_path, true).await
+        Self::new_inner(
+            url, limit, window_secs, key_prefix, pool_size, ca_cert_path, true, fail_open, metrics,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -507,6 +538,8 @@ impl RedisRateLimiter {
         pool_size: usize,
         ca_cert_path: Option<&str>,
         inject_credentials: bool,
+        fail_open: bool,
+        metrics: Option<Arc<WafMetrics>>,
     ) -> Result<Self> {
         use fred::prelude::*;
         use fred::types::config::TlsConnector;
@@ -514,15 +547,14 @@ impl RedisRateLimiter {
         let mut config = Config::from_url(url).context("invalid Redis URL")?;
 
         if inject_credentials {
-            if let Ok(pwd) = std::env::var("REDIS_PASSWORD") {
-                if !pwd.is_empty() {
-                    config.password = Some(pwd);
-                }
+            // File-first secrets (see `crate::secrets`): `REDIS_PASSWORD_FILE` /
+            // `/run/secrets/krakenwaf/REDIS_PASSWORD`, then the env var. Keeps
+            // the AUTH password out of `/proc/<pid>/environ` and crash dumps.
+            if let Some(pwd) = crate::secrets::load_secret("REDIS_PASSWORD") {
+                config.password = Some(pwd);
             }
-            if let Ok(user) = std::env::var("REDIS_USERNAME") {
-                if !user.is_empty() {
-                    config.username = Some(user);
-                }
+            if let Some(user) = crate::secrets::load_secret("REDIS_USERNAME") {
+                config.username = Some(user);
             }
         }
 
@@ -560,6 +592,8 @@ impl RedisRateLimiter {
             // (typically &lt; 5 ms) yet tight enough that a degraded Redis cannot
             // dominate WAF tail latency under load. Tunable later if needed.
             op_timeout: Duration::from_millis(150),
+            fail_open,
+            metrics,
         })
     }
 
@@ -569,8 +603,9 @@ impl RedisRateLimiter {
 
         let key = format!("{}:{}", self.key_prefix, ip);
         // Wrap the EVAL in a per-call timeout: a hung Redis (network blip, GC
-        // pause, evictions) must not stall the WAF request path. On timeout we
-        // fail open — denying availability is worse than missing one count.
+        // pause, evictions) must not stall the WAF request path. On error or
+        // timeout we apply the configured fail mode (`fail_open`) and record it
+        // so a Redis outage silently disabling rate limiting is observable.
         let eval_fut = self.pool.eval::<i64, _, _, _>(
             INCR_WITH_TTL_LUA,
             vec![key],
@@ -580,25 +615,32 @@ impl RedisRateLimiter {
         match tokio::time::timeout(self.op_timeout, eval_fut).await {
             Ok(Ok(1)) => true,
             Ok(Ok(_)) => false,
-            Ok(Err(err)) => {
-                warn!(
-                    target: "krakenwaf",
-                    error = %err,
-                    ip,
-                    "Redis rate-limit check failed; failing open"
-                );
-                true
-            }
-            Err(_elapsed) => {
-                warn!(
-                    target: "krakenwaf",
-                    timeout_ms = u64::try_from(self.op_timeout.as_millis()).unwrap_or(u64::MAX),
-                    ip,
-                    "Redis rate-limit EVAL exceeded per-call timeout; failing open"
-                );
-                true
-            }
+            Ok(Err(err)) => self.on_unavailable(ip, format_args!("check failed: {err}")),
+            Err(_elapsed) => self.on_unavailable(
+                ip,
+                format_args!(
+                    "EVAL exceeded per-call timeout of {}ms",
+                    u64::try_from(self.op_timeout.as_millis()).unwrap_or(u64::MAX)
+                ),
+            ),
         }
+    }
+
+    /// Apply the configured fail mode when Redis is unavailable: record the
+    /// event in metrics, warn, and return the allow/deny decision.
+    fn on_unavailable(&self, ip: &str, reason: std::fmt::Arguments<'_>) -> bool {
+        if let Some(metrics) = &self.metrics {
+            metrics.inc_redis_rate_limit_fail(self.fail_open);
+        }
+        warn!(
+            target: "krakenwaf",
+            ip,
+            fail_open = self.fail_open,
+            reason = %reason,
+            "Redis rate-limiter unavailable; applying fail mode (fail_open={})",
+            self.fail_open
+        );
+        self.fail_open
     }
 }
 
