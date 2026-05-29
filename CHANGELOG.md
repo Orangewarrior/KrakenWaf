@@ -47,6 +47,9 @@
 - Added three regression tests (`src/storage.rs`): fresh schema is stamped at the
   latest version, `init_schema` is idempotent across simulated restarts (the exact
   repro), and a legacy unstamped DB upgrades cleanly.
+- Docs: the `## SQLite schema` block in `README.md` was stale (missing the v4
+  `country` / `continent_name` GeoIP columns); it now matches `create_latest_schema`
+  exactly (column set and order).
 
 ## [2.32.0] - 2026-05-29
 

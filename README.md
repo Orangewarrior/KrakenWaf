@@ -498,6 +498,8 @@ CREATE TABLE vulnerabilities (
     rule_match TEXT NOT NULL,
     rule_line_match VARCHAR(256) NOT NULL,
     client_ip VARCHAR(64) NOT NULL,
+    country VARCHAR(128) NOT NULL DEFAULT '',
+    continent_name VARCHAR(64) NOT NULL DEFAULT '',
     http_method VARCHAR(16) NOT NULL,
     request_uri TEXT NOT NULL,
     fullpath_evidence TEXT NOT NULL,
