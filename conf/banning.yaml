@@ -24,7 +24,7 @@
 #     `ban_count` resets to zero after 30 days of inactivity.
 
 # Master switch. `false` disables banning entirely.
-Banning_mode: true
+Banning_mode: false
 
 Ban_context:
   # When `true`, any IP blocked by the `Detect_bots_n_scanners` CMC module
