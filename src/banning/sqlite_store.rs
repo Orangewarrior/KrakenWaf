@@ -15,6 +15,14 @@
 //! Concurrency: every read-modify-write goes through `IMMEDIATE` `SQLite`
 //! transactions on a `parking_lot::Mutex<Connection>` so updates from
 //! concurrent request threads are serialised and atomic.
+//!
+//! Time representation: `banned_until` and `last_event_at` hold **unix epoch
+//! seconds (UTC)** as `INTEGER`, not a textual `TIMESTAMP`. `SQLite` has no
+//! dedicated date/time type — epoch-`INTEGER` is one of its three documented
+//! representations and the right fit here: every use is integer arithmetic and
+//! indexed range comparison (ban-expiry checks and the retention purge), which
+//! is exact, compact, and timezone-unambiguous. The values come straight from
+//! `Utc::now().timestamp()`.
 
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
@@ -52,10 +60,10 @@ impl SqliteBanStore {
              PRAGMA busy_timeout = 5000;
              CREATE TABLE IF NOT EXISTS banned_ips (
                  ip            TEXT PRIMARY KEY,
-                 banned_until  INTEGER,
+                 banned_until  INTEGER,           -- unix epoch seconds (UTC); NULL = not currently banned
                  ban_count     INTEGER NOT NULL DEFAULT 0,
                  occurrences   INTEGER NOT NULL DEFAULT 0,
-                 last_event_at INTEGER NOT NULL
+                 last_event_at INTEGER NOT NULL   -- unix epoch seconds (UTC); drives the 30-day retention purge
              );
              CREATE INDEX IF NOT EXISTS idx_banned_until ON banned_ips(banned_until);",
         )?;
@@ -88,10 +96,10 @@ impl SqliteBanStore {
         conn.execute_batch(
             "CREATE TABLE banned_ips (
                 ip TEXT PRIMARY KEY,
-                banned_until INTEGER,
+                banned_until INTEGER,            -- unix epoch seconds (UTC); NULL = not currently banned
                 ban_count INTEGER NOT NULL DEFAULT 0,
                 occurrences INTEGER NOT NULL DEFAULT 0,
-                last_event_at INTEGER NOT NULL
+                last_event_at INTEGER NOT NULL   -- unix epoch seconds (UTC); drives the 30-day retention purge
             );",
         )?;
         Ok(Self {
