@@ -380,7 +380,7 @@ async fn nikto_request_gets_banned_in_redis_then_short_circuits() {
                 );
                 // sanity: ban_count >= 1.
                 assert!(
-                    hash.lines().any(|l| l == "1" || l.parse::<i64>().map(|n| n >= 1).unwrap_or(false)),
+                    hash.lines().any(|l| l == "1" || l.parse::<i64>().is_ok_and(|n| n >= 1)),
                     "ban_count should be >= 1 in: {hash}"
                 );
             }

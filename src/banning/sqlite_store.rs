@@ -25,7 +25,7 @@ use super::{BanRecord, RecordOutcome};
 
 /// Counter reset window: occurrence + `ban_count` are purged after this much
 /// inactivity. Matches the documented "1 month" promise.
-const OCCURRENCE_RETENTION: Duration = Duration::from_secs(30 * 24 * 3_600);
+const OCCURRENCE_RETENTION: Duration = Duration::from_hours(720);
 
 pub struct SqliteBanStore {
     conn: Arc<Mutex<Connection>>,

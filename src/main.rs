@@ -111,8 +111,7 @@ async fn main() -> Result<()> {
     let geo_reader: Option<Arc<geo::GeoIpReader>> = {
         let update_config_path = root_dir.join(update::DEFAULT_UPDATE_CONFIG);
         let geo_active = update::load_update_config(&update_config_path)
-            .map(|c| c.maxmind_geo.active)
-            .unwrap_or(true);
+            .map_or(true, |c| c.maxmind_geo.active);
 
         if geo_active {
             let geo_db_path = root_dir.join("db/geo/GeoLite2-City.mmdb");
@@ -329,7 +328,7 @@ async fn build_rate_limiter(
         WalMode::Sqlite => PersistenceMode::Sqlite,
         WalMode::Bincode => PersistenceMode::Bincode,
     };
-    RateLimiter::new(effective_limit, std::time::Duration::from_secs(60), &snapshot_path, persistence)
+    RateLimiter::new(effective_limit, std::time::Duration::from_mins(1), &snapshot_path, persistence)
         .context("failed to initialise local GCRA rate-limiter")
 }
 

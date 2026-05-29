@@ -201,7 +201,7 @@ impl BanManager {
         tokio::spawn(async move {
             // Purge once per hour — cheap, bounded, and a far cry from the
             // 30-day retention window.
-            let mut ticker = interval(Duration::from_secs(3_600));
+            let mut ticker = interval(Duration::from_hours(1));
             ticker.tick().await; // skip the immediate first tick
             loop {
                 ticker.tick().await;

@@ -361,8 +361,7 @@ async fn attack_scanner_rate_limited_regardless_of_ua() {
             .header("user-agent", *ua)
             .send()
             .await
-            .map(|r| r.status())
-            .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            .map_or(StatusCode::INTERNAL_SERVER_ERROR, |r| r.status());
         // GCRA rate limiter blocks with 403 (Decision::Block); accept any non-200.
         if status != StatusCode::OK { blocked += 1; }
         if i >= 3 {

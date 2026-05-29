@@ -311,7 +311,7 @@ async fn waf_blocks_spamhaus_ip_and_reports_source_list() {
     assert_eq!(rules.addr_list_entries.len(), 1);
 
     let rl = Arc::new(
-        RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
+        RateLimiter::new(10_000, std::time::Duration::from_mins(1), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
             .expect("test"),
     );
     let engine = WafEngineFactory::create(WafEngineConfig {
@@ -368,7 +368,7 @@ async fn waf_blocks_firehol_dir_ip_and_reports_source_list() {
     assert_eq!(rules.addr_list_entries.len(), 1);
 
     let rl = Arc::new(
-        RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
+        RateLimiter::new(10_000, std::time::Duration::from_mins(1), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
             .expect("test"),
     );
     let engine = WafEngineFactory::create(WafEngineConfig {
@@ -480,7 +480,7 @@ async fn waf_blocks_blocklist_dir_ip_and_reports_yaml_title() {
     assert_eq!(rules.addr_list_entries.len(), 1);
 
     let rl = Arc::new(
-        RateLimiter::new(10_000, std::time::Duration::from_secs(60), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
+        RateLimiter::new(10_000, std::time::Duration::from_mins(1), &tmp.path().join("rate.bin"), PersistenceMode::Bincode)
             .expect("test"),
     );
     let engine = WafEngineFactory::create(WafEngineConfig {
