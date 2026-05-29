@@ -10,7 +10,7 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
     let rules = Arc::new(RuleSet::from_dir(Path::new("./rules")).expect("load bundled rules"));
     let tmp = tempfile::tempdir().expect("tempdir");
     let rl = Arc::new(
-        RateLimiter::new(240, std::time::Duration::from_secs(60), &tmp.path().join("rate_limit.db"), PersistenceMode::Sqlite)
+        RateLimiter::new(240, std::time::Duration::from_mins(1), &tmp.path().join("rate_limit.db"), PersistenceMode::Sqlite)
             .expect("rate limiter"),
     );
     let engine = WafEngineFactory::create(WafEngineConfig {

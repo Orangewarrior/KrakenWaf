@@ -15,7 +15,7 @@ fn make_test_rl() -> Arc<RateLimiter> {
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("rate_limit.db");
     let rl = Arc::new(
-        RateLimiter::new(60, std::time::Duration::from_secs(60), &path, PersistenceMode::Sqlite)
+        RateLimiter::new(60, std::time::Duration::from_mins(1), &path, PersistenceMode::Sqlite)
             .expect("rate limiter"),
     );
     drop(dir);

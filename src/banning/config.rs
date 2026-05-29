@@ -150,7 +150,7 @@ mod tests {
         assert!(cfg.enabled);
         assert!(cfg.security_scanners);
         assert_eq!(cfg.tolerance_block_count, 3);
-        assert_eq!(cfg.ban_wait_time, Duration::from_secs(30 * 60));
+        assert_eq!(cfg.ban_wait_time, Duration::from_mins(30));
     }
 
     #[test]
@@ -158,7 +158,7 @@ mod tests {
         let yaml = "Banning_mode: true\nBan_context:\n  security_scanners: false\n  \"tolerance block count\": 5\n  ban_wait_time: 2h\n";
         let cfg = parse(yaml).expect("ok");
         assert_eq!(cfg.tolerance_block_count, 5);
-        assert_eq!(cfg.ban_wait_time, Duration::from_secs(2 * 3600));
+        assert_eq!(cfg.ban_wait_time, Duration::from_hours(2));
     }
 
     #[test]
@@ -195,7 +195,7 @@ mod tests {
     fn compound_duration_works() {
         let yaml = "Banning_mode: true\nBan_context:\n  tolerance_block_count: 1\n  Ban_wait_time: 1h30m\n";
         let cfg = parse(yaml).expect("ok");
-        assert_eq!(cfg.ban_wait_time, Duration::from_secs(5400));
+        assert_eq!(cfg.ban_wait_time, Duration::from_mins(90));
     }
 
     #[test]
