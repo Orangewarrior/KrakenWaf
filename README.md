@@ -753,7 +753,7 @@ token handling, DQS zones, and scheduler configuration.
 
 ## 🚫 Banning
 
-KrakenWaf 2.30.0 introduces an opt-in **BAN list** that short-circuits
+KrakenWaf 2.31.0 introduces an opt-in **BAN list** that short-circuits
 repeat offenders (and confirmed scanners) at the server layer, before
 any inspection. Configuration lives in `conf/banning.yaml`:
 

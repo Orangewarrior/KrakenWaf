@@ -1,6 +1,6 @@
 # Banning subsystem
 
-KrakenWaf 2.30.0 introduces a first-class **BAN list** that keeps repeat
+KrakenWaf 2.31.0 introduces a first-class **BAN list** that keeps repeat
 offenders (and confirmed scanners) away from the protected origin
 without ever reaching the WAF inspection pipeline.
 

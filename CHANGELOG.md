@@ -1,3 +1,114 @@
+## [2.31.0] - 2026-05-29
+
+> Adds **GeoIP enrichment** (MaxMind GeoLite2-City) to every security event,
+> moves MaxMind credentials to environment variables, consolidates the
+> geo-update command into `soldier_update --addr-list maxmind-geo`, and sets
+> `Banning_mode: false` as the development default to prevent self-banning
+> during test loops. Fixes all Clippy regressions introduced by Rust 1.96.
+> **All ~330 tests pass (lib + 9 integration binaries, vectorscan + Redis TLS
+> active).**
+
+### New `GeoIP` enrichment (`src/geo.rs`, `src/update.rs`)
+
+- New module **`src/geo.rs`** wraps `maxminddb 0.27` with a
+  `GeoIpReader` that resolves any source IP to `country_name` and
+  `continent_name` via `db/geo/GeoLite2-City.mmdb`.
+  - Private / loopback / unresolvable IPs return empty strings (never
+    an error).
+  - `GeoIpReader` is wrapped in `Arc` and injected into the proxy
+    pipeline at startup; no disk I/O on the hot path.
+  - IPv4 and IPv6 lookups both supported.
+- **`country`** and **`continent_name`** fields are now populated in
+  every security event:
+  - SQLite vulnerability log (`logs/db/vulns_alert.db`)
+  - JSONL event stream (`logs/json/`)
+  - Raw critical log (`logs/console_local/`)
+- The GeoIP database is loaded **only** when `conf/update.yaml ::
+  maxmind-geo.active` is `true` (default). When `active: false` both
+  fields are stored as empty strings — no lookup is attempted even if
+  the `.mmdb` file is present.
+
+### `soldier_update --addr-list maxmind-geo`
+
+- The `--geo-update` flag has been **removed**; geo downloads now follow
+  the same `--addr-list <name>` pattern used by spamhaus / firehol /
+  blocklist.
+- `update_addr_list("maxmind-geo")` downloads, verifies, and installs
+  `GeoLite2-City.mmdb` under `db/geo/`.
+- Cron scheduling lives in `conf/update.yaml :: maxmind-geo.cron`
+  (default `"0 18 1 * *"` — 1st of each month at 18:00).
+- The `scheduled_soldier_jobs_for_values` function emits
+  `["--addr-list", "maxmind-geo"]` so the existing cron harness drives
+  geo updates alongside all other address-list refreshes.
+
+### Credential security
+
+- `account_id` and `key` fields **removed** from `conf/update.yaml` and
+  from `MaxmindGeoConfig`. Hard-coded credentials can no longer be
+  checked in by accident.
+- Credentials are now read exclusively from environment variables at
+  download time:
+  ```bash
+  export MAXMIND_ACCOUNT_ID='your_account_id'
+  export MAXMIND_LICENSE_KEY='your_license_key'
+  ./soldier_update --addr-list maxmind-geo
+  ```
+- If either variable is absent or empty when `active: true`, an error
+  is written to `logs/console_local/errors.txt` and the download is
+  skipped gracefully (WAF continues running with the existing `.mmdb`).
+
+### Dependency
+
+- `maxminddb` upgraded **0.24 → 0.27.3**.
+  - Fixes **RUSTSEC-2025-0132** (`Reader::open_mmap` unsoundness in
+    0.24; `open_readfile` was used so the advisory was not exploitable,
+    but `cargo deny` blocked the unpatched version).
+  - Adopts the `0.27` API: `lookup()` → `LookupResult::decode::<City>()`,
+    `names.english` instead of `BTreeMap::get("en")`.
+
+### Tests
+
+- New **`tests/geoip_test.rs`** — 14 unit tests covering `GeoIpReader`
+  lookups (US / EU / IPv6 / private / loopback / invalid IP), YAML
+  config parsing (`maxmind_geo.active`, `cron`, missing section
+  defaults), and cron scheduling (fires on day=1, skipped on day=15,
+  inactive module never schedules).
+- New **`tests/geoip_waf_test.rs`** — 4 end-to-end integration tests
+  that spawn the real `krakenwaf` binary and verify `country` /
+  `continent_name` are correctly saved in `vulns_alert.db`:
+  - `geo_country_saved_in_sqlite_for_external_ip` — `8.8.8.8` →
+    `United States / North America`.
+  - `geo_country_saved_for_european_ip` — `185.220.101.34` → `Europe`.
+  - `geo_fields_empty_for_private_ip` — `127.0.0.1` → empty.
+  - `geo_disabled_via_active_false_saves_empty_fields` — `active: false`
+    yields empty fields even for `8.8.8.8`.
+  All four tests skip automatically when `db/geo/GeoLite2-City.mmdb` is
+  absent.
+- New **`docs/geoip.md`** — setup guide, env var instructions, cron
+  reference, and credential error handling section.
+- README updated with GeoIP setup steps (`export` + `--addr-list`).
+
+### Development default
+
+- `conf/banning.yaml :: Banning_mode` set to **`false`** to prevent
+  test loops on `127.0.0.1` from self-banning the loopback address.
+  Re-enable for production deployments.
+
+### Clippy (Rust 1.96)
+
+- Fixed `clippy::duration_suboptimal_units` — 8 occurrences across
+  `src/banning/`, `src/main.rs`, and 5 test files:
+  `from_secs(n*60)` → `from_mins(n)`,
+  `from_secs(n*3600)` → `from_hours(n)`.
+- Fixed `map_unwrap_or` / `result_map_or` — 3 occurrences:
+  `.map(f).unwrap_or(d)` → `.map_or(d, f)` and `.is_ok_and(f)`.
+
+### Version bump
+
+`Cargo.toml :: version` 2.30.0 → **2.31.0**.
+
+---
+
 ## [2.30.0] - 2026-05-27
 
 > Adds a first-class **BAN list** that short-circuits repeat offenders
