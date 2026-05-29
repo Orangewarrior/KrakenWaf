@@ -5,9 +5,11 @@
 > used by the other connection-level guards (`--body-frame-timeout-secs`,
 > `--max-inflight-body-bytes`, `--max-per-ip-body-bytes`, `--rate-limit-per-minute`).
 > No behaviour change at the default: the effective timeout is still **10 s** when
-> nothing is set. All ~330 tests pass and `cargo clippy --all-targets -D warnings`
-> is clean. Validated end-to-end with the `attack` sweep (banning off, Vectorscan
-> on, `--concurrency 50`): **477/477 payloads blocked, 0 bypassed**.
+> nothing is set. Also fixes a startup crash when the WAF is restarted from the
+> same working directory (`SQLite` schema-migration idempotency). All ~330 tests
+> pass and `cargo clippy --all-targets -D warnings` is clean. Validated end-to-end
+> with the `attack` sweep (banning off, Vectorscan on, `--concurrency 50`):
+> **477/477 payloads blocked, 0 bypassed**.
 
 ### `--tls-handshake-timeout-secs` now falls back to `conf/ratelimit.yaml` (`src/cli.rs`, `src/ratelimit_config.rs`, `src/app.rs`, `src/main.rs`, `src/server.rs`, `conf/ratelimit.yaml`)
 
@@ -26,6 +28,25 @@
   the anti-DoS guard and lets half-open TLS sockets pin connection slots).
 - Docs: `docs/rate_limit.md` field reference, example config, and priority chain
   updated; new unit test covers the CLI → YAML → default fallback chain.
+
+### Fix: idempotent `SQLite` schema migration — no more restart crash (`src/storage.rs`)
+
+- **Bug:** restarting the WAF from the **same working directory** panicked at
+  startup with `failed to add country column (schema v4): duplicate column name:
+  country`. `create_latest_schema` builds the full v4 table but stamped
+  `PRAGMA user_version = 3`, so on the next boot the v4 step re-ran and issued an
+  `ALTER TABLE … ADD COLUMN country` against a column that already existed. (The
+  integration tests never hit this because each spawns the WAF in a fresh
+  `tempdir`.)
+- **Fix:** a single `LATEST_SCHEMA_VERSION` constant is now the source of truth and
+  is stamped on freshly created databases, and the column migrations were made
+  **idempotent** via an `add_column_if_missing` helper (`SQLite` has no
+  `ADD COLUMN IF NOT EXISTS`). A re-run is now a safe no-op instead of a hard
+  failure — this also **self-heals** databases already mis-stamped by an earlier
+  build (`user_version` is brought up to date on the next start).
+- Added three regression tests (`src/storage.rs`): fresh schema is stamped at the
+  latest version, `init_schema` is idempotent across simulated restarts (the exact
+  repro), and a legacy unstamped DB upgrades cleanly.
 
 ## [2.32.0] - 2026-05-29
 

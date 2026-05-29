@@ -13,6 +13,14 @@ use tracing::{error, warn};
 const PAYLOAD_RETENTION_DAYS: i64 = 90;
 const PURGE_INTERVAL: Duration = Duration::from_hours(24);
 
+/// Schema version stamped into `PRAGMA user_version` by `create_latest_schema`.
+/// This is the single source of truth for "newest schema this binary knows".
+/// `create_latest_schema` already emits every column up to this version, so a
+/// freshly created database must be tagged with it — otherwise the matching
+/// `migrate_to_vN` step re-runs on the next start and an `ADD COLUMN` fails on
+/// a column that already exists. Bump this in lockstep with each new migration.
+const LATEST_SCHEMA_VERSION: i64 = 4;
+
 #[derive(Clone)]
 pub struct SqliteStore {
     tx: mpsc::Sender<SecurityEvent>,
@@ -141,7 +149,7 @@ async fn init_schema(db: &DatabaseConnection) -> Result<()> {
 
     if !table_exists(db, "vulnerabilities").await? {
         create_latest_schema(db).await?;
-        set_user_version(db, 3).await?;
+        set_user_version(db, LATEST_SCHEMA_VERSION).await?;
         return Ok(());
     }
 
@@ -203,6 +211,32 @@ async fn column_exists(db: &DatabaseConnection, table: &str, column: &str) -> Re
         }
     }
     Ok(false)
+}
+
+/// Add a column to `table` only if it is not already present.
+///
+/// `SQLite` has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, and a bare
+/// `ADD COLUMN` errors when the column already exists. Guarding on
+/// `column_exists` makes the column migrations **idempotent**: re-running one
+/// against an already-upgraded table is a safe no-op instead of a hard failure.
+/// That keeps startup robust across restarts in the same working directory, a
+/// legacy database whose `user_version` was never stamped, or a migration that
+/// was interrupted partway through.
+///
+/// `ddl` must be a compile-time-constant `ALTER TABLE ... ADD COLUMN …`
+/// statement — never request data (see the SQL-safety note below).
+async fn add_column_if_missing(
+    db: &DatabaseConnection,
+    table: &str,
+    column: &str,
+    ddl: &str,
+) -> Result<()> {
+    if column_exists(db, table, column).await? {
+        return Ok(());
+    }
+    db.execute(Statement::from_string(DatabaseBackend::Sqlite, ddl.to_owned()))
+        .await?;
+    Ok(())
 }
 
 async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
@@ -289,10 +323,12 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
 }
 
 async fn migrate_to_v3(db: &DatabaseConnection) -> Result<()> {
-    db.execute(Statement::from_string(
-        DatabaseBackend::Sqlite,
-        "ALTER TABLE vulnerabilities ADD COLUMN request_id VARCHAR(32) NOT NULL DEFAULT '';".to_owned(),
-    ))
+    add_column_if_missing(
+        db,
+        "vulnerabilities",
+        "request_id",
+        "ALTER TABLE vulnerabilities ADD COLUMN request_id VARCHAR(32) NOT NULL DEFAULT '';",
+    )
     .await
     .context("failed to add request_id column (schema v3)")?;
 
@@ -307,17 +343,21 @@ async fn migrate_to_v3(db: &DatabaseConnection) -> Result<()> {
 }
 
 async fn migrate_to_v4(db: &DatabaseConnection) -> Result<()> {
-    db.execute(Statement::from_string(
-        DatabaseBackend::Sqlite,
-        "ALTER TABLE vulnerabilities ADD COLUMN country VARCHAR(128) NOT NULL DEFAULT '';".to_owned(),
-    ))
+    add_column_if_missing(
+        db,
+        "vulnerabilities",
+        "country",
+        "ALTER TABLE vulnerabilities ADD COLUMN country VARCHAR(128) NOT NULL DEFAULT '';",
+    )
     .await
     .context("failed to add country column (schema v4)")?;
 
-    db.execute(Statement::from_string(
-        DatabaseBackend::Sqlite,
-        "ALTER TABLE vulnerabilities ADD COLUMN continent_name VARCHAR(64) NOT NULL DEFAULT '';".to_owned(),
-    ))
+    add_column_if_missing(
+        db,
+        "vulnerabilities",
+        "continent_name",
+        "ALTER TABLE vulnerabilities ADD COLUMN continent_name VARCHAR(64) NOT NULL DEFAULT '';",
+    )
     .await
     .context("failed to add continent_name column (schema v4)")?;
 
@@ -368,4 +408,94 @@ async fn purge_old_events(db: &DatabaseConnection) -> Result<()> {
         [format!("-{PAYLOAD_RETENTION_DAYS} days").into()],
     )).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Open a fresh connection to a `SQLite` file, mirroring `SqliteStore::new`.
+    /// A new connection per call faithfully simulates a process restart against
+    /// the same on-disk database.
+    async fn connect(path: &Path) -> DatabaseConnection {
+        let url = format!("sqlite://{}?mode=rwc", path.display());
+        Database::connect(url).await.expect("connect sqlite")
+    }
+
+    /// A freshly created database must be stamped with the newest schema version
+    /// and carry every column `create_latest_schema` emits. If the stamp lags the
+    /// real schema, the matching migration re-runs on the next boot.
+    #[tokio::test]
+    async fn fresh_schema_is_stamped_at_latest_version() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("vulns.db");
+        let db = connect(&db_path).await;
+
+        init_schema(&db).await.expect("init fresh schema");
+
+        assert_eq!(
+            query_user_version(&db).await.expect("user_version"),
+            LATEST_SCHEMA_VERSION,
+            "fresh schema must be stamped at the latest version"
+        );
+        for col in ["request_id", "country", "continent_name"] {
+            assert!(
+                column_exists(&db, "vulnerabilities", col).await.expect("introspect"),
+                "fresh schema is missing column `{col}`"
+            );
+        }
+    }
+
+    /// Regression: running the WAF twice from the same working directory used to
+    /// panic on the second start with `duplicate column name: country` — the
+    /// fresh schema was stamped v3 while already carrying the v4 columns, so the
+    /// v4 migration re-ran an `ADD COLUMN` against an existing column. A second
+    /// `init_schema` (here via a brand-new connection, as a real restart would)
+    /// must now be a clean no-op.
+    #[tokio::test]
+    async fn init_schema_is_idempotent_across_restarts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("vulns.db");
+
+        {
+            let first = connect(&db_path).await;
+            init_schema(&first).await.expect("first boot");
+        }
+        {
+            let second = connect(&db_path).await;
+            init_schema(&second)
+                .await
+                .expect("second boot must not fail (regression: duplicate column)");
+            assert_eq!(
+                query_user_version(&second).await.expect("user_version"),
+                LATEST_SCHEMA_VERSION
+            );
+        }
+        // A third boot on the same file is still a no-op.
+        let third = connect(&db_path).await;
+        init_schema(&third).await.expect("third boot");
+    }
+
+    /// A legacy database that already has the latest columns but whose
+    /// `user_version` was never stamped (reads back as 0) must upgrade cleanly:
+    /// the idempotent `ADD COLUMN` guards turn the forced migrations into no-ops
+    /// and the version is brought up to date.
+    #[tokio::test]
+    async fn legacy_unstamped_db_with_columns_upgrades_cleanly() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("vulns.db");
+        let db = connect(&db_path).await;
+
+        // Build the full current schema, then forcibly reset the version stamp
+        // to 0 to mimic a database created before `user_version` tracking.
+        create_latest_schema(&db).await.expect("create schema");
+        set_user_version(&db, 0).await.expect("reset version");
+
+        init_schema(&db).await.expect("legacy upgrade must not fail");
+
+        assert_eq!(
+            query_user_version(&db).await.expect("user_version"),
+            LATEST_SCHEMA_VERSION
+        );
+    }
 }
