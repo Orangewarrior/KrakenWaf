@@ -11,6 +11,8 @@ struct Cli {
     #[arg(long = "kraken-update")]
     kraken_update: bool,
 
+    /// Address-list or `GeoIP` database to update.
+    /// Valid values: spamhaus, blocklist, firehol, maxmind-geo
     #[arg(long = "addr-list")]
     addr_list: Option<String>,
 
@@ -35,7 +37,9 @@ async fn main() -> anyhow::Result<()> {
     } else if let Some(addr_list) = cli.addr_list.as_deref() {
         update_addr_list_from_config(&cli.repo_root, &config, addr_list).await
     } else {
-        anyhow::bail!("use --kraken-update or --addr-list <spamhaus|blocklist|firehol>")
+        anyhow::bail!(
+            "use --kraken-update or --addr-list <spamhaus|blocklist|firehol|maxmind-geo>"
+        )
     };
 
     if let Err(err) = &result {

@@ -6,7 +6,7 @@
 //! wire. A POST sent with `Content-Encoding: gzip|br|deflate|zstd` passed a
 //! compressed payload to every matcher (keywords, regex, vectorscan,
 //! libinjection, CMC). Since none of those engines understand the
-//! compressed stream the payload was a free-for-all evasion. Trivial PoC:
+//! compressed stream the payload was a free-for-all evasion. Trivial `PoC`:
 //!
 //! ```sh
 //! printf "<sqli>" | gzip | curl -H 'Content-Encoding: gzip' --data-binary @-
@@ -29,7 +29,7 @@ use bytes::Bytes;
 use std::io::Read;
 
 /// Maximum number of `Content-Encoding` layers we will peel. Pathological
-/// chains of `gzip, gzip, gzip, ...` are otherwise a CPU-amplification DoS.
+/// chains of `gzip, gzip, gzip, ...` are otherwise a CPU-amplification `DoS`.
 const MAX_DECOMPRESS_LAYERS: usize = 4;
 
 #[derive(Debug)]

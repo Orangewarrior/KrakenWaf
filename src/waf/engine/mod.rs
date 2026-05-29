@@ -45,6 +45,11 @@ pub struct InspectionContext {
     /// request and threaded through all log events, `SQLite` rows, and upstream
     /// headers so that a WAF alert can be correlated with upstream access logs.
     pub request_id: String,
+    /// `GeoIP` country name resolved from `client_ip` at request time.
+    /// Empty when the DB is not loaded or the IP is private/unresolvable.
+    pub country: String,
+    /// `GeoIP` continent name resolved from `client_ip` at request time.
+    pub continent_name: String,
 }
 
 /// Context used when inspecting the upstream HTTP response.

@@ -116,7 +116,7 @@ async fn rate_limit_window_resets_over_rediss() {
 
 /// Heavy concurrency check — 20 parallel `check()` calls against a
 /// limit of 5 must produce **exactly 5** allowed responses. The Lua
-/// INCR_WITH_TTL_LUA script must remain atomic over multiplexed TLS.
+/// `INCR_WITH_TTL_LUA` script must remain atomic over multiplexed TLS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rate_limit_lua_script_is_atomic_over_rediss() {
     let Some(rl) = build_rl(5, 60, "atomic").await else { return };

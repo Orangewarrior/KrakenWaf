@@ -28,10 +28,10 @@ use std::sync::Once;
 
 const REDISS_URL: &str = "rediss://127.0.0.1:6380";
 
-/// Install the rustls ring CryptoProvider exactly once per test
+/// Install the rustls ring `CryptoProvider` exactly once per test
 /// process. The production `main()` does the same — without it, fred's
 /// TLS handshake panics with "Could not automatically determine the
-/// process-level CryptoProvider".
+/// process-level `CryptoProvider`".
 fn ensure_crypto_provider() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
@@ -113,7 +113,7 @@ async fn banning_over_rediss_with_custom_ca() {
     assert!(rl.check("10.5.0.1").await);
 
     let pool = rl.redis_pool().expect("rediss:// limiter must expose a fred::Pool");
-    let manager = BanManager::new_redis(cfg(3, false), pool, &unique_prefix("ban"));
+    let manager = BanManager::new_redis(cfg(3, false), pool, unique_prefix("ban"));
 
     let attacker = "203.0.113.111";
     assert!(manager.check(attacker).await.is_none(), "fresh IP must not be banned");
@@ -140,7 +140,7 @@ async fn banning_over_rediss_with_custom_ca() {
 }
 
 /// `security_scanners: true` fast-track over TLS — proves the
-/// SecurityScanner reason still short-circuits the threshold even
+/// `SecurityScanner` reason still short-circuits the threshold even
 /// when the transport is encrypted.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn security_scanner_fast_track_over_rediss() {
@@ -152,7 +152,7 @@ async fn security_scanner_fast_track_over_rediss() {
     let pool = rl.redis_pool().expect("pool");
     // Tolerance set high so the only way an IP can be banned is via
     // the fast-track.
-    let manager = BanManager::new_redis(cfg(999, true), pool, &unique_prefix("ban-scan"));
+    let manager = BanManager::new_redis(cfg(999, true), pool, unique_prefix("ban-scan"));
 
     let attacker = "198.51.100.211";
     let out = manager
@@ -187,7 +187,7 @@ async fn concurrent_records_remain_atomic_over_rediss() {
     let manager = std::sync::Arc::new(BanManager::new_redis(
         cfg(5, false),
         pool,
-        &unique_prefix("ban-atomic"),
+        unique_prefix("ban-atomic"),
     ));
 
     let attacker = "203.0.113.222";
@@ -232,9 +232,8 @@ async fn plain_redis_url_is_rejected_by_production_constructor() {
     )
     .await;
 
-    let err = match result {
-        Ok(_) => panic!("plain redis:// must be rejected by RateLimiter::new_redis"),
-        Err(e) => e,
+    let Err(err) = result else {
+        panic!("plain redis:// must be rejected by RateLimiter::new_redis")
     };
 
     let msg = format!("{err:#}");

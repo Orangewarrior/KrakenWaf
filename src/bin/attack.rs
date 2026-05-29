@@ -6,8 +6,8 @@
 //!   cargo run --bin attack                                     # target <http://127.0.0.1:8080>
 //!   cargo run --bin attack -- --target http://... --verbose
 //!   cargo run --bin attack -- --concurrency 50                 # 50 requests in-flight at once
-//!   cargo run --bin attack -- --target https://waf:8443 --cacert /path/to/ca.pem
-//!   cargo run --bin attack -- --target https://waf:8443 --insecure-skip-verify
+//!   cargo run --bin attack -- --target <https://waf:8443> --cacert /path/to/ca.pem
+//!   cargo run --bin attack -- --target <https://waf:8443> --insecure-skip-verify
 //!
 //! TLS notes
 //! ---------

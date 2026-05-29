@@ -32,6 +32,8 @@ pub struct Model {
     pub rule_match: String,
     pub rule_line_match: String,
     pub client_ip: String,
+    pub country: String,
+    pub continent_name: String,
     pub http_method: String,
     pub request_uri: String,
     pub fullpath_evidence: String,
@@ -155,6 +157,12 @@ async fn init_schema(db: &DatabaseConnection) -> Result<()> {
         set_user_version(db, 3).await?;
     }
 
+    // v3 → v4: adds country and continent_name for GeoIP enrichment.
+    if current_version < 4 || !column_exists(db, "vulnerabilities", "country").await? {
+        migrate_to_v4(db).await?;
+        set_user_version(db, 4).await?;
+    }
+
     Ok(())
 }
 
@@ -212,6 +220,8 @@ async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
             rule_match TEXT NOT NULL,
             rule_line_match VARCHAR(256) NOT NULL,
             client_ip VARCHAR(64) NOT NULL,
+            country VARCHAR(128) NOT NULL DEFAULT '',
+            continent_name VARCHAR(64) NOT NULL DEFAULT '',
             http_method VARCHAR(16) NOT NULL,
             request_uri TEXT NOT NULL,
             fullpath_evidence TEXT NOT NULL,
@@ -239,13 +249,15 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
             r"
             INSERT INTO vulnerabilities (
                 id, title, severity, cwe, description, reference_url, occurred_at,
-                rule_match, rule_line_match, client_ip, http_method, request_uri,
-                fullpath_evidence, engine, request_payload, request_id
+                rule_match, rule_line_match, client_ip, country, continent_name,
+                http_method, request_uri, fullpath_evidence, engine, request_payload, request_id
             )
             SELECT
                 id, title, severity, cwe, description, reference_url, occurred_at,
                 rule_match, rule_line_match,
                 '' AS client_ip,
+                '' AS country,
+                '' AS continent_name,
                 '' AS http_method,
                 '' AS request_uri,
                 '' AS fullpath_evidence,
@@ -294,6 +306,24 @@ async fn migrate_to_v3(db: &DatabaseConnection) -> Result<()> {
     Ok(())
 }
 
+async fn migrate_to_v4(db: &DatabaseConnection) -> Result<()> {
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "ALTER TABLE vulnerabilities ADD COLUMN country VARCHAR(128) NOT NULL DEFAULT '';".to_owned(),
+    ))
+    .await
+    .context("failed to add country column (schema v4)")?;
+
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "ALTER TABLE vulnerabilities ADD COLUMN continent_name VARCHAR(64) NOT NULL DEFAULT '';".to_owned(),
+    ))
+    .await
+    .context("failed to add continent_name column (schema v4)")?;
+
+    Ok(())
+}
+
 // SAFETY (SQL): every dynamic value reaching SQLite goes through SeaORM's `ActiveModel`
 // (see `batch_insert` below) or `Statement::from_sql_and_values` with a positional `?`
 // placeholder (see `table_exists` and `purge_old_events`). No untrusted string is ever
@@ -317,6 +347,8 @@ async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Resu
         rule_match: Set(event.rule_match.clone()),
         rule_line_match: Set(event.rule_line_match.clone()),
         client_ip: Set(event.client_ip.clone()),
+        country: Set(event.country.clone()),
+        continent_name: Set(event.continent_name.clone()),
         http_method: Set(event.method.clone()),
         request_uri: Set(event.uri.clone()),
         fullpath_evidence: Set(event.fullpath_evidence.clone()),

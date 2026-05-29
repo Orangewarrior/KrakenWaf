@@ -183,8 +183,7 @@ mod tests {
     fn parses_simple_two_part_body() {
         let boundary = "kw-boundary";
         let raw = format!(
-            "--{b}\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhello\r\n--{b}\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n<sqli>\r\n--{b}--\r\n",
-            b = boundary
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nhello\r\n--{boundary}\r\nContent-Disposition: form-data; name=\"b\"\r\n\r\n<sqli>\r\n--{boundary}--\r\n"
         );
         let parts = parse_parts(&Bytes::from(raw), boundary);
         assert_eq!(parts.len(), 2);
@@ -196,14 +195,17 @@ mod tests {
 
     #[test]
     fn parser_caps_part_count() {
+        use std::fmt::Write as _;
         let boundary = "kw";
         let mut raw = String::new();
         for i in 0..(MAX_PARTS + 50) {
-            raw.push_str(&format!(
+            write!(
+                raw,
                 "--{boundary}\r\nContent-Disposition: form-data; name=\"f{i}\"\r\n\r\nx\r\n"
-            ));
+            )
+            .expect("write to String is infallible");
         }
-        raw.push_str(&format!("--{boundary}--\r\n"));
+        write!(raw, "--{boundary}--\r\n").expect("write to String is infallible");
         let parts = parse_parts(&Bytes::from(raw), boundary);
         assert!(parts.len() <= MAX_PARTS, "must enforce MAX_PARTS");
     }

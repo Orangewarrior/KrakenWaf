@@ -50,7 +50,6 @@
 
 use ahash::AHashMap;
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection};
 use std::{
@@ -693,7 +692,7 @@ fn hash_ip(ip: &str) -> u64 {
         let canonical = match parsed {
             // IPv4-mapped IPv6 (`::ffff:a.b.c.d`) collapses to its IPv4 form.
             IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-            other => other,
+            IpAddr::V4(_) => parsed,
         };
         match canonical {
             IpAddr::V4(v4) => {
@@ -716,7 +715,7 @@ fn hash_ip(ip: &str) -> u64 {
 /// path computes "ns since this anchor" using [`Instant`], which is
 /// guaranteed monotonic and immune to NTP skew. We retain a wall-clock
 /// offset so persisted snapshots can be written/read in epoch form.
-static MONO_ANCHOR: Lazy<(Instant, u64)> = Lazy::new(|| {
+static MONO_ANCHOR: std::sync::LazyLock<(Instant, u64)> = std::sync::LazyLock::new(|| {
     let epoch_ns = u64::try_from(
         SystemTime::now()
             .duration_since(UNIX_EPOCH)

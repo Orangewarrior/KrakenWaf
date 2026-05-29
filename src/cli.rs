@@ -84,7 +84,7 @@ pub struct Cli {
     pub internal_header_name: String,
 
     /// Maximum simultaneous TCP connections the WAF accepts.
-    /// 2.24.0: when 0 (the default) KrakenWaf derives a conservative value
+    /// 2.24.0: when 0 (the default) `KrakenWaf` derives a conservative value
     /// from total RAM at startup (≈ 1 connection per 2 MiB, clamped to
     /// [64, 4096]). YAML key: `memory-limits.max_connections`.
     #[arg(long, default_value_t = 0)]

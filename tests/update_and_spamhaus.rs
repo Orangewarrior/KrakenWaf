@@ -126,6 +126,10 @@ fn scheduler_includes_firehol_addr_list_job() {
             cron: "59 23 31 12 6".to_string(),
             ..Default::default()
         },
+        maxmind_geo: krakenwaf::update::MaxmindGeoConfig {
+            active: false,
+            ..Default::default()
+        },
     };
 
     let jobs = scheduled_soldier_jobs_for_values(&config, 0, 12, 4, 5, 0).expect("test");
@@ -333,6 +337,8 @@ async fn waf_blocks_spamhaus_ip_and_reports_source_list() {
             headers: String::new(),
             body_limit: 1024,
             request_id: "test".to_string(),
+            country: String::new(),
+            continent_name: String::new(),
         })
         .await;
 
@@ -388,6 +394,8 @@ async fn waf_blocks_firehol_dir_ip_and_reports_source_list() {
             headers: String::new(),
             body_limit: 1024,
             request_id: "test".to_string(),
+            country: String::new(),
+            continent_name: String::new(),
         })
         .await;
 
@@ -498,6 +506,8 @@ async fn waf_blocks_blocklist_dir_ip_and_reports_yaml_title() {
             headers: String::new(),
             body_limit: 1024,
             request_id: "test".to_string(),
+            country: String::new(),
+            continent_name: String::new(),
         })
         .await;
 

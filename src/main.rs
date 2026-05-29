@@ -7,6 +7,7 @@ mod cli;
 mod cmc;
 mod error;
 mod ffi;
+mod geo;
 mod limits;
 mod logging;
 mod metrics;
@@ -104,6 +105,55 @@ async fn main() -> Result<()> {
     );
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
 
+    // ── GeoIP reader ─────────────────────────────────────────────────────────
+    // Respects conf/update.yaml `maxmind-geo.active`. When false, geo lookup
+    // is disabled and country/continent_name are saved as empty strings.
+    let geo_reader: Option<Arc<geo::GeoIpReader>> = {
+        let update_config_path = root_dir.join(update::DEFAULT_UPDATE_CONFIG);
+        let geo_active = update::load_update_config(&update_config_path)
+            .map(|c| c.maxmind_geo.active)
+            .unwrap_or(true);
+
+        if geo_active {
+            let geo_db_path = root_dir.join("db/geo/GeoLite2-City.mmdb");
+            if geo_db_path.exists() {
+                match geo::GeoIpReader::builder(&geo_db_path).build() {
+                    Ok(reader) => {
+                        info!(
+                            target: "krakenwaf",
+                            path = %geo_db_path.display(),
+                            "GeoLite2-City database loaded — GeoIP enrichment active"
+                        );
+                        Some(Arc::new(reader))
+                    }
+                    Err(err) => {
+                        tracing::warn!(
+                            target: "krakenwaf",
+                            path = %geo_db_path.display(),
+                            error = %err,
+                            "failed to open GeoLite2-City.mmdb; GeoIP enrichment disabled"
+                        );
+                        None
+                    }
+                }
+            } else {
+                info!(
+                    target: "krakenwaf",
+                    path = %geo_db_path.display(),
+                    "GeoLite2-City.mmdb not found; GeoIP enrichment disabled. \
+                     Run soldier_update --geo-update after configuring conf/update.yaml."
+                );
+                None
+            }
+        } else {
+            info!(
+                target: "krakenwaf",
+                "GeoIP enrichment disabled (maxmind-geo.active: false in conf/update.yaml)"
+            );
+            None
+        }
+    };
+
     // ── Rate-limit configuration ──────────────────────────────────────────────
 
     let rl_config = match cli.ratelimit_by_file_conf.as_deref() {
@@ -117,7 +167,7 @@ async fn main() -> Result<()> {
 
     // ── BAN list manager ──────────────────────────────────────────────────────
 
-    let ban_manager = build_ban_manager(&root_dir, rate_limiter.as_ref()).await?;
+    let ban_manager = build_ban_manager(&root_dir, rate_limiter.as_ref())?;
 
     // ── WAF engine ────────────────────────────────────────────────────────────
 
@@ -175,6 +225,7 @@ async fn main() -> Result<()> {
             .effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
         memory_limits: memory_limits.clone(),
         ban_manager,
+        geo_reader,
     });
 
     // Build TLS store once; clone it for both the SIGHUP handler and the server.
@@ -216,9 +267,9 @@ async fn main() -> Result<()> {
 }
 
 /// Build the BAN-list manager. Reuses the rate-limiter's Redis pool when
-/// configured (distributed); otherwise opens a local SQLite store under
+/// configured (distributed); otherwise opens a local `SQLite` store under
 /// `logs/db/banning.db` (single-node, durable).
-async fn build_ban_manager(
+fn build_ban_manager(
     root_dir: &std::path::Path,
     rate_limiter: &RateLimiter,
 ) -> Result<Arc<BanManager>> {

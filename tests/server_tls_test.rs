@@ -8,7 +8,7 @@
 //!   reqwest  (HTTPS, custom CA root)
 //!       │
 //!       ▼
-//!   krakenwaf  --listen 127.0.0.1:N  (TLS termination, sni_map.csv →
+//!   krakenwaf  --listen 127.0.0.1:N  (TLS termination, `sni_map.csv` →
 //!       │     /tmp/krakenwaf-tls/waf.pem + waf.key, signed by ca.pem)
 //!       ▼
 //!   Axum backend (plain HTTP)
@@ -245,6 +245,7 @@ async fn waf_terminates_tls_and_blocks_inside_the_session() {
 /// WAF is genuinely doing TLS, not silently falling back to plaintext.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reqwest_without_ca_fails_handshake_against_tls_waf() {
+    use std::fmt::Write as _;
     if !tls_assets_present() { return }
     ensure_backend();
     let port = pick_free_port();
@@ -270,12 +271,10 @@ async fn reqwest_without_ca_fails_handshake_against_tls_waf() {
     // Walk the std::error::Error source chain — reqwest wraps the
     // underlying rustls/hyper error in a thin transport error whose
     // Display does not always mention TLS specifics.
-    let mut chain = String::new();
-    chain.push_str(&format!("{err}"));
+    let mut chain = format!("{err}");
     let mut cause: Option<&dyn std::error::Error> = err.source();
     while let Some(c) = cause {
-        chain.push_str(" | ");
-        chain.push_str(&format!("{c}"));
+        write!(chain, " | {c}").expect("write to String is infallible");
         cause = c.source();
     }
     let chain_lc = chain.to_lowercase();
