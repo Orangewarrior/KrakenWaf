@@ -65,6 +65,12 @@ max_coroutines_per_ip: 64
 # request body. 0 disables.
 body_frame_timeout_secs: 30
 
+# Anti-Slowloris (TLS accept path): max seconds to wait for a client to
+# finish the TLS handshake before dropping the connection. 0 disables
+# (not recommended). Only applies in TLS mode. Overridden by
+# --tls-handshake-timeout-secs.
+tls_handshake_timeout_secs: 10
+
 # Global cap (bytes) on in-flight request body data across all clients.
 # Excess requests receive HTTP 503 + Retry-After: 5. 0 disables.
 max_inflight_body_bytes: 1073741824   # 1 GiB
@@ -89,6 +95,7 @@ Every CLI flag in the rate-limit family follows the same resolution order:
 ```
 CLI flag                          (--rate-limit-per-minute,
                                    --body-frame-timeout-secs,
+                                   --tls-handshake-timeout-secs,
                                    --max-inflight-body-bytes,
                                    --max-per-ip-body-bytes — highest)
         ↓
@@ -104,6 +111,7 @@ built-in default
 | `rate_limit_per_minute` | u32 | 240 | Per-IP request budget per 60 s window. `0` defers to CLI flag or default. |
 | `max_coroutines_per_ip` | usize | 64 | Maximum in-flight connections per IP. `0` disables. |
 | `body_frame_timeout_secs` | u64 | 30 | Per-frame timeout (s) when streaming the request body — anti-Slowloris. `0` disables. Overridden by `--body-frame-timeout-secs`. |
+| `tls_handshake_timeout_secs` | u64 | 10 | Max time (s) to wait for a client to finish the TLS handshake before dropping the connection — anti-Slowloris on the accept path. TLS mode only. `0` disables (not recommended). Overridden by `--tls-handshake-timeout-secs`. |
 | `max_inflight_body_bytes` | usize | 1073741824 (1 GiB) | Global in-flight body byte cap across all clients. `0` disables. Overridden by `--max-inflight-body-bytes`. |
 | `max_per_ip_body_bytes` | usize | 209715200 (200 MiB) | Per-IP in-flight body byte cap. `0` disables. Overridden by `--max-per-ip-body-bytes`. |
 | `redis.url` | string | — | Redis endpoint. **Must** use `rediss://` (TLS). |

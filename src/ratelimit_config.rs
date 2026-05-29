@@ -26,6 +26,16 @@ pub struct RateLimitConfig {
     #[serde(default)]
     pub body_frame_timeout_secs: Option<u64>,
 
+    /// Anti-Slowloris TLS-handshake timeout (seconds). Maximum wall-clock time
+    /// the WAF waits for a client to complete the TLS handshake before dropping
+    /// the connection. A stalled handshake would otherwise pin a connection
+    /// slot (and a `--max-connections` permit) indefinitely, letting a handful
+    /// of half-open sockets exhaust capacity. Only applies to TLS mode.
+    /// 0 disables the bound (not recommended — removes the anti-DoS guard).
+    /// `None` defers to the CLI flag or the built-in default (10 s).
+    #[serde(default)]
+    pub tls_handshake_timeout_secs: Option<u64>,
+
     /// Global memory-backpressure cap on in-flight request body bytes
     /// across all clients. When exceeded the WAF returns HTTP 503 +
     /// `Retry-After: 5`. 0 disables the cap.
@@ -52,6 +62,7 @@ impl Default for RateLimitConfig {
             rate_limit_per_minute: None,
             max_coroutines_per_ip: default_max_coroutines(),
             body_frame_timeout_secs: None,
+            tls_handshake_timeout_secs: None,
             max_inflight_body_bytes: None,
             max_per_ip_body_bytes: None,
             redis: None,
@@ -98,6 +109,18 @@ impl RateLimitConfig {
     #[must_use]
     pub fn effective_body_frame_timeout_secs(&self, cli: Option<u64>) -> u64 {
         cli.or(self.body_frame_timeout_secs).unwrap_or(30)
+    }
+
+    /// Resolve the effective TLS-handshake timeout (seconds):
+    ///   1. Explicit `--tls-handshake-timeout-secs` CLI argument
+    ///   2. `tls_handshake_timeout_secs` from this config file
+    ///   3. Built-in default: 10 s (anti-Slowloris guard)
+    ///
+    /// A value of 0 (from either source) disables the bound — not recommended,
+    /// as it lets half-open TLS sockets pin connection slots indefinitely.
+    #[must_use]
+    pub fn effective_tls_handshake_timeout_secs(&self, cli: Option<u64>) -> u64 {
+        cli.or(self.tls_handshake_timeout_secs).unwrap_or(10)
     }
 
     /// Resolve the effective global in-flight body cap (bytes):
@@ -186,6 +209,7 @@ mod tests {
         let cfg = RateLimitConfig::default();
         assert_eq!(cfg.effective_rate_limit(None), 240);
         assert_eq!(cfg.effective_body_frame_timeout_secs(None), 30);
+        assert_eq!(cfg.effective_tls_handshake_timeout_secs(None), 10);
         assert_eq!(
             cfg.effective_max_inflight_body_bytes(None),
             1024 * 1024 * 1024
@@ -201,12 +225,14 @@ mod tests {
         let yaml = "\
 rate_limit_per_minute: 500
 body_frame_timeout_secs: 10
+tls_handshake_timeout_secs: 7
 max_inflight_body_bytes: 2147483648
 max_per_ip_body_bytes: 104857600
 ";
         let cfg: RateLimitConfig = serde_yaml::from_str(yaml).expect("yaml parses");
         assert_eq!(cfg.effective_rate_limit(None), 500);
         assert_eq!(cfg.effective_body_frame_timeout_secs(None), 10);
+        assert_eq!(cfg.effective_tls_handshake_timeout_secs(None), 7);
         assert_eq!(cfg.effective_max_inflight_body_bytes(None), 2_147_483_648);
         assert_eq!(cfg.effective_max_per_ip_body_bytes(None), 104_857_600);
     }
@@ -216,6 +242,7 @@ max_per_ip_body_bytes: 104857600
         let yaml = "\
 rate_limit_per_minute: 500
 body_frame_timeout_secs: 10
+tls_handshake_timeout_secs: 7
 max_inflight_body_bytes: 2147483648
 max_per_ip_body_bytes: 104857600
 ";
@@ -223,7 +250,29 @@ max_per_ip_body_bytes: 104857600
         // CLI explicit values override both YAML and built-in defaults.
         assert_eq!(cfg.effective_rate_limit(Some(99)), 99);
         assert_eq!(cfg.effective_body_frame_timeout_secs(Some(7)), 7);
+        assert_eq!(cfg.effective_tls_handshake_timeout_secs(Some(20)), 20);
         assert_eq!(cfg.effective_max_inflight_body_bytes(Some(1024)), 1024);
         assert_eq!(cfg.effective_max_per_ip_body_bytes(Some(512)), 512);
+    }
+
+    #[test]
+    fn tls_handshake_timeout_falls_back_to_yaml_then_default() {
+        // Absent from YAML → built-in 10 s default.
+        let empty: RateLimitConfig =
+            serde_yaml::from_str("rate_limit_per_minute: 1").expect("yaml parses");
+        assert_eq!(empty.effective_tls_handshake_timeout_secs(None), 10);
+
+        // Present in YAML, no CLI flag → YAML wins over the default.
+        let yaml: RateLimitConfig =
+            serde_yaml::from_str("tls_handshake_timeout_secs: 25").expect("yaml parses");
+        assert_eq!(yaml.effective_tls_handshake_timeout_secs(None), 25);
+
+        // CLI flag overrides the YAML value.
+        assert_eq!(yaml.effective_tls_handshake_timeout_secs(Some(3)), 3);
+
+        // 0 is a legitimate (if unsafe) explicit "disable" value and is honoured.
+        let disabled: RateLimitConfig =
+            serde_yaml::from_str("tls_handshake_timeout_secs: 0").expect("yaml parses");
+        assert_eq!(disabled.effective_tls_handshake_timeout_secs(None), 0);
     }
 }
