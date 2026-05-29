@@ -5,12 +5,12 @@
 //!   reqwest (X-Forwarded-For: <fake attacker IP>)
 //!       │
 //!       ▼
-//!   KrakenWAF :WAF_PORT  (--no-tls, --trusted-proxy-cidrs 127.0.0.0/8,
+//!   `KrakenWAF` :`WAF_PORT`  (--no-tls, --trusted-proxy-cidrs 127.0.0.0/8,
 //!                         --real-ip-header x-forwarded-for, --cmc-load …,
 //!                         conf/banning.yaml in cwd)
 //!       │
 //!       ▼
-//!   Axum backend :BACKEND_PORT  (GET /ok → 200)
+//!   Axum backend :`BACKEND_PORT`  (GET /ok → 200)
 //!
 //! Why a forged `X-Forwarded-For`?
 //! ────────────────────────────────
@@ -19,13 +19,13 @@
 //! marking loopback as a trusted proxy and reading the client IP from
 //! `X-Forwarded-For`, the WAF treats every request as coming from whatever
 //! IP we put in the header — exactly the same code path that runs in
-//! production when KrakenWAF sits behind nginx/HAProxy. The "fake attacker"
+//! production when `KrakenWAF` sits behind nginx/HAProxy. The "fake attacker"
 //! is therefore a stand-in for a real free-proxy / VPN exit IP.
 //!
 //! Scenarios exercised
 //! ───────────────────
 //! 1. `security_scanners: true` fast-track. A single GET with
-//!    `User-Agent: nikto/2.1.6` is blocked by the Detect_bots_n_scanners
+//!    `User-Agent: nikto/2.1.6` is blocked by the `Detect_bots_n_scanners`
 //!    CMC module. The attacker IP is added to the BAN list immediately.
 //!    A second request from the same attacker IP — even with a *clean*
 //!    User-Agent — returns 403 from the BAN-list short-circuit at the
@@ -192,22 +192,22 @@ fn http_client() -> reqwest::Client {
 
 /// `security_scanners: true` + threshold high so it cannot trigger by accident.
 fn yaml_fast_track() -> &'static str {
-    r#"Banning_mode: true
+    r"Banning_mode: true
 Ban_context:
   security_scanners: true
   tolerance_block_count: 99
   Ban_wait_time: 30m
-"#
+"
 }
 
 /// `security_scanners: false` + low tolerance so cumulative blocks ban.
 fn yaml_threshold() -> &'static str {
-    r#"Banning_mode: true
+    r"Banning_mode: true
 Ban_context:
   security_scanners: false
   tolerance_block_count: 3
   Ban_wait_time: 30m
-"#
+"
 }
 
 // ─── Tests ───────────────────────────────────────────────────────────────────
@@ -215,7 +215,7 @@ Ban_context:
 /// Scenario 1 — scanner UA fast-track.
 ///
 /// A single request with `User-Agent: nikto/2.1.6` is blocked by the
-/// Detect_bots_n_scanners CMC module. Because `security_scanners: true`,
+/// `Detect_bots_n_scanners` CMC module. Because `security_scanners: true`,
 /// the BAN-list manager fast-tracks the attacker IP to the BAN list. A
 /// second request from the same IP with a *clean* User-Agent is rejected
 /// by the BAN-list short-circuit at the server layer with HTTP 403.
@@ -291,7 +291,7 @@ async fn nikto_request_then_clean_request_is_banned() {
 /// Scenario 2 — cumulative tolerance threshold.
 ///
 /// `security_scanners: false` + `tolerance_block_count: 3`. The first
-/// three SQLi requests must each return 403 (block, not ban). The
+/// three `SQLi` requests must each return 403 (block, not ban). The
 /// fourth request — same attacker IP, this time with a clean payload —
 /// must be rejected by the BAN-list short-circuit (the prior three
 /// blocks reached the tolerance threshold).

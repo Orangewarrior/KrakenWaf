@@ -38,7 +38,7 @@ pub struct UpdateConfig {
     pub maxmind_geo: MaxmindGeoConfig,
 }
 
-/// Configuration for the MaxMind GeoLite2-City auto-update.
+/// Configuration for the `MaxMind` GeoLite2-City auto-update.
 ///
 /// Credentials are read from the environment variables `MAXMIND_ACCOUNT_ID`
 /// and `MAXMIND_LICENSE_KEY` — never stored in YAML.
@@ -46,7 +46,7 @@ pub struct UpdateConfig {
 pub struct MaxmindGeoConfig {
     #[serde(default)]
     pub title: String,
-    /// Set to `false` to disable periodic GeoIP DB updates without removing
+    /// Set to `false` to disable periodic `GeoIP` DB updates without removing
     /// the rest of the configuration.
     #[serde(default = "default_geo_active")]
     pub active: bool,
@@ -597,7 +597,7 @@ pub fn scheduled_soldier_jobs_for_values(
     Ok(jobs)
 }
 
-/// Load update configuration and trigger a MaxMind GeoIP database refresh.
+/// Load update configuration and trigger a `MaxMind` `GeoIP` database refresh.
 ///
 /// # Errors
 /// Returns an error when the config cannot be loaded, credentials are missing,
@@ -610,7 +610,7 @@ pub async fn update_maxmind_geo_from_config(
     update_maxmind_geo(repo_root, &config).await
 }
 
-/// Download and extract the MaxMind GeoLite2-City database to `db/geo/`.
+/// Download and extract the `MaxMind` GeoLite2-City database to `db/geo/`.
 ///
 /// Credentials are read from the `MAXMIND_ACCOUNT_ID` and `MAXMIND_LICENSE_KEY`
 /// environment variables.  The archive is extracted atomically (write to `.tmp`,

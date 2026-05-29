@@ -58,7 +58,7 @@ tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter", "json"] }
 url = "2.5"
 humantime = "2.1"
-maxminddb = "0.24"
+maxminddb = "0.27"
 tar = "0.4"
 vectorscan = { package = "vectorscan-rs", version = "0.0.6", optional = true }
 

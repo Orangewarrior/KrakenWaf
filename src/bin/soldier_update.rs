@@ -11,7 +11,7 @@ struct Cli {
     #[arg(long = "kraken-update")]
     kraken_update: bool,
 
-    /// Address-list or GeoIP database to update.
+    /// Address-list or `GeoIP` database to update.
     /// Valid values: spamhaus, blocklist, firehol, maxmind-geo
     #[arg(long = "addr-list")]
     addr_list: Option<String>,

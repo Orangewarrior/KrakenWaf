@@ -114,13 +114,7 @@ async fn main() -> Result<()> {
             .map(|c| c.maxmind_geo.active)
             .unwrap_or(true);
 
-        if !geo_active {
-            info!(
-                target: "krakenwaf",
-                "GeoIP enrichment disabled (maxmind-geo.active: false in conf/update.yaml)"
-            );
-            None
-        } else {
+        if geo_active {
             let geo_db_path = root_dir.join("db/geo/GeoLite2-City.mmdb");
             if geo_db_path.exists() {
                 match geo::GeoIpReader::builder(&geo_db_path).build() {
@@ -151,6 +145,12 @@ async fn main() -> Result<()> {
                 );
                 None
             }
+        } else {
+            info!(
+                target: "krakenwaf",
+                "GeoIP enrichment disabled (maxmind-geo.active: false in conf/update.yaml)"
+            );
+            None
         }
     };
 
@@ -167,7 +167,7 @@ async fn main() -> Result<()> {
 
     // ── BAN list manager ──────────────────────────────────────────────────────
 
-    let ban_manager = build_ban_manager(&root_dir, rate_limiter.as_ref()).await?;
+    let ban_manager = build_ban_manager(&root_dir, rate_limiter.as_ref())?;
 
     // ── WAF engine ────────────────────────────────────────────────────────────
 
@@ -267,9 +267,9 @@ async fn main() -> Result<()> {
 }
 
 /// Build the BAN-list manager. Reuses the rate-limiter's Redis pool when
-/// configured (distributed); otherwise opens a local SQLite store under
+/// configured (distributed); otherwise opens a local `SQLite` store under
 /// `logs/db/banning.db` (single-node, durable).
-async fn build_ban_manager(
+fn build_ban_manager(
     root_dir: &std::path::Path,
     rate_limiter: &RateLimiter,
 ) -> Result<Arc<BanManager>> {

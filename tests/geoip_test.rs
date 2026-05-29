@@ -1,4 +1,5 @@
-//! GeoIP integration tests — MaxMind GeoLite2-City support.
+//! `GeoIP` integration tests — `MaxMind` GeoLite2-City support.
+#![allow(clippy::unwrap_used)]
 //!
 //! # Test strategy
 //!
@@ -6,7 +7,7 @@
 //! when the file is absent (fresh checkout without credentials). To run the
 //! full suite:
 //!
-//! 1. Fill in `conf/update.yaml` with your MaxMind credentials.
+//! 1. Fill in `conf/update.yaml` with your `MaxMind` credentials.
 //! 2. Run `./target/debug/soldier_update --addr-list maxmind-geo`.
 //! 3. Run `cargo test --test geoip_test`.
 //!
@@ -24,7 +25,7 @@
 //! `country` / `continent_name` fields logged by the WAF match the expected
 //! geolocation.  The tests tagged `#[ignore]` below demonstrate this pattern.
 //! Run them with:
-//!   cargo test --test geoip_test -- --include-ignored
+//!   cargo test --test `geoip_test` -- --include-ignored
 
 use krakenwaf::{
     geo::{GeoIpReader, GeoIpResult},
@@ -283,7 +284,7 @@ fn geo_update_not_scheduled_when_inactive() {
 // Run with:
 //   cargo test --test geoip_test -- geo_waf --include-ignored
 
-#[ignore]
+#[ignore = "requires GeoLite2-City.mmdb and a running WAF — manual test only"]
 #[test]
 fn geo_event_country_populated_for_public_ip() {
     // This test is a placeholder for a full WAF integration test.
@@ -317,7 +318,7 @@ fn geo_event_country_populated_for_public_ip() {
 //
 // NOTE: Free proxies are unreliable. Use this pattern only for manual validation.
 // Banning mode MUST be disabled for these tests to avoid poisoning the ban list.
-#[ignore]
+#[ignore = "requires free SOCKS5 proxies and GeoLite2-City.mmdb — manual test only"]
 #[test]
 fn multi_region_geo_enrichment_via_proxy() {
     // Placeholder: see doc comment above for implementation instructions.

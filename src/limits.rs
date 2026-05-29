@@ -1,7 +1,7 @@
 //! Memory / inspection-buffer limits.
 //!
-//! Centralises every cap that protects KrakenWaf from a memory-exhaustion
-//! style DoS. Defaults are intentionally **drastically lower** than the
+//! Centralises every cap that protects `KrakenWaf` from a memory-exhaustion
+//! style `DoS`. Defaults are intentionally **drastically lower** than the
 //! historical 100 MiB values: any deployment that legitimately handles
 //! larger payloads should opt in by editing `rules/cmc/config.yaml` (or
 //! `conf/limits.yaml`) — not by silently accepting an unbounded surface.
@@ -48,6 +48,7 @@ pub const DEFAULT_MAX_DECOMPRESS_RATIO: u32 = 32;
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+#[allow(clippy::struct_field_names)]
 pub struct MemoryLimits {
     /// Maximum request body the WAF will buffer + inspect (bytes).
     pub max_request_body_buffered_bytes: usize,
@@ -61,7 +62,7 @@ pub struct MemoryLimits {
     pub max_inflight_body_bytes_per_ip: usize,
     /// Maximum compressed → decompressed body expansion ratio.
     pub max_decompress_ratio: u32,
-    /// Maximum simultaneous TCP connections accepted. `None` lets KrakenWaf
+    /// Maximum simultaneous TCP connections accepted. `None` lets `KrakenWaf`
     /// derive a conservative value from the system RAM at startup.
     pub max_connections: Option<usize>,
 }
@@ -88,15 +89,16 @@ impl MemoryLimits {
     /// # Errors
     /// Returns an error when a config file exists but cannot be parsed.
     pub fn load(root: &Path) -> Result<Self> {
+        #[derive(Debug, Deserialize)]
+        struct Outer {
+            #[serde(rename = "memory-limits", default)]
+            memory_limits: Option<MemoryLimits>,
+        }
+
         let cmc_path = root.join("rules").join("cmc").join("config.yaml");
         if cmc_path.exists() {
             let raw = fs::read_to_string(&cmc_path)
                 .with_context(|| format!("failed to read '{}'", cmc_path.display()))?;
-            #[derive(Debug, Deserialize)]
-            struct Outer {
-                #[serde(rename = "memory-limits", default)]
-                memory_limits: Option<MemoryLimits>,
-            }
             let outer: Outer = serde_yaml::from_str(&raw).with_context(|| {
                 format!("failed to parse '{}': memory-limits", cmc_path.display())
             })?;

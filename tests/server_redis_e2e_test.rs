@@ -8,12 +8,12 @@
 //!       │
 //!       ▼
 //!   krakenwaf  --listen 127.0.0.1:N
-//!     ├── TLS termination via sni_map.csv → /tmp/krakenwaf-tls/waf.{pem,key}
-//!     ├── conf/ratelimit.yaml  → redis: rediss://127.0.0.1:6380
-//!     └── conf/banning.yaml    → Banning_mode: true
-//!                                  → BanManager auto-reuses the same
-//!                                    fred::Pool (build_ban_manager
-//!                                    detects rate_limiter.redis_pool())
+//!     ├── TLS termination via `sni_map.csv` → /tmp/krakenwaf-tls/waf.{pem,key}
+//!     ├── conf/ratelimit.yaml  → redis: <rediss://127.0.0.1:6380>
+//!     └── conf/banning.yaml    → `Banning_mode`: true
+//!                                  → `BanManager` auto-reuses the same
+//!                                    `fred::Pool` (`build_ban_manager`
+//!                                    detects `rate_limiter.redis_pool()`)
 //!       │
 //!       ▼
 //!   Axum backend (plain HTTP)
@@ -21,14 +21,14 @@
 //! What we verify
 //! ──────────────
 //! 1. The WAF actually opens HTTPS and serves clean traffic.
-//! 2. A scanner UA (`nikto/2.1.6`) is blocked by Detect_bots_n_scanners
+//! 2. A scanner UA (`nikto/2.1.6`) is blocked by `Detect_bots_n_scanners`
 //!    AND the source IP is recorded in the **Redis** BAN list
 //!    (`security_scanners: true` fast-track).
 //! 3. The next request from the same IP is rejected by the BAN
 //!    short-circuit at the server layer with the
-//!    `engine="banning"` SecurityEvent.
+//!    `engine="banning"` `SecurityEvent`.
 //! 4. The Redis hash on `rediss://127.0.0.1:6380` reflects the ban
-//!    state (banned_until > now, ban_count >= 1) and the rate-limiter
+//!    state (`banned_until` > now, `ban_count` >= 1) and the rate-limiter
 //!    has its OWN namespace in the same Redis (separate key prefix).
 //! 5. A DIFFERENT attacker IP that hits a Block-mode WAF many times
 //!    is rate-limited by Redis (HTTP 429 after the configured budget).
@@ -71,8 +71,8 @@ fn waf_cert_path() -> PathBuf { tls_root().join("waf.pem") }
 fn waf_key_path() -> PathBuf { tls_root().join("waf.key") }
 
 async fn redis_tls_reachable() -> bool {
-    ensure_crypto_provider();
     use krakenwaf::waf::rate_limit::RateLimiter;
+    ensure_crypto_provider();
     RateLimiter::new_redis(
         REDISS_URL,
         1000,
@@ -87,17 +87,15 @@ async fn redis_tls_reachable() -> bool {
         1,
         Some(ca_path().to_str().unwrap()),
     )
-    .await
-    .map(|rl| {
+    .await.map_or_else(|err| {
+        eprintln!("rediss:// probe failed: {err:#} — skipping test");
+        false
+    }, |rl| {
         // Drive a single check to force a Redis round-trip — the
         // handshake alone can succeed before fred realises the cert
         // chain is broken downstream.
         let _ = futures_probe(rl);
         true
-    })
-    .unwrap_or_else(|err| {
-        eprintln!("rediss:// probe failed: {err:#} — skipping test");
-        false
     })
 }
 
@@ -164,7 +162,7 @@ fn unique(name: &str) -> String {
 /// Generate an IP from a per-process + per-test nonce so successive
 /// invocations against the SAME Redis instance never collide on
 /// previously-stored BAN / rate-limit state (30-day retention).
-/// Uses 10.x.x.x — not in the WAF's default blocked_ip_prefixes.
+/// Uses 10.x.x.x — not in the WAF's default `blocked_ip_prefixes`.
 fn unique_ip(seed: u32) -> String {
     let nonce = std::process::id() ^ seed;
     let ts = (std::time::SystemTime::now()
@@ -177,11 +175,11 @@ fn unique_ip(seed: u32) -> String {
 }
 
 /// Spawn a krakenwaf instance with:
-///   • TLS termination ON   (sni_map.csv → waf.pem + waf.key)
-///   • Rate-limiter ON Redis (rediss://127.0.0.1:6380, custom CA, unique
+///   • TLS termination ON   (`sni_map.csv` → waf.pem + waf.key)
+///   • Rate-limiter ON Redis (<rediss://127.0.0.1:6380>, custom CA, unique
 ///     prefix, configurable limit)
-///   • BAN list ON  (Banning_mode: true) — the BanManager picks up the
-///     rate-limiter's fred::Pool automatically via build_ban_manager,
+///   • BAN list ON  (`Banning_mode`: true) — the `BanManager` picks up the
+///     rate-limiter's `fred::Pool` automatically via `build_ban_manager`,
 ///     so both subsystems hit the SAME Redis instance + pool.
 fn spawn_waf_redis_tls(waf_port: u16, rl_limit: u32, tolerance: u32) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");

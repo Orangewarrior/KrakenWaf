@@ -220,9 +220,7 @@ impl ProxyClient {
 
         let geo = state
             .geo_reader
-            .as_ref()
-            .map(|r| r.lookup(&effective_ip))
-            .unwrap_or_else(GeoIpResult::empty);
+            .as_ref().map_or_else(GeoIpResult::empty, |r| r.lookup(&effective_ip));
 
         let context = InspectionContext {
             client_ip: effective_ip.clone(),
@@ -656,36 +654,27 @@ impl ProxyClient {
 /// The function returns the **original** (still-compressed) bytes — the
 /// upstream sees what the client sent. The decoded view is used only for
 /// inspection.
-async fn consume_and_inspect_body(
+/// Reads frames from `body` into a contiguous buffer, enforcing per-request,
+/// global-inflight, and per-IP size limits, plus a per-frame timeout.
+/// The RAII `BodyTracker` releases both counters on return in all paths.
+async fn accumulate_body_frames(
     state: &AppState,
     ctx: &InspectionContext,
     body: &mut Incoming,
     client_ip: &str,
 ) -> std::result::Result<Bytes, BodyInspectionError> {
-    let mut acc = BytesMut::new();
-
-    // Acquire (or lazily create) the per-IP body-byte counter and wire up the
-    // global + per-IP RAII tracker. The tracker auto-releases both counters on drop
-    // whether the function returns Ok, Err, or panics.
-    // Lazily create the per-IP body-byte counter and clone the Arc so the tracker
-    // can hold it independently of the DashMap entry guard.
     let ip_counter: Arc<AtomicUsize> = state
         .ip_body_bytes
         .entry(client_ip.to_string())
         .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
         .clone();
-    let mut tracker =
-        BodyTracker::new(Arc::clone(&state.inflight_body_bytes), ip_counter);
-
-    // Body-frame timeout: resolved at startup (CLI > conf/ratelimit.yaml >
-    // built-in default 30s). 0 means disabled — fall back to the static
-    // BODY_FRAME_TIMEOUT constant for compile-time safety.
+    let mut tracker = BodyTracker::new(Arc::clone(&state.inflight_body_bytes), ip_counter);
     let frame_timeout = if state.body_frame_timeout_secs > 0 {
         std::time::Duration::from_secs(state.body_frame_timeout_secs)
     } else {
         BODY_FRAME_TIMEOUT
     };
-
+    let mut acc = BytesMut::new();
     loop {
         let frame = match tokio::time::timeout(frame_timeout, body.frame()).await {
             Ok(Some(frame)) => frame.map_err(|err| BodyInspectionError::Other(err.into()))?,
@@ -694,36 +683,33 @@ async fn consume_and_inspect_body(
         };
         if let Some(chunk) = frame.data_ref() {
             if acc.len() + chunk.len() > ctx.body_limit {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: ctx.body_limit,
-                });
+                return Err(BodyInspectionError::TooLarge { limit: ctx.body_limit });
             }
-            // Per-request hard cap is already enforced by `ctx.body_limit`
-            // above; the tracker propagates the chunk size to the global +
-            // per-IP backpressure counters added in 2.28.0. Cap violations
-            // there return 503 (handled at the caller).
             if state.max_inflight_body_bytes > 0
                 && state.inflight_body_bytes.load(Ordering::Relaxed) + chunk.len()
                     > state.max_inflight_body_bytes
             {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_inflight_body_bytes,
-                });
+                return Err(BodyInspectionError::TooLarge { limit: state.max_inflight_body_bytes });
             }
             if state.max_per_ip_body_bytes > 0
-                && tracker.ip.load(Ordering::Relaxed) + chunk.len()
-                    > state.max_per_ip_body_bytes
+                && tracker.ip.load(Ordering::Relaxed) + chunk.len() > state.max_per_ip_body_bytes
             {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_per_ip_body_bytes,
-                });
+                return Err(BodyInspectionError::TooLarge { limit: state.max_per_ip_body_bytes });
             }
             tracker.add(chunk.len());
             acc.extend_from_slice(chunk);
         }
     }
+    Ok(acc.freeze())
+}
 
-    let raw_body = acc.freeze();
+async fn consume_and_inspect_body(
+    state: &AppState,
+    ctx: &InspectionContext,
+    body: &mut Incoming,
+    client_ip: &str,
+) -> std::result::Result<Bytes, BodyInspectionError> {
+    let raw_body = accumulate_body_frames(state, ctx, body, client_ip).await?;
     if raw_body.is_empty() {
         return Ok(raw_body);
     }
@@ -1026,7 +1012,8 @@ fn response_body_should_be_inspected(headers: &http::HeaderMap) -> bool {
     let Ok(text) = value.to_str() else { return true };
     let normalised = text.split(';').next().unwrap_or(text).trim().to_ascii_lowercase();
     // Allow-list of "text-ish" prefixes — everything else is treated as binary.
-    let textish = normalised.starts_with("text/")
+    
+    normalised.starts_with("text/")
         || normalised.starts_with("application/json")
         || normalised.starts_with("application/xml")
         || normalised.starts_with("application/xhtml")
@@ -1034,8 +1021,7 @@ fn response_body_should_be_inspected(headers: &http::HeaderMap) -> bool {
         || normalised.starts_with("application/x-www-form-urlencoded")
         || normalised.starts_with("application/yaml")
         || normalised.starts_with("application/graphql")
-        || normalised.starts_with("application/vnd.api+json");
-    textish
+        || normalised.starts_with("application/vnd.api+json")
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {

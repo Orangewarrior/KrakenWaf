@@ -12,7 +12,7 @@
 //! );
 //! ```
 //!
-//! Concurrency: every read-modify-write goes through `IMMEDIATE` SQLite
+//! Concurrency: every read-modify-write goes through `IMMEDIATE` `SQLite`
 //! transactions on a `parking_lot::Mutex<Connection>` so updates from
 //! concurrent request threads are serialised and atomic.
 
@@ -23,7 +23,7 @@ use std::{path::Path, sync::Arc, time::Duration};
 
 use super::{BanRecord, RecordOutcome};
 
-/// Counter reset window: occurrence + ban_count are purged after this much
+/// Counter reset window: occurrence + `ban_count` are purged after this much
 /// inactivity. Matches the documented "1 month" promise.
 const OCCURRENCE_RETENTION: Duration = Duration::from_secs(30 * 24 * 3_600);
 
@@ -79,6 +79,10 @@ impl SqliteBanStore {
 
     /// In-memory store. Useful for the disabled manager (which never
     /// queries it) and for unit tests that want hermetic isolation.
+    ///
+    /// # Errors
+    /// Returns an error if the in-memory `SQLite` connection or schema
+    /// initialisation fails.
     pub fn in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         conn.execute_batch(
@@ -97,6 +101,7 @@ impl SqliteBanStore {
 
     /// Return the unix-epoch `banned_until` if `ip` is currently in the
     /// BAN list (and the ban has not yet expired), otherwise `None`.
+    #[must_use] 
     pub fn lookup(&self, ip: &str, now: i64) -> Option<i64> {
         let conn = self.conn.lock();
         let row: Option<i64> = conn
@@ -120,7 +125,7 @@ impl SqliteBanStore {
     /// queries see the event.
     ///
     /// # Errors
-    /// Returns an error if the SQLite transaction fails.
+    /// Returns an error if the `SQLite` transaction fails.
     pub fn record_block(
         &self,
         ip: &str,
@@ -208,7 +213,7 @@ impl SqliteBanStore {
         })
     }
 
-    /// Delete rows whose last_event_at is older than the retention window.
+    /// Delete rows whose `last_event_at` is older than the retention window.
     /// Invoked periodically by the housekeeping task.
     ///
     /// # Errors
@@ -285,7 +290,7 @@ mod tests {
     fn counter_resets_after_retention_window() {
         let s = SqliteBanStore::in_memory().expect("store");
         s.record_block("7.7.7.7", 1000, 5, 60, false).expect("ok");
-        let later = 1000 + i64::try_from(OCCURRENCE_RETENTION.as_secs()).unwrap() + 10;
+        let later = 1000 + i64::try_from(OCCURRENCE_RETENTION.as_secs()).expect("retention fits i64") + 10;
         let r = s.record_block("7.7.7.7", later, 5, 60, false).expect("ok");
         // Counter should have reset before incrementing; so occurrences == 1.
         assert_eq!(r.occurrences, 1);
@@ -305,7 +310,7 @@ mod tests {
     fn purge_removes_expired_rows() {
         let s = SqliteBanStore::in_memory().expect("store");
         s.record_block("5.5.5.5", 1000, 5, 60, false).expect("ok");
-        let later = 1000 + i64::try_from(OCCURRENCE_RETENTION.as_secs()).unwrap() + 10;
+        let later = 1000 + i64::try_from(OCCURRENCE_RETENTION.as_secs()).expect("retention fits i64") + 10;
         let removed = s.purge_stale(later).expect("ok");
         assert_eq!(removed, 1);
     }

@@ -1,13 +1,14 @@
-//! Integration test: verifies that GeoIP country/continent fields are correctly
-//! saved in the SQLite vulnerability log when an attack arrives with an external
+//! Integration test: verifies that `GeoIP` country/continent fields are correctly
+#![allow(clippy::unwrap_used)]
+//! saved in the `SQLite` vulnerability log when an attack arrives with an external
 //! IP via X-Forwarded-For.
 //!
 //! Topology:
-//!   reqwest → KrakenWaf (--no-tls, --real-ip-header x-forwarded-for) → Axum backend
+//!   reqwest → `KrakenWaf` (--no-tls, --real-ip-header x-forwarded-for) → Axum backend
 //!
 //! The WAF binary runs in a temp directory that has db/geo/GeoLite2-City.mmdb
-//! symlinked in from the project root.  After sending a SQLi payload the test
-//! queries the SQLite DB and asserts country/continent_name are populated.
+//! symlinked in from the project root.  After sending a `SQLi` payload the test
+//! queries the `SQLite` DB and asserts `country/continent_name` are populated.
 //!
 //! # Prerequisites
 //! - `db/geo/GeoLite2-City.mmdb` must exist (run `soldier_update --addr-list maxmind-geo`).
@@ -41,7 +42,7 @@ fn http_client() -> reqwest::Client {
 
 struct WafGuard {
     child: Child,
-    _tmpdir: tempfile::TempDir,
+    tmpdir: tempfile::TempDir,
 }
 
 impl Drop for WafGuard {
@@ -80,11 +81,11 @@ fn spawn_backend() -> (u16, std::thread::JoinHandle<()>) {
     (port, handle)
 }
 
-/// Spawn the KrakenWaf binary.
+/// Spawn the `KrakenWaf` binary.
 ///
 /// `geo_active` controls whether `conf/update.yaml` in the tmpdir marks
 /// `maxmind-geo.active` as true or false.  When false the WAF must not load
-/// the GeoIP database even if the `.mmdb` file is present.
+/// the `GeoIP` database even if the `.mmdb` file is present.
 fn spawn_geo_waf(waf_port: u16, backend_port: u16) -> Option<WafGuard> {
     spawn_geo_waf_with_active(waf_port, backend_port, true)
 }
@@ -149,7 +150,7 @@ fn spawn_geo_waf_with_active(waf_port: u16, backend_port: u16, geo_active: bool)
 
     Some(WafGuard {
         child,
-        _tmpdir: tmpdir,
+        tmpdir,
     })
 }
 
@@ -173,7 +174,7 @@ async fn wait_for_waf(client: &reqwest::Client, port: u16) {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 /// Sends a SQL injection attack via the WAF using X-Forwarded-For: 8.8.8.8,
-/// then reads the SQLite DB to verify country and continent_name are populated.
+/// then reads the `SQLite` DB to verify country and `continent_name` are populated.
 #[tokio::test]
 async fn geo_country_saved_in_sqlite_for_external_ip() {
     let (backend_port, _backend) = spawn_backend();
@@ -209,7 +210,7 @@ async fn geo_country_saved_in_sqlite_for_external_ip() {
 
     // Read the SQLite DB from the WAF's temp workdir.
     let db_path = waf
-        ._tmpdir
+        .tmpdir
         .path()
         .join("logs/db/vulns_alert.db");
     assert!(db_path.exists(), "SQLite DB must exist after a blocked request");
@@ -259,7 +260,7 @@ async fn geo_country_saved_for_european_ip() {
 
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let db_path = waf._tmpdir.path().join("logs/db/vulns_alert.db");
+    let db_path = waf.tmpdir.path().join("logs/db/vulns_alert.db");
     let conn = Connection::open(&db_path).expect("open db");
     let (country, continent): (String, String) = conn
         .query_row(
@@ -302,7 +303,7 @@ async fn geo_fields_empty_for_private_ip() {
 
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let db_path = waf._tmpdir.path().join("logs/db/vulns_alert.db");
+    let db_path = waf.tmpdir.path().join("logs/db/vulns_alert.db");
     let conn = Connection::open(&db_path).expect("open db");
     let (country, continent): (String, String) = conn
         .query_row(
@@ -325,7 +326,7 @@ async fn geo_fields_empty_for_private_ip() {
 }
 
 /// When `maxmind-geo.active: false` in conf/update.yaml, the WAF must NOT
-/// load the GeoIP database and must save empty country/continent_name even
+/// load the `GeoIP` database and must save empty `country/continent_name` even
 /// for public IPs — the .mmdb file is present but should be ignored.
 #[tokio::test]
 async fn geo_disabled_via_active_false_saves_empty_fields() {
@@ -351,7 +352,7 @@ async fn geo_disabled_via_active_false_saves_empty_fields() {
 
     tokio::time::sleep(Duration::from_millis(800)).await;
 
-    let db_path = waf._tmpdir.path().join("logs/db/vulns_alert.db");
+    let db_path = waf.tmpdir.path().join("logs/db/vulns_alert.db");
     let conn = Connection::open(&db_path).expect("open db");
     let (country, continent): (String, String) = conn
         .query_row(

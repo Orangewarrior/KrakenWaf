@@ -11,7 +11,7 @@
 //! The store is hybrid:
 //! * **Redis/Valkey** when the rate-limiter's `redis:` section is set in
 //!   `conf/ratelimit.yaml` (the same pool is reused).
-//! * **SQLite** (`logs/db/banning.db`) otherwise — durable, ACID,
+//! * **`SQLite`** (`logs/db/banning.db`) otherwise — durable, ACID,
 //!   single-node.
 //!
 //! All state — `banned_until`, `ban_count`, `occurrences` — is wiped 30
@@ -99,7 +99,7 @@ impl BanManager {
     /// Build a SQLite-backed manager (the always-available default).
     ///
     /// # Errors
-    /// Returns an error if the SQLite database cannot be opened.
+    /// Returns an error if the `SQLite` database cannot be opened.
     pub fn new_sqlite(cfg: BanConfig, root: &Path) -> Result<Arc<Self>> {
         let path = root.join("logs").join("db").join("banning.db");
         let store = SqliteBanStore::open(&path)?;

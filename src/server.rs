@@ -33,7 +33,7 @@ fn request_id() -> String {
 /// Emit the Low-severity "Banned IP — request rejected" log entry.
 ///
 /// The same `SecurityEvent` is persisted to the JSON log, the critical
-/// log, and the SQLite security store so dashboards keep a single source
+/// log, and the `SQLite` security store so dashboards keep a single source
 /// of truth for blocked requests (including those that never reach the
 /// inspection pipeline).
 fn log_banned_request(

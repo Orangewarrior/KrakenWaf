@@ -60,7 +60,7 @@ pub struct AppState {
     /// When `Banning_mode: false` (or the file is absent) the manager is
     /// inert and every method is a cheap no-op.
     pub ban_manager: Arc<BanManager>,
-    /// Optional GeoIP reader backed by `db/geo/GeoLite2-City.mmdb`.
+    /// Optional `GeoIP` reader backed by `db/geo/GeoLite2-City.mmdb`.
     /// `None` when the database file is absent or fails to open.
     pub geo_reader: Option<Arc<GeoIpReader>>,
 }

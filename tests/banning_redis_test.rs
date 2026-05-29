@@ -152,7 +152,7 @@ async fn security_scanner_fast_track_on_redis() {
     let pool = rl.redis_pool().expect("pool");
     // Tolerance is intentionally astronomical so we know the threshold
     // path is NOT what bans the IP — the fast-track is.
-    let manager = BanManager::new_redis(cfg(999, true), pool, &unique_prefix("ban-scan"));
+    let manager = BanManager::new_redis(cfg(999, true), pool, unique_prefix("ban-scan"));
 
     let attacker = "198.51.100.42";
 
@@ -180,7 +180,7 @@ async fn security_scanner_fast_track_on_redis() {
     assert!(manager.check(bystander).await.is_none());
 }
 
-/// Concurrent record_block calls on the same IP must result in a
+/// Concurrent `record_block` calls on the same IP must result in a
 /// consistent counter — the Lua script is supposed to make the
 /// read-modify-write atomic. We fire 20 parallel blocks against a
 /// threshold of 5 and assert the IP ends up banned (and only one
@@ -200,7 +200,7 @@ async fn concurrent_records_are_atomic() {
     let manager = std::sync::Arc::new(BanManager::new_redis(
         cfg(5, false),
         pool,
-        &unique_prefix("ban-atomic"),
+        unique_prefix("ban-atomic"),
     ));
 
     let attacker = "203.0.113.55";
@@ -246,7 +246,7 @@ async fn fresh_namespace_starts_empty() {
         .await
         .expect("rl");
     let pool = rl.redis_pool().expect("pool");
-    let manager = BanManager::new_redis(cfg(3, false), pool, &unique_prefix("ban-empty"));
+    let manager = BanManager::new_redis(cfg(3, false), pool, unique_prefix("ban-empty"));
 
     // Several "is it banned?" queries against an untouched namespace
     // must all be None inside a sensible budget.

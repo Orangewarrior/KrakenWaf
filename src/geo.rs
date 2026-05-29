@@ -26,7 +26,7 @@ impl GeoIpReaderBuilder {
         Self { path: path.into() }
     }
 
-    /// Open the MaxMind database at the configured path.
+    /// Open the `MaxMind` database at the configured path.
     ///
     /// # Errors
     /// Returns an error when the file cannot be read or is not a valid `.mmdb`.
@@ -43,7 +43,7 @@ impl GeoIpReaderBuilder {
     }
 }
 
-/// Thread-safe MaxMind GeoLite2-City reader.
+/// Thread-safe `MaxMind` GeoLite2-City reader.
 ///
 /// Constructed via [`GeoIpReaderBuilder`]:
 /// ```no_run
@@ -78,26 +78,16 @@ impl GeoIpReader {
             return GeoIpResult::empty();
         }
 
-        let city: maxminddb::geoip2::City = match self.reader.lookup(addr) {
-            Ok(c) => c,
-            Err(_) => return GeoIpResult::empty(),
+        let Ok(lookup) = self.reader.lookup(addr) else {
+            return GeoIpResult::empty();
+        };
+        let city: maxminddb::geoip2::City = match lookup.decode() {
+            Ok(Some(c)) => c,
+            _ => return GeoIpResult::empty(),
         };
 
-        let country_name = city
-            .country
-            .as_ref()
-            .and_then(|c| c.names.as_ref())
-            .and_then(|n| n.get("en").copied())
-            .unwrap_or("")
-            .to_string();
-
-        let continent_name = city
-            .continent
-            .as_ref()
-            .and_then(|c| c.names.as_ref())
-            .and_then(|n| n.get("en").copied())
-            .unwrap_or("")
-            .to_string();
+        let country_name = city.country.names.english.unwrap_or("").to_string();
+        let continent_name = city.continent.names.english.unwrap_or("").to_string();
 
         GeoIpResult {
             country_name,

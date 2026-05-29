@@ -11,7 +11,7 @@
 //! EXPIRE <key_prefix>:<ip> <30d>
 //! ```
 //!
-//! Each record_block call is wrapped in a Lua script so the read-decide-write
+//! Each `record_block` call is wrapped in a Lua script so the read-decide-write
 //! sequence is atomic from a Redis client perspective. All operations are
 //! guarded by an `op_timeout` — a hung Redis must never stall the WAF
 //! request path; the implementation fails open in that situation.
@@ -24,10 +24,10 @@ use tracing::warn;
 
 use super::{BanRecord, RecordOutcome};
 
-/// 30 days, matching the SQLite store's documented retention.
+/// 30 days, matching the `SQLite` store's documented retention.
 const RETENTION_SECS: i64 = 30 * 24 * 3_600;
 
-/// Tiny lookup script. Returns banned_until (0 when not currently banned
+/// Tiny lookup script. Returns `banned_until` (0 when not currently banned
 /// or no record exists) so the call-site can decide via a single EVAL.
 const LOOKUP_LUA: &str = r"
 local now = tonumber(ARGV[1])
@@ -40,12 +40,12 @@ return 0
 ///
 /// KEYS[1] — full Redis key for this IP.
 /// ARGV[1] — now (unix seconds)
-/// ARGV[2] — tolerance_block_count
-/// ARGV[3] — ban_wait_secs
-/// ARGV[4] — force_ban_now ("1"/"0")
+/// ARGV[2] — `tolerance_block_count`
+/// ARGV[3] — `ban_wait_secs`
+/// ARGV[4] — `force_ban_now` ("1"/"0")
 /// ARGV[5] — retention TTL (seconds)
 ///
-/// Returns: { already_banned (0/1), occurrences, banned_until (0 when not banned), ban_count }
+/// Returns: { `already_banned` (0/1), occurrences, `banned_until` (0 when not banned), `ban_count` }
 const RECORD_BLOCK_LUA: &str = r#"
 local key            = KEYS[1]
 local now            = tonumber(ARGV[1])
@@ -139,6 +139,10 @@ impl RedisBanStore {
     /// Atomic increment + (optional) ban. See [`RECORD_BLOCK_LUA`].
     /// Returns a default-allowed [`RecordOutcome`] on Redis failure so the
     /// WAF cannot brick itself if Redis becomes unhealthy mid-flight.
+    ///
+    /// # Errors
+    /// Returns an error if the Redis connection is unavailable or the Lua
+    /// script returns an unexpected result format.
     pub async fn record_block(
         &self,
         ip: &str,
@@ -212,7 +216,7 @@ mod tests {
     fn parse_outcome_when_just_banned() {
         let r = parse_outcome(&[0, 0, 2000, 1]);
         assert!(r.triggered_ban.is_some());
-        let rec = r.triggered_ban.unwrap();
+        let rec = r.triggered_ban.expect("triggered_ban must be Some after first ban");
         assert_eq!(rec.banned_until, 2000);
         assert_eq!(rec.ban_count, 1);
     }
