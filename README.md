@@ -1,5 +1,5 @@
 ![Rust](https://img.shields.io/badge/language-Rust-orange)
-![Security](https://img.shields.io/badge/focus-AppSec-red)
+![Security](https://img.shields.io/badge/focus-AppSec-blue)
 
 ## 🚀 KrakenWAF Overview
 
