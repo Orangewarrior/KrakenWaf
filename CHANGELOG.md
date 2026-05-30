@@ -10,11 +10,13 @@
 > `--external-proxy-conf`. Both loaders are validated at startup (fail-fast) and
 > fully backward-compatible: defaults are unchanged, an explicit CLI flag still
 > wins, and an empty YAML field keeps the built-in default. The full `cargo test`
-> suite passes (0 failures; +26 new tests) and `cargo clippy --all-targets` is
-> clean. Validated end-to-end with the `attack` sweep (`--concurrency 50`)
-> through the new config files — the proxy driven entirely by
-> `--external-proxy-conf`, with `--enable-vectorscan` and banning OFF:
-> **477/477 payloads blocked, 0 bypassed, 0 errors**.
+> suite passes (0 failures; +31 new tests) and `cargo clippy --all-targets` is
+> clean (default **and** `vectorscan-engine` features). Validated end-to-end with
+> the `attack` sweep (`--concurrency 50`) over a **full-TLS** topology —
+> client→WAF over TLS, WAF→upstream over TLS (verified via the new
+> `--upstream-ca`), and a **TLS Redis** (`rediss://`) rate-limiter active — with
+> `--enable-vectorscan` and banning OFF: **477/477 payloads blocked, 0 bypassed,
+> 0 errors**.
 
 ### `conf/ratelimit.yaml` now carries the connection & body-size caps (`src/ratelimit_config.rs`, `src/cli.rs`, `src/app.rs`, `src/main.rs`, `src/server.rs`, `conf/ratelimit.yaml`)
 
@@ -44,9 +46,16 @@
 - `--external-proxy-conf` loads the proxy flags as a group from a YAML file.
   Passed bare (`--external-proxy-conf`) it auto-loads `conf/proxy.yaml`; pass a
   path to use a different file. Covers `listen`, `upstream`,
-  `upstream-timeout-secs`, `allow-private-upstream`, `internal-header-name`,
-  `real-ip-header`, `trusted-proxy-cidrs`, `sni-map`, `no-tls`,
-  `header-protection-injection`, and `blockmsg`.
+  `upstream-timeout-secs`, `upstream-ca`, `allow-private-upstream`,
+  `internal-header-name`, `real-ip-header`, `trusted-proxy-cidrs`, `sni-map`,
+  `no-tls`, `header-protection-injection`, and `blockmsg`.
+- **New `--upstream-ca` flag** (also `upstream-ca` in `conf/proxy.yaml`): trusts a
+  private / internal-CA certificate (PEM, single or bundle) as an **additional**
+  root for the TLS upstream connection. The cert is *added* to the built-in
+  public roots — full chain verification is still enforced (it is **not** an
+  "accept any cert" switch) — so KrakenWaf can front a backend that presents a
+  private-PKI certificate. Without it, `reqwest`/`hyper-rustls` trusts only the
+  bundled webpki roots, so a private/self-signed upstream cert fails with 502.
 - The file is a deliberately flat `key: value` document. The parser ignores `#`
   comments (full-line and inline), splits on the **first** colon so values may
   contain colons (e.g. `https://host:8080`), and treats an empty value as "keep
@@ -70,10 +79,10 @@
 
 ### Tests & docs
 
-- +24 unit tests (`src/proxy_config.rs`, `src/ratelimit_config.rs`) covering the
-  canonical `conf/proxy.yaml` format (spacing + inline comments + empty fields),
-  every parse/validation error path, the CLI-wins merge, and the new resolver
-  chains.
+- +29 unit tests (`src/proxy_config.rs`, `src/ratelimit_config.rs`, `src/proxy.rs`)
+  covering the canonical `conf/proxy.yaml` format (spacing + inline comments +
+  empty fields), every parse/validation error path, the CLI-wins merge, the new
+  resolver chains, and the `--upstream-ca` read/parse/error paths.
 - New `tests/config_inputs_test.rs`: spawns the WAF with **only**
   `--external-proxy-conf` + `--ratelimit-by-file-conf` (no proxy flags on the
   command line) and proves the files drive `listen` / `upstream` / `no-tls` /

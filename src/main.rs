@@ -210,6 +210,7 @@ async fn main() -> Result<()> {
         cli.upstream_timeout_secs,
         cli.allow_private_upstream,
         Some(cli.internal_header_name.clone()),
+        cli.upstream_ca.as_deref(),
     )?);
     let (block_response_body, block_response_content_type) =
         load_block_message(cli.blockmsg.as_deref(), &root_dir)?;

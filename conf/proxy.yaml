@@ -21,6 +21,7 @@
 listen : 127.0.0.1:443
 upstream : https://127.0.0.1:8080 # host definido pelo usuario
 upstream-timeout-secs: # quando vazio por default é um valor definido pelo WAF
+upstream-ca: # vazio -> confia só nas CAs públicas; caminho PEM p/ confiar numa CA privada do upstream
 allow-private-upstream: false # desativado
 internal-header-name: #vazio desativado por default
 real-ip-header: X-Forwarded-For

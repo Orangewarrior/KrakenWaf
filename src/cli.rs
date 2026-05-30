@@ -95,6 +95,15 @@ pub struct Cli {
     #[arg(long, action = ArgAction::SetTrue)]
     pub allow_private_upstream: bool,
 
+    /// Path to a PEM certificate (or bundle) to trust as an additional root CA
+    /// when connecting to a TLS upstream. The certificate is *added* to the
+    /// built-in public roots — full chain verification is still enforced — so a
+    /// backend presenting a private-PKI / internal-CA certificate can be fronted
+    /// without disabling validation. Also settable via `upstream-ca` in
+    /// `conf/proxy.yaml`.
+    #[arg(long = "upstream-ca")]
+    pub upstream_ca: Option<String>,
+
     #[arg(long, default_value = "")]
     pub internal_header_name: String,
 

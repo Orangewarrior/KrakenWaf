@@ -21,6 +21,7 @@ the command line terse and the topology version-controlled:
 listen : 0.0.0.0:443
 upstream : https://app.internal:8080
 upstream-timeout-secs:                 # empty -> WAF default (15 s)
+upstream-ca: /etc/krakenwaf/internal-ca.pem  # trust the backend's private CA
 allow-private-upstream: true           # internal upstream
 real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 10.0.0.0/8, 192.168.0.0/16
@@ -28,6 +29,13 @@ no-tls: false
 header-protection-injection: ./rules/headers_http/relax.headers
 blockmsg: ./alert/blockalert.html
 ```
+
+When the upstream presents a certificate from a **private / internal CA** (common
+for internal services), set `upstream-ca` (or `--upstream-ca`) to that CA's PEM.
+KrakenWaf trusts the public webpki roots by default; the supplied CA is *added*
+to them with full chain verification still enforced — so the backend is verified
+rather than rejected with a 502. This is **not** an "accept any certificate"
+switch.
 
 Resolution order is: an explicitly-passed CLI flag → the value in
 `conf/proxy.yaml` → the built-in default. An empty field never overrides the

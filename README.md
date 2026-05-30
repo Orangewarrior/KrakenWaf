@@ -157,6 +157,7 @@ krakenwaf --external-proxy-conf /etc/krakenwaf/proxy.yaml
 listen : 127.0.0.1:443
 upstream : https://127.0.0.1:8080 # host defined by the operator
 upstream-timeout-secs: # empty -> WAF default (15 s)
+upstream-ca: # empty -> trust public CAs only; PEM path to trust a private upstream CA
 allow-private-upstream: false # disabled
 internal-header-name: # empty -> internal header disabled
 real-ip-header: X-Forwarded-For
@@ -166,6 +167,12 @@ no-tls: false # TLS enabled
 header-protection-injection: ./rules/headers_http/relax.headers
 blockmsg: ./alert/blockalert.html # empty -> no custom block page
 ```
+
+> **Fronting a TLS backend with a private/internal CA?** Set `upstream-ca` (or
+> `--upstream-ca`) to the CA's PEM. KrakenWaf's upstream client trusts the public
+> webpki roots by default; the supplied CA is *added* to them (full verification
+> is still enforced), so a backend presenting a private-PKI certificate is
+> verified instead of rejected with a 502.
 
 **Parsing & precedence**
 
@@ -494,6 +501,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--blocklist-ip` | `false` | Enable IP and CIDR blocklist enforcement from `rules/addr/blocklist.txt` — see [docs/blockaddrs_allowaddrs.md](docs/blockaddrs_allowaddrs.md) |
 | `--no-tls` | `false` | Disable TLS and listen on plain HTTP — useful when TLS termination is handled upstream or for integration testing |
 | `--allow-private-upstream` | `false` | Allow RFC1918/loopback upstream targets — see [docs/deployment.md](docs/deployment.md) |
+| `--upstream-ca` | — | Path to a PEM certificate/bundle to trust as an **additional** root CA for the TLS upstream. Full chain verification is still enforced — lets KrakenWaf front a backend with a private-PKI / internal-CA cert. Also settable via `upstream-ca` in `conf/proxy.yaml` |
 | `--enable-libinjection-sqli` | `false` | Enable libinjection-based SQL injection detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-libinjection-xss` | `false` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-vectorscan` | `false` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature) |

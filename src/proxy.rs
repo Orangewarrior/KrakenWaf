@@ -123,16 +123,39 @@ impl ProxyClient {
         timeout_secs: u64,
         allow_private_upstream: bool,
         internal_header_name: Option<String>,
+        upstream_ca: Option<&str>,
     ) -> Result<Self> {
         let upstream =
             Url::parse(upstream).with_context(|| format!("invalid upstream URL: {upstream}"))?;
         validate_upstream(&upstream, allow_private_upstream)?;
 
-        let client = Client::builder()
+        let mut builder = Client::builder()
             .use_rustls_tls()
             .redirect(Policy::none())
-            .timeout(std::time::Duration::from_secs(timeout_secs))
-            .build()?;
+            .timeout(std::time::Duration::from_secs(timeout_secs));
+
+        // Optionally trust a private / custom CA for the upstream TLS handshake.
+        // The certificate(s) are *added* to the built-in public webpki roots —
+        // full chain verification is still enforced (this is NOT an
+        // "accept any certificate" switch) — so a backend that presents a
+        // private-PKI / internal-CA certificate can be fronted without
+        // weakening validation, while public upstreams keep working.
+        if let Some(ca_path) = upstream_ca {
+            let pem = std::fs::read(ca_path)
+                .with_context(|| format!("--upstream-ca: failed to read '{ca_path}'"))?;
+            let certs = reqwest::Certificate::from_pem_bundle(&pem).with_context(|| {
+                format!("--upstream-ca: '{ca_path}' is not a valid PEM certificate bundle")
+            })?;
+            anyhow::ensure!(
+                !certs.is_empty(),
+                "--upstream-ca: '{ca_path}' contained no certificates"
+            );
+            for cert in certs {
+                builder = builder.add_root_certificate(cert);
+            }
+        }
+
+        let client = builder.build()?;
 
         let internal_header_name = internal_header_name.and_then(|value| {
             if value.trim().is_empty() {
@@ -1333,5 +1356,73 @@ fn derive_module_label(engine: &str, rule_match: &str) -> String {
         format!("libinjection:{variant}")
     } else {
         engine.to_string()
+    }
+}
+
+#[cfg(test)]
+mod upstream_ca_tests {
+    use super::ProxyClient;
+
+    // A self-signed PEM certificate used only to exercise the --upstream-ca
+    // read → parse → add_root_certificate path. Parsing/adding a root does not
+    // check validity dates, so this fixture never expires for test purposes.
+    const TEST_CA_PEM: &str = "\
+-----BEGIN CERTIFICATE-----
+MIIDKzCCAhOgAwIBAgIUWM/CFwcu86vwBQy7C19brEL/N/IwDQYJKoZIhvcNAQEL
+BQAwJTEjMCEGA1UEAwwaS3Jha2VuV2FmIFRlc3QgVXBzdHJlYW0gQ0EwHhcNMjYw
+NTMwMDUxMDQ5WhcNMzYwNTI3MDUxMDQ5WjAlMSMwIQYDVQQDDBpLcmFrZW5XYWYg
+VGVzdCBVcHN0cmVhbSBDQTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEB
+AJsujj8dWDQl9WDdrXuUc8h53M6O5FrlymiIbnWn9DG0L1xKE1PW+z/RcN/Q7XJ7
+LycERqR3KL97ghagJaNcqpLJJ3wzBEwISTT/XNAEmoe5S3pFmTH2x/Zw6/RGQwQt
+MnURylzsYoYjOvLniC19BoW0wwgrMtkdKAxk/xCz6qLlGbaMuEzUFGHXGcYg5LWV
+6u13ByNA2Oa/XRpFjdJ9cBzecJroG1moeN3etaWNxSiDt84/xLypftl5jzqZ2IwB
+MyAWJRISddft1YDLvv912dR5zEhgitM+pOjn+l9QXYaD5XoTT2McQLS8eufrHMy6
+Ey0GANLEsvBT+DsVRgGmV4kCAwEAAaNTMFEwHQYDVR0OBBYEFCfp5HMuCFf+PRHX
+7d9lNcJXS9XoMB8GA1UdIwQYMBaAFCfp5HMuCFf+PRHX7d9lNcJXS9XoMA8GA1Ud
+EwEB/wQFMAMBAf8wDQYJKoZIhvcNAQELBQADggEBAD6HaL5VUp5qKNJ2b2my5Nop
+TXMXzPQSg2BorYoMgn0pa168pBlpnyvXI+on7GwMVvrRc6JyuFe3roqitIA0WRk6
+yM3pyfMGvT3QWdNXPI5Y0qEma5FwM3wKnbVKE3JsHoKftBy+N/1yplPZKI+3qcXC
+AmqeEDUoNgmz+Monytn7lU6F4z66/IHqDJ3QLi4+gbt8kwnlNiQsRL11yYJ+Y718
+FQ4585CILyePGe5gAS8evj5aaS66iEvFhpRYpsF3eeEkpEZgBocAAE5R+yvMXUMe
+mHdKNWay9Hq1obnN0UbFuBnzT2hA/Uy6D0/Yekg5c30Xo8dpW79qYl4l0gdOnZk=
+-----END CERTIFICATE-----
+";
+
+    // A loopback upstream with allow_private_upstream=true keeps the constructor
+    // fully offline (no DNS), isolating the --upstream-ca behaviour under test.
+    const UPSTREAM: &str = "https://127.0.0.1:9443";
+
+    #[test]
+    fn valid_upstream_ca_builds_client() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ca = dir.path().join("ca.pem");
+        std::fs::write(&ca, TEST_CA_PEM).expect("write ca");
+        let client = ProxyClient::new(UPSTREAM, 5, true, None, ca.to_str());
+        assert!(
+            client.is_ok(),
+            "valid upstream CA should build the client: {:?}",
+            client.err()
+        );
+    }
+
+    #[test]
+    fn missing_upstream_ca_file_errors() {
+        let client = ProxyClient::new(UPSTREAM, 5, true, None, Some("/no/such/upstream-ca.pem"));
+        assert!(client.is_err(), "missing CA file must be a hard error");
+    }
+
+    #[test]
+    fn non_pem_upstream_ca_errors() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let bad = dir.path().join("bad.pem");
+        std::fs::write(&bad, b"this is not a certificate").expect("write");
+        let client = ProxyClient::new(UPSTREAM, 5, true, None, bad.to_str());
+        assert!(client.is_err(), "garbage CA file must be rejected");
+    }
+
+    #[test]
+    fn no_upstream_ca_still_builds() {
+        let client = ProxyClient::new(UPSTREAM, 5, true, None, None);
+        assert!(client.is_ok(), "no CA should build with public roots only");
     }
 }

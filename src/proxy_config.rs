@@ -30,6 +30,7 @@ pub struct ProxyConfig {
     pub listen: Option<String>,
     pub upstream: Option<String>,
     pub upstream_timeout_secs: Option<u64>,
+    pub upstream_ca: Option<String>,
     pub allow_private_upstream: Option<bool>,
     pub internal_header_name: Option<String>,
     pub real_ip_header: Option<String>,
@@ -114,6 +115,11 @@ impl ProxyConfig {
                                  integer, got '{value}'"
                             )
                         })?);
+                    }
+                }
+                "upstream-ca" => {
+                    if set {
+                        cfg.upstream_ca = Some(value.to_string());
                     }
                 }
                 "allow-private-upstream" => {
@@ -234,6 +240,11 @@ impl ProxyConfig {
                 cli.upstream_timeout_secs = secs;
             }
         }
+        if let Some(ca) = &self.upstream_ca {
+            if !is_explicit("upstream-ca") {
+                cli.upstream_ca = Some(ca.clone());
+            }
+        }
         if let Some(allow) = self.allow_private_upstream {
             if !is_explicit("allow-private-upstream") {
                 cli.allow_private_upstream = allow;
@@ -320,6 +331,7 @@ mod tests {
 listen : 127.0.0.1:443
 upstream : https://127.0.0.1:8080 # host definido pelo usuario
 upstream-timeout-secs: # quando vazio por default é um valor definido pelo WAF
+upstream-ca: # vazio -> confia só nas CAs públicas
 allow-private-upstream: false # desativado
 internal-header-name: #vazio desativado por default
 real-ip-header: X-Forwarded-For
@@ -338,6 +350,7 @@ blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
         assert_eq!(cfg.upstream.as_deref(), Some("https://127.0.0.1:8080"));
         // Empty value → None → WAF keeps its built-in default.
         assert_eq!(cfg.upstream_timeout_secs, None);
+        assert_eq!(cfg.upstream_ca, None);
         assert_eq!(cfg.allow_private_upstream, Some(false));
         // `#vazio…` directly after the colon is a comment → field stays unset.
         assert_eq!(cfg.internal_header_name, None);
@@ -466,6 +479,29 @@ blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
             Some("./rules/headers_http/relax.headers")
         );
         assert_eq!(cli.blockmsg.as_deref(), Some("./alert/blockalert.html"));
+    }
+
+    #[test]
+    fn upstream_ca_parses_and_merges() {
+        let cfg = ProxyConfig::parse(
+            "upstream: https://backend.internal:8443\nupstream-ca: /etc/krakenwaf/upstream-ca.pem\n",
+        )
+        .expect("parses");
+        assert_eq!(
+            cfg.upstream_ca.as_deref(),
+            Some("/etc/krakenwaf/upstream-ca.pem")
+        );
+        let mut cli = base_cli();
+        cfg.merge_into(&mut cli, &|_| false);
+        assert_eq!(
+            cli.upstream_ca.as_deref(),
+            Some("/etc/krakenwaf/upstream-ca.pem")
+        );
+        // Explicit CLI flag wins over the file.
+        let mut cli2 = base_cli();
+        cli2.upstream_ca = Some("/cli/path.pem".to_string());
+        cfg.merge_into(&mut cli2, &|f| f == "upstream-ca");
+        assert_eq!(cli2.upstream_ca.as_deref(), Some("/cli/path.pem"));
     }
 
     #[test]
