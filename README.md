@@ -823,15 +823,6 @@ path in raw, JSON, and SQLite logs.
 See [docs/spamhaus_dqs_updates.md](docs/spamhaus_dqs_updates.md) for DQS setup,
 token handling, DQS zones, and scheduler configuration.
 
-
-## Operational notes
-
-- Rate limiting is enforced per-IP by a **local GCRA sharded limiter** (64 shards, ~20–30 ns/req, snapshot-persisted across restarts) or a **Redis-backed distributed limiter** (consistent enforcement across WAF replicas via atomic Lua script). A separate per-IP **concurrency gate** (`max_coroutines_per_ip`) limits simultaneous in-flight connections before WAF inspection, returning HTTP 429. All settings load from `conf/ratelimit.yaml` or `--ratelimit-by-file-conf`. See **[docs/rate_limit.md](docs/rate_limit.md)** for the full guide including Redis setup, CIS hardening, and config file reference.
-- SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
-- Send `SIGHUP` to hot-reload rule files without restarting the process.
-- `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
-- **Allow-path IP restriction** (`only_addrs`): add `only_addrs: <path>` to any entry in `rules/allowpaths/lists.yaml` to gate that path by client IP. `rules/addr/allowlist/allow_addrs.txt` ships pre-populated with loopback addresses so observability endpoints are localhost-only by default. Supports exact IPs, CIDR, and start–end ranges. See **[docs/allowpaths.md](docs/allowpaths.md)**.
-
 ## 🚫 Banning
 
 KrakenWaf 2.31.0 introduces an opt-in **BAN list** that short-circuits
@@ -889,5 +880,14 @@ request time.  When the database file is absent or `active: false` is set, the
 WAF operates normally with empty geo fields.
 
 Full reference: **[docs/geoip.md](docs/geoip.md)**.
+
+
+## Operational notes
+
+- Rate limiting is enforced per-IP by a **local GCRA sharded limiter** (64 shards, ~20–30 ns/req, snapshot-persisted across restarts) or a **Redis-backed distributed limiter** (consistent enforcement across WAF replicas via atomic Lua script). A separate per-IP **concurrency gate** (`max_coroutines_per_ip`) limits simultaneous in-flight connections before WAF inspection, returning HTTP 429. All settings load from `conf/ratelimit.yaml` or `--ratelimit-by-file-conf`. See **[docs/rate_limit.md](docs/rate_limit.md)** for the full guide including Redis setup, CIS hardening, and config file reference.
+- SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
+- Send `SIGHUP` to hot-reload rule files without restarting the process.
+- `/metrics` exposes Prometheus text counters and `/__krakenwaf/health` exposes a liveness endpoint.
+- **Allow-path IP restriction** (`only_addrs`): add `only_addrs: <path>` to any entry in `rules/allowpaths/lists.yaml` to gate that path by client IP. `rules/addr/allowlist/allow_addrs.txt` ships pre-populated with loopback addresses so observability endpoints are localhost-only by default. Supports exact IPs, CIDR, and start–end ranges. See **[docs/allowpaths.md](docs/allowpaths.md)**.
 
  ![MTG nadir kraken](https://github.com/Orangewarrior/KrakenWaf/blob/main/docs/img/krakenWAF.png?raw=true)
