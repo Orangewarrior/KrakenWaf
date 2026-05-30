@@ -260,7 +260,7 @@ pub async fn run(
             match accepted {
                 Ok(tls_stream) => {
                     let io = TokioIo::new(tls_stream);
-                    let timeout_secs = state.cli.connection_timeout_secs;
+                    let timeout_secs = state.connection_timeout_secs;
                     let state_for_service = Arc::clone(&state);
                     let client_ip = peer.ip().to_string();
                     let builder = Builder::new(TokioExecutor::new());
@@ -336,7 +336,7 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
         task::spawn(async move {
             let _permit = permit;
             let io = TokioIo::new(stream);
-            let timeout_secs = state.cli.connection_timeout_secs;
+            let timeout_secs = state.connection_timeout_secs;
             let state_for_service = Arc::clone(&state);
             let client_ip = peer.ip().to_string();
             let builder = Builder::new(TokioExecutor::new());

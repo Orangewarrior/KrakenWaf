@@ -71,6 +71,21 @@ pub struct Cli {
     #[arg(long = "ratelimit-by-file-conf")]
     pub ratelimit_by_file_conf: Option<String>,
 
+    /// Load proxy-related settings from a YAML file. Passing the flag bare
+    /// (`--external-proxy-conf`) auto-loads `conf/proxy.yaml`; pass a path to use
+    /// a different file. The settings (`--listen`, `--upstream`,
+    /// `--upstream-timeout-secs`, `--allow-private-upstream`,
+    /// `--internal-header-name`, `--real-ip-header`, `--trusted-proxy-cidrs`,
+    /// `--sni-map`, `--no-tls`, `--header-protection-injection`, `--blockmsg`)
+    /// are loaded from the file. An explicitly-passed CLI flag still wins; an
+    /// empty field in the file leaves the WAF's built-in default in place.
+    #[arg(
+        long = "external-proxy-conf",
+        num_args = 0..=1,
+        default_missing_value = "conf/proxy.yaml"
+    )]
+    pub external_proxy_conf: Option<String>,
+
     #[arg(long, default_value_t = 15)]
     pub upstream_timeout_secs: u64,
 
@@ -79,6 +94,15 @@ pub struct Cli {
 
     #[arg(long, action = ArgAction::SetTrue)]
     pub allow_private_upstream: bool,
+
+    /// Path to a PEM certificate (or bundle) to trust as an additional root CA
+    /// when connecting to a TLS upstream. The certificate is *added* to the
+    /// built-in public roots — full chain verification is still enforced — so a
+    /// backend presenting a private-PKI / internal-CA certificate can be fronted
+    /// without disabling validation. Also settable via `upstream-ca` in
+    /// `conf/proxy.yaml`.
+    #[arg(long = "upstream-ca")]
+    pub upstream_ca: Option<String>,
 
     #[arg(long, default_value = "")]
     pub internal_header_name: String,
@@ -103,8 +127,12 @@ pub struct Cli {
     #[arg(long, default_value_t = 0)]
     pub max_body_bytes: usize,
 
-    #[arg(long, default_value_t = 30)]
-    pub connection_timeout_secs: u64,
+    /// Timeout (seconds) for a single client connection accepted by the WAF.
+    /// Overrides the value in `--ratelimit-by-file-conf` or
+    /// `conf/ratelimit.yaml`. When absent the effective value is taken from the
+    /// config file or defaults to 30 s.
+    #[arg(long = "connection-timeout-secs")]
+    pub connection_timeout_secs: Option<u64>,
 
     /// Anti-Slowloris: maximum wall-clock time the WAF waits for a client to
     /// complete the TLS handshake before dropping the connection. A client that

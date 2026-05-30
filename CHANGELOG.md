@@ -1,3 +1,97 @@
+## [2.33.0] - 2026-05-30
+
+> **Config-file ergonomics release.** Two groups of previously CLI-only flags can
+> now be driven from YAML under `conf/`, so production deployments keep the
+> command line terse and version-control their topology instead. (1) The
+> connection / body-size guards (`--max-connections`, `--connection-timeout-secs`,
+> `--max-body-bytes`, `--max-upstream-response-bytes`) gained matching keys in
+> `conf/ratelimit.yaml`. (2) The proxy flags (`--listen`, `--upstream`, … through
+> `--blockmsg`) can be loaded as a group from the new `conf/proxy.yaml` via
+> `--external-proxy-conf`. Both loaders are validated at startup (fail-fast) and
+> fully backward-compatible: defaults are unchanged, an explicit CLI flag still
+> wins, and an empty YAML field keeps the built-in default. The full `cargo test`
+> suite passes (0 failures; +31 new tests) and `cargo clippy --all-targets` is
+> clean (default **and** `vectorscan-engine` features). Validated end-to-end with
+> the `attack` sweep (`--concurrency 50`) over a **full-TLS** topology —
+> client→WAF over TLS, WAF→upstream over TLS (verified via the new
+> `--upstream-ca`), and a **TLS Redis** (`rediss://`) rate-limiter active — with
+> `--enable-vectorscan` and banning OFF: **477/477 payloads blocked, 0 bypassed,
+> 0 errors**.
+
+### `conf/ratelimit.yaml` now carries the connection & body-size caps (`src/ratelimit_config.rs`, `src/cli.rs`, `src/app.rs`, `src/main.rs`, `src/server.rs`, `conf/ratelimit.yaml`)
+
+- Four new keys mirror the matching CLI flags: **`max_connections`**,
+  **`connection_timeout_secs`**, **`max_body_bytes`**, and
+  **`max_upstream_response_bytes`**. When the corresponding flag is omitted the
+  value is loaded from the file into the limiting context. Resolution order
+  (highest wins): CLI flag → `conf/ratelimit.yaml` →
+  `rules/cmc/config.yaml :: memory-limits` → built-in default. Behaviour at the
+  shipped defaults is unchanged.
+- `--connection-timeout-secs` is now **optional** (`Option<u64>`), matching the
+  pattern already used by `--tls-handshake-timeout-secs` and
+  `--body-frame-timeout-secs`. The resolved value lives on
+  `AppState.connection_timeout_secs`; the TLS and plain-HTTP accept loops read it
+  instead of the raw CLI field.
+- The byte/connection caps use a `0` sentinel in the file meaning "defer to the
+  next source", so the auto-discovered `conf/ratelimit.yaml` never silently
+  clobbers an operator's `rules/cmc/config.yaml` memory-limits.
+  `connection_timeout_secs` ships its real `30` s default and must be `>= 1`.
+- New resolvers `RateLimitConfig::effective_max_connections` /
+  `effective_connection_timeout_secs` / `effective_max_body_bytes` /
+  `effective_max_upstream_response_bytes`, plus a `RateLimitConfig::validate()`
+  that rejects `connection_timeout_secs: 0`.
+
+### New `conf/proxy.yaml` + `--external-proxy-conf` (`src/proxy_config.rs`, `src/cli.rs`, `src/main.rs`, `conf/proxy.yaml`)
+
+- `--external-proxy-conf` loads the proxy flags as a group from a YAML file.
+  Passed bare (`--external-proxy-conf`) it auto-loads `conf/proxy.yaml`; pass a
+  path to use a different file. Covers `listen`, `upstream`,
+  `upstream-timeout-secs`, `upstream-ca`, `allow-private-upstream`,
+  `internal-header-name`, `real-ip-header`, `trusted-proxy-cidrs`, `sni-map`,
+  `no-tls`, `header-protection-injection`, and `blockmsg`.
+- **New `--upstream-ca` flag** (also `upstream-ca` in `conf/proxy.yaml`): trusts a
+  private / internal-CA certificate (PEM, single or bundle) as an **additional**
+  root for the TLS upstream connection. The cert is *added* to the built-in
+  public roots — full chain verification is still enforced (it is **not** an
+  "accept any cert" switch) — so KrakenWaf can front a backend that presents a
+  private-PKI certificate. Without it, `reqwest`/`hyper-rustls` trusts only the
+  bundled webpki roots, so a private/self-signed upstream cert fails with 502.
+- The file is a deliberately flat `key: value` document. The parser ignores `#`
+  comments (full-line and inline), splits on the **first** colon so values may
+  contain colons (e.g. `https://host:8080`), and treats an empty value as "keep
+  the WAF default" — an empty `internal-header-name` leaves the internal header
+  disabled, an empty `upstream-timeout-secs` keeps the built-in 15 s default.
+- Precedence: an explicitly-passed CLI flag always wins over the file; an empty
+  field never overrides. The merge runs first thing at startup so the resolved
+  values flow through the listener, upstream client, TLS store, custom block
+  page, and response-header policy.
+
+### Validators for the `conf/` YAML parsers (`src/proxy_config.rs`, `src/ratelimit_config.rs`)
+
+- `ProxyConfig::validate()` checks every populated field: `listen` parses as a
+  socket address, `upstream` as an http(s) URL, each `trusted-proxy-cidrs` entry
+  as a CIDR, and the header-name fields as valid HTTP tokens. A malformed value
+  aborts startup with a descriptive error instead of producing a half-configured
+  proxy (covered by `tests/config_inputs_test.rs`).
+- `RateLimitConfig::validate()` rejects `connection_timeout_secs: 0`. Both
+  loaders run their validator on load (fail-fast), matching the
+  `conf/banning.yaml` pattern.
+
+### Tests & docs
+
+- +29 unit tests (`src/proxy_config.rs`, `src/ratelimit_config.rs`, `src/proxy.rs`)
+  covering the canonical `conf/proxy.yaml` format (spacing + inline comments +
+  empty fields), every parse/validation error path, the CLI-wins merge, the new
+  resolver chains, and the `--upstream-ca` read/parse/error paths.
+- New `tests/config_inputs_test.rs`: spawns the WAF with **only**
+  `--external-proxy-conf` + `--ratelimit-by-file-conf` (no proxy flags on the
+  command line) and proves the files drive `listen` / `upstream` / `no-tls` /
+  `allow-private-upstream` / `header-protection-injection` / `blockmsg` and the
+  `max_body_bytes` cap (413 on an oversized clean body); a second case proves an
+  invalid proxy config aborts startup.
+- `README.md` (CLI table + new "Proxy configuration file" section),
+  `docs/rate_limit.md`, and `docs/deployment.md` updated.
+
 ## [2.32.1] - 2026-05-29
 
 > **Follow-up to 2.32.0.** Makes the anti-Slowloris `--tls-handshake-timeout-secs`

@@ -50,6 +50,10 @@ pub struct AppState {
     /// Resolved per-frame body inactivity timeout (seconds). Anti-Slowloris.
     /// 0 disables the timeout. Resolved from CLI flag, then YAML, then 30 s.
     pub body_frame_timeout_secs: u64,
+    /// Resolved client-connection timeout (seconds). Bounds how long a single
+    /// accepted connection may stay open. Resolved from `--connection-timeout-secs`,
+    /// then `conf/ratelimit.yaml`, then the built-in 30 s default.
+    pub connection_timeout_secs: u64,
     /// Resolved TLS-handshake timeout (seconds). Anti-Slowloris guard on the
     /// accept path. 0 disables the bound. Resolved from CLI flag, then YAML,
     /// then 10 s. Only consulted in TLS mode.

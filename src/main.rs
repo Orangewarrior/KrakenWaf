@@ -13,6 +13,7 @@ mod logging;
 mod metrics;
 mod multipart_extract;
 mod proxy;
+mod proxy_config;
 mod ratelimit_config;
 mod response_headers;
 mod rules;
@@ -64,19 +65,43 @@ async fn main() -> Result<()> {
     let mut cli = Cli::parse();
     let root_dir = std::env::current_dir()?;
 
-    // ── Memory-pressure limits ───────────────────────────────────────────────
-    // Loaded before anything else allocates inspection buffers so subsequent
-    // construction can read the resolved values straight off `cli`.
+    // ── Proxy configuration file (--external-proxy-conf) ──────────────────────
+    // Overlay conf/proxy.yaml onto the proxy-related CLI flags *before* anything
+    // reads them, so the resolved values flow through the rest of startup
+    // (listener, upstream, TLS store, block page, response headers). An
+    // explicitly-passed flag still wins; an empty YAML field keeps the WAF's
+    // built-in default for that knob.
+    let external_proxy_conf = cli.external_proxy_conf.clone();
+    if let Some(path) = external_proxy_conf.as_deref() {
+        let proxy_cfg = proxy_config::ProxyConfig::load_from(&PathBuf::from(path))
+            .with_context(|| format!("--external-proxy-conf: failed to load '{path}'"))?;
+        proxy_cfg.merge_into(&mut cli, &|flag| proxy_config::cli_flag_present(flag));
+    }
+
+    // ── Memory-pressure + connection limits ──────────────────────────────────
+    // The rate-limit config is loaded here (not later) because the connection
+    // and body-byte caps now resolve through it. Priority for each cap:
+    // explicit CLI flag → conf/ratelimit.yaml → memory-limits
+    // (rules/cmc/config.yaml) → built-in default. Resolved before anything
+    // allocates inspection buffers so construction reads the values off `cli`.
     let memory_limits = Arc::new(MemoryLimits::load(&root_dir)?);
-    if cli.max_body_bytes == 0 {
-        cli.max_body_bytes = memory_limits.max_request_body_buffered_bytes;
-    }
-    if cli.max_upstream_response_bytes == 0 {
-        cli.max_upstream_response_bytes = memory_limits.max_response_body_buffered_bytes;
-    }
-    if cli.max_connections == 0 {
-        cli.max_connections = memory_limits.effective_max_connections(None);
-    }
+    let rl_config = match cli.ratelimit_by_file_conf.as_deref() {
+        Some(path) => RateLimitConfig::load_from(&PathBuf::from(path))
+            .with_context(|| format!("--ratelimit-by-file-conf: failed to load '{path}'"))?,
+        None => RateLimitConfig::load(&root_dir)?,
+    };
+    cli.max_body_bytes = rl_config.effective_max_body_bytes(
+        cli.max_body_bytes,
+        memory_limits.max_request_body_buffered_bytes,
+    );
+    cli.max_upstream_response_bytes = rl_config.effective_max_upstream_response_bytes(
+        cli.max_upstream_response_bytes,
+        memory_limits.max_response_body_buffered_bytes,
+    );
+    cli.max_connections = rl_config.effective_max_connections(
+        cli.max_connections,
+        memory_limits.effective_max_connections(None),
+    );
 
     println!("{}", banner::banner());
 
@@ -155,12 +180,8 @@ async fn main() -> Result<()> {
     };
 
     // ── Rate-limit configuration ──────────────────────────────────────────────
-
-    let rl_config = match cli.ratelimit_by_file_conf.as_deref() {
-        Some(path) => RateLimitConfig::load_from(&PathBuf::from(path))
-            .with_context(|| format!("--ratelimit-by-file-conf: failed to load '{path}'"))?,
-        None => RateLimitConfig::load(&root_dir)?,
-    };
+    // `rl_config` was loaded earlier (it also drives the connection/body-byte
+    // caps); here we only derive the per-minute request budget from it.
     let effective_limit = rl_config.effective_rate_limit(cli.rate_limit_per_minute);
 
     let rate_limiter =
@@ -189,6 +210,7 @@ async fn main() -> Result<()> {
         cli.upstream_timeout_secs,
         cli.allow_private_upstream,
         Some(cli.internal_header_name.clone()),
+        cli.upstream_ca.as_deref(),
     )?);
     let (block_response_body, block_response_content_type) =
         load_block_message(cli.blockmsg.as_deref(), &root_dir)?;
@@ -224,6 +246,8 @@ async fn main() -> Result<()> {
             .effective_max_per_ip_body_bytes(cli.max_per_ip_body_bytes),
         body_frame_timeout_secs: rl_config
             .effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
+        connection_timeout_secs: rl_config
+            .effective_connection_timeout_secs(cli.connection_timeout_secs),
         tls_handshake_timeout_secs: rl_config
             .effective_tls_handshake_timeout_secs(cli.tls_handshake_timeout_secs),
         memory_limits: memory_limits.clone(),
@@ -261,7 +285,9 @@ async fn main() -> Result<()> {
         max_upstream_response_bytes = cli.max_upstream_response_bytes,
         max_connections = cli.max_connections,
         max_decompress_ratio = memory_limits.max_decompress_ratio,
+        connection_timeout_secs = state.connection_timeout_secs,
         tls_handshake_timeout_secs = state.tls_handshake_timeout_secs,
+        external_proxy_conf = external_proxy_conf.is_some(),
         "KrakenWaf initialized"
     );
 

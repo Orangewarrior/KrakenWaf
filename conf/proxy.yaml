@@ -1,0 +1,32 @@
+# KrakenWaf — Proxy Configuration
+# ─────────────────────────────────────────────────────────────────────────────
+# Load with:  --external-proxy-conf conf/proxy.yaml
+#
+# This file mirrors the proxy-related CLI flags so a deployment can keep the
+# command line terse and version-control its proxy topology. Resolution order
+# (highest precedence first):
+#   1. An explicitly-passed CLI flag (e.g. --upstream ...)
+#   2. The value below, when non-empty
+#   3. The WAF's built-in default
+#
+# Parsing rules:
+#   • One `key: value` per line; the value may contain colons (e.g. a URL).
+#   • A `#` at the start of a line, or preceded by a space, starts a comment —
+#     everything after it on the line is ignored.
+#   • An empty value means "leave the WAF default in place" — it never overrides
+#     anything. An empty `internal-header-name`, for instance, keeps the
+#     internal header disabled; an empty `upstream-timeout-secs` keeps the
+#     built-in 15 s default.
+
+listen : 127.0.0.1:443
+upstream : https://127.0.0.1:8080 # host definido pelo usuario
+upstream-timeout-secs: # quando vazio por default é um valor definido pelo WAF
+upstream-ca: # vazio -> confia só nas CAs públicas; caminho PEM p/ confiar numa CA privada do upstream
+allow-private-upstream: false # desativado
+internal-header-name: #vazio desativado por default
+real-ip-header: X-Forwarded-For
+trusted-proxy-cidrs: 127.0.0.1/32
+sni-map: ./rules/tls/sni_map.csv # default
+no-tls: false # no tls desativado por default
+header-protection-injection: ./rules/headers_http/relax.headers
+blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
