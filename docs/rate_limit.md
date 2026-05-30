@@ -78,6 +78,29 @@ max_inflight_body_bytes: 1073741824   # 1 GiB
 # Per-IP cap (bytes) on in-flight request body data. 0 disables.
 max_per_ip_body_bytes: 209715200      # 200 MiB
 
+# ── Connection & body-size caps (mirror the matching CLI flags) ──────────────
+# Each resolves: CLI flag → this file → rules/cmc/config.yaml memory-limits →
+# built-in default. A 0 here means "defer to the next source".
+
+# Maximum simultaneous TCP connections the WAF accepts.
+# 0 = derive a conservative cap from system RAM at startup. Overridden by
+# --max-connections when > 0.
+max_connections: 0
+
+# Timeout (seconds) for a single client connection accepted by the WAF.
+# Must be >= 1. Overridden by --connection-timeout-secs. Default: 30.
+connection_timeout_secs: 30
+
+# Maximum request body buffered for inspection (bytes).
+# 0 = use rules/cmc/config.yaml memory-limits (built-in 8 MiB / 8388608).
+# Overridden by --max-body-bytes when > 0.
+max_body_bytes: 0
+
+# Hard ceiling on the upstream response body buffered in memory (bytes).
+# 0 = use rules/cmc/config.yaml memory-limits (built-in 8 MiB / 8388608).
+# Overridden by --max-upstream-response-bytes when > 0.
+max_upstream_response_bytes: 0
+
 # Redis backend — uncomment to enable distributed rate limiting.
 # redis:
 #   url: "rediss://redis.internal:6380/0"   # rediss:// (TLS) mandatory

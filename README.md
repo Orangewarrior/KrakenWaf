@@ -87,6 +87,13 @@ krakenwaf --ratelimit-by-file-conf conf/ratelimit.yaml [...]
 rate_limit_per_minute: 240     # req/min per IP (0 = use CLI flag or default)
 max_coroutines_per_ip: 64      # simultaneous connections per IP (0 = disabled)
 
+# Connection & body-size caps (mirror the matching CLI flags).
+# 0 = defer to the CLI flag / rules/cmc/config.yaml memory-limits / built-in.
+max_connections: 0                 # 0 = derive from system RAM
+connection_timeout_secs: 30        # client connection timeout (>= 1)
+max_body_bytes: 0                  # 0 = 8 MiB default
+max_upstream_response_bytes: 0     # 0 = 8 MiB default
+
 # Uncomment to enable Redis distributed rate limiting:
 # redis:
 #   url: "rediss://redis.internal:6380/0"   # rediss:// (TLS) required
@@ -96,6 +103,7 @@ max_coroutines_per_ip: 64      # simultaneous connections per IP (0 = disabled)
 ```
 
 Priority chain: `--rate-limit-per-minute` CLI flag → file value → built-in default (240 req/min).
+The connection/body-size caps resolve CLI flag → `conf/ratelimit.yaml` → `rules/cmc/config.yaml` memory-limits → built-in default.
 
 ### Per-IP concurrency cap (`max_coroutines_per_ip`)
 
@@ -125,6 +133,61 @@ credentials loaded file-first with an env-var fallback, and a configurable
 fail mode on Redis unavailability (`redis.fail_open`, default fail-open).
 
 → Full guide: [docs/rate_limit.md](docs/rate_limit.md)
+
+---
+
+## 🧩 Proxy Configuration File (`conf/proxy.yaml`)
+
+The proxy-level flags can be loaded as a group from a YAML file instead of the
+command line, keeping deployments terse and version-controllable. Load it with
+`--external-proxy-conf` — passed bare it auto-loads `conf/proxy.yaml`; pass a
+path to use a different file:
+
+```bash
+# Auto-load conf/proxy.yaml
+krakenwaf --external-proxy-conf
+
+# Or point at a specific file
+krakenwaf --external-proxy-conf /etc/krakenwaf/proxy.yaml
+```
+
+`conf/proxy.yaml` mirrors the proxy flags one-to-one:
+
+```yaml
+listen : 127.0.0.1:443
+upstream : https://127.0.0.1:8080 # host defined by the operator
+upstream-timeout-secs: # empty -> WAF default (15 s)
+allow-private-upstream: false # disabled
+internal-header-name: # empty -> internal header disabled
+real-ip-header: X-Forwarded-For
+trusted-proxy-cidrs: 127.0.0.1/32
+sni-map: ./rules/tls/sni_map.csv # default
+no-tls: false # TLS enabled
+header-protection-injection: ./rules/headers_http/relax.headers
+blockmsg: ./alert/blockalert.html # empty -> no custom block page
+```
+
+**Parsing & precedence**
+
+- One `key: value` per line; the value may contain colons (e.g. a URL). The
+  parser splits on the **first** colon only.
+- A `#` at the start of a line, or preceded by a space, starts a comment — the
+  rest of the line is ignored. A `#` inside a value (no leading space) is kept.
+- An **empty value** means *keep the WAF default* — it never overrides. An empty
+  `internal-header-name` leaves the internal header disabled; an empty
+  `upstream-timeout-secs` keeps the built-in 15 s default.
+- Resolution order (highest first): an explicitly-passed CLI flag → the value in
+  `conf/proxy.yaml` → the built-in default.
+- The file is **validated at startup** (fail-fast): `listen` must be a socket
+  address, `upstream` an `http(s)` URL, each `trusted-proxy-cidrs` entry a CIDR,
+  and the header-name fields valid HTTP tokens. A malformed value aborts boot
+  with a descriptive error.
+
+> **Connection & body-size caps** (`--max-connections`,
+> `--connection-timeout-secs`, `--max-body-bytes`,
+> `--max-upstream-response-bytes`) are configured in
+> [`conf/ratelimit.yaml`](docs/rate_limit.md), not `conf/proxy.yaml`, since they
+> belong to the rate-limiting / memory-backpressure context.
 
 ---
 
@@ -435,13 +498,14 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--enable-libinjection-xss` | `false` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
 | `--enable-vectorscan` | `false` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature) |
 | `--rate-limit-per-minute` | 240 | Per-IP request budget per 60 s window. Overrides the config file. Default when absent: 240. See [docs/rate_limit.md](docs/rate_limit.md) |
-| `--ratelimit-by-file-conf` | auto-discover | Path to a YAML rate-limit config file. Auto-discovered at `conf/ratelimit.yaml` in the working directory. Enables Redis backend and `max_coroutines_per_ip`. See [docs/rate_limit.md](docs/rate_limit.md) |
+| `--ratelimit-by-file-conf` | auto-discover | Path to a YAML rate-limit config file. Auto-discovered at `conf/ratelimit.yaml` in the working directory. Enables Redis backend, `max_coroutines_per_ip`, and the connection/body-size caps. See [docs/rate_limit.md](docs/rate_limit.md) |
+| `--external-proxy-conf` | — / `conf/proxy.yaml` | Load the proxy flags (`--listen`, `--upstream`, `--upstream-timeout-secs`, `--allow-private-upstream`, `--internal-header-name`, `--real-ip-header`, `--trusted-proxy-cidrs`, `--sni-map`, `--no-tls`, `--header-protection-injection`, `--blockmsg`) from a YAML file. Passed bare it auto-loads `conf/proxy.yaml`; pass a path for a different file. An explicit CLI flag still wins; an empty field keeps the WAF default. See [Proxy configuration file](#-proxy-configuration-file-confproxyyaml) |
 | `--wal-mode` | `sqlite` | Persistence backend for the local rate-limiter snapshot: `sqlite` (inspectable WAL) or `bincode` (atomic-rename binary, ~10–50× faster). Ignored when using Redis. See [docs/rate_limit.md](docs/rate_limit.md) |
 | `--upstream-timeout-secs` | `15` | Timeout in seconds for upstream requests |
-| `--connection-timeout-secs` | `30` | Timeout in seconds for client connections accepted by the WAF |
-| `--max-connections` | `512` | Maximum simultaneous TCP connections accepted by the WAF. Each connection holds inspection buffers — keep proportional to available memory |
-| `--max-body-bytes` | `104857600` (100 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request |
-| `--max-upstream-response-bytes` | `104857600` (100 MiB) | Hard ceiling on upstream response body buffered in memory; prevents a misbehaving upstream from exhausting WAF heap |
+| `--connection-timeout-secs` | `30` | Timeout in seconds for a client connection accepted by the WAF. Also configurable via `connection_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
+| `--max-connections` | RAM-derived | Maximum simultaneous TCP connections accepted by the WAF. When unset, a conservative cap is derived from system RAM (clamped to 64–4096). Also configurable via `max_connections` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
+| `--max-body-bytes` | `8388608` (8 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request. Also configurable via `max_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
+| `--max-upstream-response-bytes` | `8388608` (8 MiB) | Hard ceiling on upstream response body buffered in memory; prevents a misbehaving upstream from exhausting WAF heap. Also configurable via `max_upstream_response_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
 | `--anomaly-threshold` | `600` | Score-engine block threshold. Detection rules with `score` below this are correlated; when their accumulated `sum_score` within a single inspection view reaches the threshold the request is blocked. Also configurable via `Anomaly_threshold` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml). See [docs/score_rank.md](docs/score_rank.md) |
 | `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set, inspection stops scanning additional views once the deadline elapses and the request proceeds with whatever findings were produced. `0` disables the deadline. Also configurable via `Max_inspection_ms` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml) |
 | `--body-frame-timeout-secs` | `30` | Per-frame timeout when streaming the request body. If the WAF waits longer than this for a single body chunk it returns 408 and drops the connection. Also configurable via `body_frame_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |

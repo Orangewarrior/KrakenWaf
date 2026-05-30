@@ -1,7 +1,7 @@
 //! Rate-limit configuration loaded from `conf/ratelimit.yaml` (or an explicit
 //! path via `--ratelimit-by-file-conf`).
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 use std::{fs, path::Path};
 
@@ -50,6 +50,34 @@ pub struct RateLimitConfig {
     #[serde(default)]
     pub max_per_ip_body_bytes: Option<usize>,
 
+    /// Maximum simultaneous TCP connections the WAF accepts. `0` in the file
+    /// (or absent) is treated as `None`, deferring to `--max-connections`, then
+    /// to `rules/cmc/config.yaml :: memory-limits.max_connections`, and finally
+    /// to a value derived from system RAM at startup.
+    #[serde(default, deserialize_with = "deser_opt_nonzero_usize")]
+    pub max_connections: Option<usize>,
+
+    /// Timeout (seconds) for a single client connection accepted by the WAF.
+    /// `None` defers to `--connection-timeout-secs`, then to the built-in
+    /// default (30 s). Must be `>= 1` when present — `0` would time out every
+    /// connection immediately and is rejected by [`RateLimitConfig::validate`].
+    #[serde(default)]
+    pub connection_timeout_secs: Option<u64>,
+
+    /// Maximum request body the WAF buffers + inspects (bytes). `0`/absent is
+    /// `None`, deferring to `--max-body-bytes`, then to
+    /// `rules/cmc/config.yaml :: memory-limits.max_request_body_buffered_bytes`
+    /// (built-in default 8 MiB).
+    #[serde(default, deserialize_with = "deser_opt_nonzero_usize")]
+    pub max_body_bytes: Option<usize>,
+
+    /// Hard ceiling on the upstream response body the WAF buffers (bytes).
+    /// `0`/absent is `None`, deferring to `--max-upstream-response-bytes`, then
+    /// to `rules/cmc/config.yaml :: memory-limits.max_response_body_buffered_bytes`
+    /// (built-in default 8 MiB).
+    #[serde(default, deserialize_with = "deser_opt_nonzero_usize")]
+    pub max_upstream_response_bytes: Option<usize>,
+
     /// Redis distributed rate-limiter settings. When present, replaces the
     /// built-in GCRA limiter with a Redis-backed counter.
     #[serde(default)]
@@ -65,6 +93,10 @@ impl Default for RateLimitConfig {
             tls_handshake_timeout_secs: None,
             max_inflight_body_bytes: None,
             max_per_ip_body_bytes: None,
+            max_connections: None,
+            connection_timeout_secs: None,
+            max_body_bytes: None,
+            max_upstream_response_bytes: None,
             redis: None,
         }
     }
@@ -89,8 +121,11 @@ impl RateLimitConfig {
         }
         let raw = fs::read_to_string(path)
             .with_context(|| format!("failed to read '{}'", path.display()))?;
-        serde_yaml::from_str(&raw)
-            .with_context(|| format!("failed to parse '{}'", path.display()))
+        let cfg: Self = serde_yaml::from_str(&raw)
+            .with_context(|| format!("failed to parse '{}'", path.display()))?;
+        cfg.validate()
+            .with_context(|| format!("invalid rate-limit config '{}'", path.display()))?;
+        Ok(cfg)
     }
 
     /// Resolve the effective rate limit applying priority order:
@@ -141,6 +176,70 @@ impl RateLimitConfig {
     pub fn effective_max_per_ip_body_bytes(&self, cli: Option<usize>) -> usize {
         cli.or(self.max_per_ip_body_bytes)
             .unwrap_or(200 * 1024 * 1024)
+    }
+
+    /// Resolve the effective client-connection timeout (seconds):
+    ///   1. Explicit `--connection-timeout-secs` CLI argument
+    ///   2. `connection_timeout_secs` from this config file
+    ///   3. Built-in default: 30 s
+    #[must_use]
+    pub fn effective_connection_timeout_secs(&self, cli: Option<u64>) -> u64 {
+        cli.or(self.connection_timeout_secs).unwrap_or(30)
+    }
+
+    /// Resolve the effective `max_connections` cap. Priority:
+    ///   1. Explicit `--max-connections` CLI argument (non-zero)
+    ///   2. `max_connections` from this config file (non-zero)
+    ///   3. `fallback` — supplied by the caller from
+    ///      `MemoryLimits::effective_max_connections` (config / RAM-derived).
+    #[must_use]
+    pub fn effective_max_connections(&self, cli: usize, fallback: usize) -> usize {
+        if cli != 0 {
+            return cli;
+        }
+        self.max_connections.filter(|v| *v != 0).unwrap_or(fallback)
+    }
+
+    /// Resolve the effective request-body cap (bytes). Priority:
+    ///   1. Explicit `--max-body-bytes` CLI argument (non-zero)
+    ///   2. `max_body_bytes` from this config file (non-zero)
+    ///   3. `fallback` — `memory-limits.max_request_body_buffered_bytes`.
+    #[must_use]
+    pub fn effective_max_body_bytes(&self, cli: usize, fallback: usize) -> usize {
+        if cli != 0 {
+            return cli;
+        }
+        self.max_body_bytes.filter(|v| *v != 0).unwrap_or(fallback)
+    }
+
+    /// Resolve the effective upstream-response cap (bytes). Priority:
+    ///   1. Explicit `--max-upstream-response-bytes` CLI argument (non-zero)
+    ///   2. `max_upstream_response_bytes` from this config file (non-zero)
+    ///   3. `fallback` — `memory-limits.max_response_body_buffered_bytes`.
+    #[must_use]
+    pub fn effective_max_upstream_response_bytes(&self, cli: usize, fallback: usize) -> usize {
+        if cli != 0 {
+            return cli;
+        }
+        self.max_upstream_response_bytes
+            .filter(|v| *v != 0)
+            .unwrap_or(fallback)
+    }
+
+    /// Validate the parsed config. Run on load so a malformed file is rejected
+    /// at startup rather than producing a silently-broken limiter.
+    ///
+    /// # Errors
+    /// Returns a descriptive error when a populated field holds a value that
+    /// would break the limiter (currently: `connection_timeout_secs == 0`).
+    pub fn validate(&self) -> Result<()> {
+        if let Some(0) = self.connection_timeout_secs {
+            bail!(
+                "`connection_timeout_secs` must be >= 1 (got 0); 0 would time out \
+                 every client connection immediately"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -200,6 +299,19 @@ where
     }
 }
 
+/// Deserialise an optional usize where 0 and the absent case are both `None`.
+/// Lets `conf/ratelimit.yaml` ship the byte/connection caps with an explicit
+/// `0` sentinel meaning "defer to the CLI flag / memory-limits / built-in".
+fn deser_opt_nonzero_usize<'de, D>(d: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    match Option::<usize>::deserialize(d)? {
+        Some(0) | None => Ok(None),
+        Some(n) => Ok(Some(n)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +365,81 @@ max_per_ip_body_bytes: 104857600
         assert_eq!(cfg.effective_tls_handshake_timeout_secs(Some(20)), 20);
         assert_eq!(cfg.effective_max_inflight_body_bytes(Some(1024)), 1024);
         assert_eq!(cfg.effective_max_per_ip_body_bytes(Some(512)), 512);
+    }
+
+    #[test]
+    fn new_caps_default_to_fallback_when_absent() {
+        let cfg = RateLimitConfig::default();
+        // connection timeout: no CLI, no YAML → built-in 30 s.
+        assert_eq!(cfg.effective_connection_timeout_secs(None), 30);
+        // byte/connection caps: no CLI (0), no YAML → caller-supplied fallback.
+        assert_eq!(cfg.effective_max_connections(0, 512), 512);
+        assert_eq!(cfg.effective_max_body_bytes(0, 8_388_608), 8_388_608);
+        assert_eq!(
+            cfg.effective_max_upstream_response_bytes(0, 8_388_608),
+            8_388_608
+        );
+    }
+
+    #[test]
+    fn new_caps_zero_sentinel_is_treated_as_absent() {
+        // The shipped conf/ratelimit.yaml carries 0 for the byte/connection caps.
+        let yaml = "\
+max_connections: 0
+max_body_bytes: 0
+max_upstream_response_bytes: 0
+connection_timeout_secs: 30
+";
+        let cfg: RateLimitConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+        assert_eq!(cfg.max_connections, None);
+        assert_eq!(cfg.max_body_bytes, None);
+        assert_eq!(cfg.max_upstream_response_bytes, None);
+        // 0 → fallback; 30 from YAML wins over the built-in default.
+        assert_eq!(cfg.effective_max_connections(0, 1024), 1024);
+        assert_eq!(cfg.effective_max_body_bytes(0, 8_388_608), 8_388_608);
+        assert_eq!(cfg.effective_connection_timeout_secs(None), 30);
+    }
+
+    #[test]
+    fn new_caps_yaml_overrides_fallback_and_cli_overrides_yaml() {
+        let yaml = "\
+max_connections: 256
+connection_timeout_secs: 45
+max_body_bytes: 4194304
+max_upstream_response_bytes: 2097152
+";
+        let cfg: RateLimitConfig = serde_yaml::from_str(yaml).expect("yaml parses");
+        // YAML wins over the fallback when CLI is unset (0 / None).
+        assert_eq!(cfg.effective_max_connections(0, 1024), 256);
+        assert_eq!(cfg.effective_connection_timeout_secs(None), 45);
+        assert_eq!(cfg.effective_max_body_bytes(0, 8_388_608), 4_194_304);
+        assert_eq!(
+            cfg.effective_max_upstream_response_bytes(0, 8_388_608),
+            2_097_152
+        );
+        // Explicit CLI wins over YAML.
+        assert_eq!(cfg.effective_max_connections(99, 1024), 99);
+        assert_eq!(cfg.effective_connection_timeout_secs(Some(5)), 5);
+        assert_eq!(cfg.effective_max_body_bytes(123, 8_388_608), 123);
+        assert_eq!(
+            cfg.effective_max_upstream_response_bytes(456, 8_388_608),
+            456
+        );
+    }
+
+    #[test]
+    fn validate_rejects_zero_connection_timeout() {
+        let cfg: RateLimitConfig =
+            serde_yaml::from_str("connection_timeout_secs: 0").expect("yaml parses");
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn validate_accepts_default_and_populated() {
+        assert!(RateLimitConfig::default().validate().is_ok());
+        let cfg: RateLimitConfig =
+            serde_yaml::from_str("connection_timeout_secs: 30").expect("yaml parses");
+        assert!(cfg.validate().is_ok());
     }
 
     #[test]

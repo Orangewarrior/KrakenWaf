@@ -12,6 +12,7 @@ pub mod logging;
 pub mod metrics;
 pub mod multipart_extract;
 pub mod proxy;
+pub mod proxy_config;
 pub mod ratelimit_config;
 pub mod response_headers;
 pub mod rules;
