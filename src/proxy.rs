@@ -341,6 +341,18 @@ impl ProxyClient {
         };
 
         if !skip_inspection {
+            // HTTP Parameter Pollution check (HPP_detect CMC module): inspect the
+            // raw query string and the request body for a duplicated parameter
+            // name. Runs once the body is available so both locations are covered.
+            let query = context.uri.split_once('?').map_or("", |(_, q)| q);
+            let body_text = String::from_utf8_lossy(&body_bytes);
+            if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
+                let event = build_event(&context, &finding, Some(&body_bytes));
+                if let Some(response) = self.log_and_enforce(state, event).await {
+                    return response;
+                }
+            }
+
             let full_request = format_full_request_bytes(&context, Some(&body_bytes));
             match state
                 .waf

@@ -39,6 +39,7 @@ CMC-Rules:
   Silent_sql_errors: true
   Detect_bad_artifacts: true
   Detect_bots_n_scanners: true
+  HPP_detect: true
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Memory-pressure limits (2.29.0)

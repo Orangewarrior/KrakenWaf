@@ -1,3 +1,82 @@
+## [2.34.0] - 2026-05-31
+
+> **HTTP Parameter Pollution release.** A new CMC module, **`HPP_detect`**,
+> detects HTTP Parameter Pollution — the same parameter name supplied two or
+> more times in a single location — across the query string (GET) **and** the
+> request body (POST/PUT/DELETE/any method). It normalizes each location first,
+> counts `=` on the normalized form, parses parameter names (split on `&`, key =
+> substring before the first `=`), and flags any duplicate name compared
+> **case-insensitively** (`email` vs `eMail`). Findings are `Critical` and feed
+> the existing untrust scoring, so a clear duplicate blocks at the shipped
+> `Untrust >= 60` gate and is reported to the JSONL, raw, and SQLite sinks like
+> every other CMC finding. The module is toggled with `HPP_detect` in
+> `rules/cmc/config.yaml` (no-op when `false`/absent). To make the detector
+> encoding-bypass resistant, the **global normalizer was hardened** with UTF-16
+> LE/BE transcoding (BOM and interleaved-NUL ASCII) added ahead of the existing
+> recursive percent-decoding — a change that benefits every CMC module and rule.
+> Full `cargo test` suite passes (0 failures; new HPP + UTF-16 unit tests) and
+> `cargo clippy --all-targets` is clean.
+
+### New CMC module — `HPP_detect` (`src/cmc/hpp_detect.rs`, `src/cmc/mod.rs`, `rules/cmc/config.yaml`)
+
+- **Detection.** For the query string and the body independently: normalize via
+  the global `normalize_str`, gate on `>= 2` `=` characters, parse keys, and
+  report the first case-insensitively duplicated parameter name as an
+  `HppMatch { parameter, location }`. Values containing `=` (e.g. base64 padding
+  `==`) do not create false duplicates because only the first `=` of each
+  segment splits the key.
+- **Severity / blocking.** `CMC HTTP Parameter Pollution detection`, `Critical`,
+  [CWE-235](https://cwe.mitre.org/data/definitions/235.html); blocks at
+  `Untrust >= 60` and logs to JSONL + raw + SQLite via the shared finding path.
+- **Config.** New `HPP_detect` key in `rules/cmc/config.yaml` and the matching
+  `hpp_detect` field on `CmcConfig` (`from_map("HPP_detect")`); disabled when the
+  flag is `false` or absent.
+- **Pipeline.** `WafEngine::inspect_hpp(query, body)` is invoked from
+  `src/proxy.rs` once the body is available; the raw query string and body are
+  passed so the normalizer — not the proxy — owns all decoding.
+
+### Global normalizer hardening — UTF-16 transcoding (`src/waf/engine/normalize.rs`)
+
+- **UTF-16 LE/BE → UTF-8** is now applied at the start of
+  `normalize_request_bytes` (and the new public `normalize_str`): a `FF FE` /
+  `FE FF` BOM, or the whole-buffer interleaved-NUL pattern of ASCII-range UTF-16,
+  is transcoded before percent-decoding. Binary bodies with scattered NULs are
+  left untouched (the pattern must hold for the entire buffer). Recursive
+  single/double/triple percent-decoding (existing `MAX_URL_DECODE_PASSES = 4`)
+  then runs over the transcoded bytes, so separators hidden behind UTF-16 **and**
+  multi-layer percent-encoding are revealed. The change is additive — existing
+  decodings and public signatures are preserved.
+- **`normalize_str`** is exported through `crate::waf` as the single public
+  entry point CMC modules use to fully decode one field.
+
+### Tests + DAST
+
+- **Unit tests.** New tests in `src/cmc/hpp_detect.rs` (clean vs duplicate,
+  case-insensitivity, value-with-`=`, `=`-count gate, body location, percent and
+  double-percent separator decoding, and the pure helpers) and in
+  `src/cmc/mod.rs` (config parsing, disabled no-op, enabled block + body
+  pollution). New UTF-16 tests in `src/waf/engine/normalize.rs` (BOM LE/BE,
+  BOM-less heuristic LE/BE, ASCII not misread, UTF-16-then-percent-decode).
+- **DAST.** `src/bin/attack.rs` gains `HPP_PAYLOADS` (50 payloads) plus
+  `sweep_hpp_get` / `sweep_hpp_post`, run over both the GET query string and the
+  POST body. Payloads obfuscate the `=`/`&` separators with plain,
+  single/double/triple percent-encoding, mixed-case hex, `+`-for-space, UTF-16,
+  and mixed forms; each must be blocked (a `200` is a real encoding bypass). Run
+  with `--concurrency 50` and `--enable-vectorscan` for the full engine.
+
+### Documentation
+
+- New module guide [docs/cmc/hpp_detect.md](docs/cmc/hpp_detect.md); module
+  added to the README CMC list + YAML, [docs/cmc/schema.md](docs/cmc/schema.md)
+  catalogue, [docs/normalization.md](docs/normalization.md) (UTF-16 section), and
+  [docs/attack_tool.md](docs/attack_tool.md) (HPP coverage).
+
+### Version
+
+- Bumped workspace version **2.33.0 → 2.34.0** (`Cargo.toml`).
+
+---
+
 ## [2.33.0] - 2026-05-30
 
 > **Config-file ergonomics release.** Two groups of previously CLI-only flags can
