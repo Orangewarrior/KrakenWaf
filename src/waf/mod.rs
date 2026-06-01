@@ -2,6 +2,6 @@ mod engine;
 pub mod rate_limit;
 
 pub use engine::{
-    Decision, Finding, InspectionContext, ResponseContext, WafEngine, WafEngineConfig,
-    WafEngineFactory,
+    normalize_str, Decision, Finding, InspectionContext, ResponseContext, WafEngine,
+    WafEngineConfig, WafEngineFactory,
 };

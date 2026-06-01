@@ -9,6 +9,16 @@ tests in `src/waf/engine/normalize.rs`.
 
 ## What is normalized
 
+- **UTF-16 transcoding (LE/BE)** — applied **first**, before percent-decoding.
+  A leading byte-order mark (`FF FE` little-endian, `FE FF` big-endian) or the
+  characteristic interleaved-NUL pattern of ASCII-range UTF-16 text (`A\0B\0…`
+  for LE, `\0A\0B…` for BE) is recognised and transcoded to UTF-8. The whole
+  buffer must match the pattern, so binary bodies with scattered NULs are left
+  alone. This closes an evasion where separators (`=`/`&`) or any payload are
+  hidden inside a UTF-16 stream that the WAF would otherwise treat as opaque
+  bytes but a UTF-16-aware backend would parse. Because it runs inside
+  `normalize_request_bytes` / `normalize_str`, **every** CMC module and rule
+  benefits (e.g. it underpins the `HPP_detect` separator decoding).
 - **Percent-decoding (`%XX`)** — decoded repeatedly, up to **4 passes**
   (`MAX_URL_DECODE_PASSES`), stopping early once a pass changes nothing. This
   peels single/double/triple-encoding (`%252e%252e` → `..`). The cap bounds CPU

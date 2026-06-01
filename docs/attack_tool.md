@@ -124,8 +124,15 @@ payload bypasses the WAF.
 | XSS payloads | GET query string | 50 |
 | SQLi payloads | GET query string | 50 |
 | SQLi payloads | POST body | 50 |
+| HPP payloads | GET query string | 50 |
+| HPP payloads | POST body | 50 |
 | Scanner `User-Agent` strings | GET | 15 |
-| **Total** | | **215** |
+| **Total** | | **315** |
+
+> The table above lists the headline sweeps; the tool also runs the remaining
+> CMC sweeps (SSTI, SSI, ESI, CRLF, request smuggling, NoSQL, XXE, exposed
+> backup, passwd/shadow leak, silent SQL errors, Java deserialization, bad
+> artifacts) — see the `run_sweep!` calls in `src/bin/attack.rs`.
 
 XSS patterns include: `<script>`, event handlers (`onerror=`, `onload=`, etc.),
 `javascript:` URIs, `<iframe>`, `<svg>`, encoded variants.
@@ -133,6 +140,16 @@ XSS patterns include: `<script>`, event handlers (`onerror=`, `onload=`, etc.),
 SQLi patterns include: boolean blind (`' OR '1'='1`), union-based, stacked
 queries (`;DROP TABLE`), time-based (`SLEEP()`, `WAITFOR DELAY`), error-based
 (`EXTRACTVALUE`, `UPDATEXML`), `xp_cmdshell`, and double-quote variants.
+
+HPP (HTTP Parameter Pollution) payloads each carry a duplicated parameter name
+(case-insensitive, e.g. `email`/`eMail`) and try to evade the
+[`HPP_detect`](cmc/hpp_detect.md) module by obfuscating the `=`/`&` separators:
+plain, single/double/triple percent-encoding, mixed-case hex, `+`-for-space,
+UTF-16 LE/BE, and mixed (some separators encoded, some not). The raw string is
+sent verbatim as the query string (GET) and the body (POST) so the encodings
+reach the WAF undecoded — the global normalizer must peel them before the
+duplicate is detectable. All 50 must be blocked over each direction; a `200` is
+a real encoding bypass.
 
 Scanner UAs are drawn from `rules/user_agents/scanners.txt` (subset of 15).
 Note: scanner-UA blocking is now owned by the

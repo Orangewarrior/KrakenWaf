@@ -260,6 +260,79 @@ const XXE_ATTACK_PAYLOADS: &[&str] = &[
     "%3C%00!%00D%00O%00C%00T%00Y%00P%00E%00%20%00x%00x%00e%00%20%00%5B%00%3C%00!%00E%00N%00T%00I%00T%00Y%00%20%00x%00x%00e%00%20%00S%00Y%00S%00T%00E%00M%00%20%00%22%00f%00i%00l%00e%00:%00/%00/%00/%00e%00t%00c%00/%00p%00a%00s%00s%00w%00d%00%22%00%3E%00%5D%00%3E%00",
 ];
 
+/// HTTP Parameter Pollution payloads — raw query/body strings each carrying a
+/// duplicated parameter name (case-insensitive). Every payload tries to hide
+/// the `=`/`&` separators behind a different obfuscation so the WAF must decode
+/// before parsing. All 50 should be blocked by `HPP_detect`; any 200 is a
+/// bypass and a real evasion to fix. These strings are sent as the **raw**
+/// query string (GET) and the **raw** body (POST) — not as a single encoded
+/// value — by `sweep_hpp_get` / `sweep_hpp_post`.
+const HPP_PAYLOADS: &[&str] = &[
+    // ── plain (no obfuscation) ──
+    "name=Antonio&email=a@x&age=39&eMail=<bingo>",
+    "email=a@x&email=b@y",
+    "user=alice&User=bob",
+    "id=1&ID=2",
+    "token=abc&TOKEN=def",
+    "role=user&Role=admin",
+    "q=1&q=2&q=3",
+    "a=1&b=2&A=3",
+    "page=1&PAGE=2",
+    "lang=en&Lang=fr",
+    // ── single percent-encode of '=' (%3D) ──
+    "email%3Da@x&eMail%3Db@y",
+    "user%3dalice&USER%3dbob",
+    "id%3D1&Id%3D2",
+    "role%3Duser&ROLE%3Dadmin",
+    "key%3Da&Key%3Db",
+    // ── single percent-encode of '&' (%26) ──
+    "email=a@x%26eMail=b@y",
+    "user=alice%26User=bob",
+    "id=1%26ID=2",
+    "token=a%26Token=b",
+    "name=x%26NAME=y",
+    // ── both '=' and '&' percent-encoded ──
+    "email%3Da@x%26eMail%3Db@y",
+    "user%3Dalice%26USER%3Dbob",
+    "id%3D1%26Id%3D2",
+    "role%3Duser%26Role%3Dadmin",
+    "key%3Da%26KEY%3Db",
+    // ── double percent-encode (%253D '=', %2526 '&') ──
+    "email%253Da@x%2526eMail%253Db@y",
+    "user%253Dalice%2526User%253Dbob",
+    "id%253D1%2526ID%253D2",
+    "token%253Da%2526Token%253Db",
+    "role%253Duser%2526ROLE%253Dadmin",
+    // ── triple percent-encode (%25253D / %252526) ──
+    "email%25253Da%252526eMail%25253Db",
+    "user%25253Dalice%252526USER%25253Dbob",
+    "id%25253D1%252526Id%25253D2",
+    // ── mixed-case percent hex ──
+    "email%3da@x%26eMail%3Db@y",
+    "user%3Dalice%26User%3dbob",
+    "ID%3d1%26id%3D2",
+    // ── '+' for space + duplicate ──
+    "first+name=a&First+Name=b&note=ok",
+    "q=hello+world&Q=bye+world",
+    // ── value itself contains '=' (base64 padding) but real dup present ──
+    "token=YWJj==&data=1&Token=eHl6",
+    "sig=AAA==&SIG=BBB==",
+    // ── mixed: some separators encoded, some not ──
+    "email=a@x&eMail%3Db@y",
+    "user%3Dalice&User=bob",
+    "id=1%26ID%3D2",
+    "a%3D1&A=2",
+    // ── duplicate not adjacent (other params between) ──
+    "email=a@x&name=n&age=39&country=br&eMail=b@y",
+    "id=1&x=2&y=3&z=4&ID=5",
+    // ── many params, single dup deep in the list ──
+    "p1=1&p2=2&p3=3&p4=4&p5=5&p6=6&P3=7",
+    // ── duplicate three-way with mixed encodings ──
+    "tok=1&Tok%3D2&TOK%253D3",
+    "v=a%26V=b%26v=c",
+    "session=1&extra=2&Session%3D3",
+];
+
 /// URI paths that end with a known backup/temp/config-leak extension.
 /// All of these should be blocked as GET requests when `Anti_exposed_backup` is enabled.
 const BACKUP_URI_PAYLOADS: &[&str] = &[
@@ -635,6 +708,93 @@ async fn sweep_get(
     collect_ordered(&mut set, payloads.len()).await
 }
 
+/// HTTP Parameter Pollution sweep over the **query string** (GET). Each payload
+/// is the raw query string (already containing the duplicated parameter and the
+/// obfuscated separators), appended verbatim to the URL so the encodings reach
+/// the WAF undecoded. Expects 403 from `HPP_detect`; any other status is a
+/// bypass.
+async fn sweep_hpp_get(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    payloads: &[&str],
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &payload) in payloads.iter().enumerate() {
+        let client = client.clone();
+        // Append the raw query string verbatim — do NOT use `.query(&[...])`,
+        // which would re-encode the separators we are deliberately obfuscating.
+        let url = format!("{base}{path}?{payload}");
+        let sem = sem.clone();
+        let payload = payload.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore");
+            let outcome = match client.get(&url).send().await {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r) => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (
+                idx,
+                SweepResult {
+                    label: payload,
+                    outcome,
+                },
+            )
+        });
+    }
+
+    collect_ordered(&mut set, payloads.len()).await
+}
+
+/// HTTP Parameter Pollution sweep over the **request body** (POST). Each payload
+/// is sent as the raw `application/x-www-form-urlencoded` body so the obfuscated
+/// separators reach the WAF undecoded. Expects 403 from `HPP_detect`.
+async fn sweep_hpp_post(
+    client: &reqwest::Client,
+    base: &str,
+    path: &str,
+    payloads: &[&str],
+    concurrency: usize,
+) -> Vec<SweepResult> {
+    let url = Arc::new(format!("{base}{path}"));
+    let sem = Arc::new(Semaphore::new(concurrency));
+    let mut set: JoinSet<(usize, SweepResult)> = JoinSet::new();
+
+    for (idx, &payload) in payloads.iter().enumerate() {
+        let client = client.clone();
+        let url = url.clone();
+        let sem = sem.clone();
+        let payload = payload.to_string();
+        set.spawn(async move {
+            let _permit = sem.acquire().await.expect("semaphore");
+            let outcome = match client
+                .post(url.as_str())
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(payload.clone())
+                .send()
+                .await
+            {
+                Ok(r) if r.status() == StatusCode::FORBIDDEN => Outcome::Blocked,
+                Ok(r) => Outcome::Bypassed(r.status()),
+                Err(e) => Outcome::Error(e.to_string()),
+            };
+            (
+                idx,
+                SweepResult {
+                    label: payload,
+                    outcome,
+                },
+            )
+        });
+    }
+
+    collect_ordered(&mut set, payloads.len()).await
+}
+
 async fn sweep_score_get(
     client: &reqwest::Client,
     base: &str,
@@ -780,7 +940,13 @@ async fn sweep_java_deser(
                 Ok(r) => Outcome::Bypassed(r.status()),
                 Err(e) => Outcome::Error(e.to_string()),
             };
-            (idx, SweepResult { label: payload, outcome })
+            (
+                idx,
+                SweepResult {
+                    label: payload,
+                    outcome,
+                },
+            )
         });
     }
 
@@ -1195,6 +1361,29 @@ async fn main() {
         )
     );
     run_sweep!(
+        format!("HPP CMC — GET /test_get ({} payloads)", HPP_PAYLOADS.len()),
+        sweep_hpp_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            HPP_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "HPP CMC — POST /test_post ({} payloads)",
+            HPP_PAYLOADS.len()
+        ),
+        sweep_hpp_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            HPP_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
         format!("Scanner UA — GET /test_get ({} UAs)", SCANNER_UAS.len()),
         sweep_ua(&client, &cfg.target, "/test_get", cfg.concurrency)
     );
@@ -1217,7 +1406,12 @@ async fn main() {
             "Silent SQL errors CMC — response ({} paths)",
             SILENT_SQL_ERRORS_PATHS.len()
         ),
-        sweep_leak_paths(&client, &cfg.target, SILENT_SQL_ERRORS_PATHS, cfg.concurrency)
+        sweep_leak_paths(
+            &client,
+            &cfg.target,
+            SILENT_SQL_ERRORS_PATHS,
+            cfg.concurrency
+        )
     );
     run_sweep!(
         format!(

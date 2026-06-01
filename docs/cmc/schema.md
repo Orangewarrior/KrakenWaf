@@ -71,6 +71,7 @@ CMC-Rules:
   Silent_sql_errors: true
   Detect_bad_artifacts: true
   Detect_bots_n_scanners: true
+  HPP_detect: true
 ```
 
 ---
@@ -95,6 +96,7 @@ CMC-Rules:
 | `Silent_sql_errors` | [CWE-209](https://cwe.mitre.org/data/definitions/209.html) | Low → High | [silent_sql_errors.md](silent_sql_errors.md) |
 | `Detect_bad_artifacts` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | High | [detect_bad_artifacts.md](detect_bad_artifacts.md) |
 | `Detect_bots_n_scanners` | [CWE-200](https://cwe.mitre.org/data/definitions/200.html) | Low | [detect_bots_n_scanners.md](detect_bots_n_scanners.md) |
+| `HPP_detect` | [CWE-235](https://cwe.mitre.org/data/definitions/235.html) | Critical | [hpp_detect.md](hpp_detect.md) |
 
 ---
 

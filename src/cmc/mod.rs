@@ -1,6 +1,10 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use std::{collections::BTreeMap, fs, path::{Path, PathBuf}};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+};
 use tracing::warn;
 
 mod anti_exposed_backup;
@@ -10,6 +14,7 @@ pub mod detect_bad_artifacts;
 pub mod detect_bots_n_scanners;
 pub mod detect_db_errors;
 mod esi_injection_detect;
+mod hpp_detect;
 mod java_deserialize_detect;
 mod nosql_injection_detect;
 mod overflow_detect;
@@ -45,8 +50,9 @@ pub enum CmcResponseDecision {
 pub use anti_exposed_backup::AntiExposedBackupCmcBuilder;
 pub use anti_passwd_leak::AntiPasswdLeakCmcBuilder;
 pub use crlf_injection_detect::CrlfInjectionCmcBuilder;
-pub use java_deserialize_detect::JavaDeserializeCmcBuilder;
 pub use esi_injection_detect::EsiInjectionCmcBuilder;
+pub use hpp_detect::HppDetectorBuilder;
+pub use java_deserialize_detect::JavaDeserializeCmcBuilder;
 pub use nosql_injection_detect::NoSqlInjectionCmcBuilder;
 pub use overflow_detect::OverflowCmcBuilder;
 pub use request_smuggling_detect::RequestSmugglingCmcBuilder;
@@ -70,6 +76,11 @@ pub struct CmcConfig {
     pub anti_exposed_backup: bool,
     pub anti_passwd_leak_detect: bool,
     pub java_deserialize_detect: bool,
+    /// Detect HTTP Parameter Pollution (the same parameter name appearing 2+
+    /// times) independently in the query string and the request body. A clear
+    /// duplicate is reported at `Critical` severity so the existing untrust
+    /// scoring blocks the request at the `>= 60` threshold.
+    pub hpp_detect: bool,
     /// Scan upstream response bodies for DB error fingerprints.
     pub detect_db_errors: bool,
     /// Scrub or block upstream responses leaking OWASP CRS DBMS error
@@ -144,6 +155,7 @@ impl Default for CmcConfig {
             anti_exposed_backup: false,
             anti_passwd_leak_detect: false,
             java_deserialize_detect: false,
+            hpp_detect: false,
             detect_db_errors: false,
             silent_sql_errors: false,
             detect_bad_artifacts: false,
@@ -255,6 +267,10 @@ impl CmcManagerBuilder {
                     .vectorscan_enabled(self.vectorscan_enabled)
                     .build()
             }),
+            hpp_detect: self
+                .config
+                .hpp_detect
+                .then(|| HppDetectorBuilder::new().build()),
             detect_db_errors: if self.config.detect_db_errors {
                 if let Some(ref dir) = self.rules_dir {
                     let path = dir.join("error_msgs/sql_errors.txt");
@@ -330,7 +346,10 @@ impl CmcManagerBuilder {
             detect_bad_artifacts: if self.config.detect_bad_artifacts {
                 if let Some(ref dir) = self.rules_dir {
                     let path = dir.join("artifacts/file_pitfalls.txt");
-                    match detect_bad_artifacts::BadArtifactsDetector::from_file(&path, self.vectorscan_enabled) {
+                    match detect_bad_artifacts::BadArtifactsDetector::from_file(
+                        &path,
+                        self.vectorscan_enabled,
+                    ) {
                         Ok(d) => {
                             tracing::info!(
                                 target: "krakenwaf",
@@ -401,6 +420,7 @@ pub struct CmcManager {
     anti_exposed_backup: Option<anti_exposed_backup::AntiExposedBackupCmc>,
     anti_passwd_leak: Option<anti_passwd_leak::AntiPasswdLeakCmc>,
     java_deserialize: Option<java_deserialize_detect::JavaDeserializeCmc>,
+    hpp_detect: Option<hpp_detect::HppDetector>,
     detect_db_errors: Option<detect_db_errors::DbErrorDetector>,
     silent_sql_errors: Option<silent_sql_errors::SilentSqlErrorsDetector>,
     detect_bad_artifacts: Option<detect_bad_artifacts::BadArtifactsDetector>,
@@ -423,6 +443,7 @@ impl Default for CmcManager {
             anti_exposed_backup: None,
             anti_passwd_leak: None,
             java_deserialize: None,
+            hpp_detect: None,
             detect_db_errors: None,
             silent_sql_errors: None,
             detect_bad_artifacts: None,
@@ -656,11 +677,11 @@ impl CmcManager {
     /// Inspect the request URI path. Called from `inspect_early()` so that
     /// method-gated detectors (e.g. `anti_exposed_backup`) have access to the
     /// original method and path before the full payload is assembled.
-    #[must_use] 
+    #[must_use]
     pub fn inspect_uri(&self, method: &str, path: &str) -> Option<Finding> {
         if let Some(detector) = &self.anti_exposed_backup {
-            if let Some(matched) = detector.detect(method, path)
-                as Option<anti_exposed_backup::AntiExposedBackupMatch>
+            if let Some(matched) =
+                detector.detect(method, path) as Option<anti_exposed_backup::AntiExposedBackupMatch>
             {
                 return Some(finding(
                     "CMC exposed backup/temp file detection",
@@ -941,7 +962,9 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
             .as_ref()
             .and_then(|m| m.get("Anomaly_threshold"))
             .and_then(|v| match v {
-                serde_yaml::Value::Number(n) => n.as_u64().map(|n| u32::try_from(n).unwrap_or(u32::MAX)),
+                serde_yaml::Value::Number(n) => {
+                    n.as_u64().map(|n| u32::try_from(n).unwrap_or(u32::MAX))
+                }
                 _ => None,
             });
 
@@ -1056,6 +1079,7 @@ fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
         anti_exposed_backup: enabled("Anti_exposed_backup"),
         anti_passwd_leak_detect: enabled("Anti_passwd_leak"),
         java_deserialize_detect: enabled("Java_deserialize_detect"),
+        hpp_detect: enabled("HPP_detect"),
         detect_db_errors: enabled("Detect_db_errors"),
         silent_sql_errors: enabled("Silent_sql_errors"),
         detect_bad_artifacts: enabled("Detect_bad_artifacts"),
@@ -1326,5 +1350,50 @@ CMC-Rules:
         let cfg =
             parse_lenient_yaml("CMC-Rules:\n  Detect_bots_n_scanners: false\n").expect("parse");
         assert!(!cfg.detect_bots_n_scanners);
+    }
+
+    #[test]
+    fn parses_hpp_detect_config_key() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  HPP_detect: true\n").expect("parse");
+        assert!(cfg.hpp_detect);
+    }
+
+    #[test]
+    fn hpp_detect_disabled_by_default() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  SQLi_comments_detect: true\n").expect("parse");
+        assert!(!cfg.hpp_detect);
+    }
+
+    #[test]
+    fn hpp_detect_explicit_false() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  HPP_detect: false\n").expect("parse");
+        assert!(!cfg.hpp_detect);
+    }
+
+    #[test]
+    fn disabled_hpp_manager_is_noop() {
+        // When the flag is off the manager must not construct the detector, so
+        // even a blatantly polluted query returns no finding.
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  HPP_detect: false\n").expect("parse");
+        let mgr = super::CmcManagerBuilder::new(cfg).build();
+        assert!(mgr.inspect_hpp("a=1&a=2", "").is_none());
+    }
+
+    #[test]
+    fn enabled_hpp_manager_blocks_duplicate_and_reaches_block() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  HPP_detect: true\n").expect("parse");
+        let mgr = super::CmcManagerBuilder::new(cfg).build();
+        let finding = mgr
+            .inspect_hpp("name=A&email=a@x&age=39&eMail=<bingo>", "")
+            .expect("duplicate email must be detected");
+        // Critical severity ⇒ the request reaches the Untrust >= 60 block gate.
+        assert_eq!(finding.severity, super::Severity::Critical);
+    }
+
+    #[test]
+    fn enabled_hpp_manager_detects_body_pollution() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  HPP_detect: true\n").expect("parse");
+        let mgr = super::CmcManagerBuilder::new(cfg).build();
+        assert!(mgr.inspect_hpp("", "user=a&User=b").is_some());
     }
 }

@@ -1,9 +1,10 @@
 mod finding;
 mod ip_filter;
 mod matchers;
-mod normalize;
+pub mod normalize;
 
 pub use finding::Finding;
+pub use normalize::normalize_str;
 
 use crate::cmc::CmcManager;
 use crate::proxy::format_request_prefix_bytes;
@@ -321,6 +322,22 @@ impl WafEngine {
         self.inspect_complete_payload(chunk)
     }
 
+    /// Inspect a request's query string and body for HTTP Parameter Pollution
+    /// (the `HPP_detect` CMC module). Both locations are decoded and checked
+    /// independently; a duplicate parameter name (case-insensitive) in either
+    /// yields a `Critical` finding so the existing `Untrust >= 60` gate blocks.
+    ///
+    /// `query` is the raw query string (without the leading `?`); `body` is the
+    /// raw request body as text. The module is a no-op (returns `Allow`) when it
+    /// is disabled in `rules/cmc/config.yaml`.
+    #[must_use]
+    pub fn inspect_hpp(&self, query: &str, body: &str) -> Decision {
+        match self.cmc_manager.inspect_hpp(query, body) {
+            Some(finding) => Decision::Block(Box::new(finding)),
+            None => Decision::Allow,
+        }
+    }
+
     pub fn inspect_complete_payload(&self, payload: &[u8]) -> Decision {
         self.inspect_complete_payload_with_context(payload, None)
     }
@@ -433,8 +450,7 @@ impl WafEngine {
         } else {
             inspection_views(original_text.as_ref())
         };
-        let latin1_views: Option<Vec<&str>> =
-            latin1_text.as_deref().map(inspection_views);
+        let latin1_views: Option<Vec<&str>> = latin1_text.as_deref().map(inspection_views);
         let mut seen_views: std::collections::HashSet<&str> = std::collections::HashSet::new();
         let all_views = views
             .iter()
