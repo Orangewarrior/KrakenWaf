@@ -7,9 +7,10 @@
 //! literal/keyword matcher that anchors on word boundaries.
 //!
 //! This parser does **not** decode transfer encodings, does **not**
-//! materialise filenames, and does **not** validate header syntax. It walks
-//! the byte stream looking for the boundary and emits one `MultipartPart`
-//! per body section. Strict, bounded, allocation-free for headers.
+//! validate header syntax. It walks the byte stream looking for the boundary
+//! and emits one `MultipartPart` per body section. Strict, bounded, and keeps
+//! part headers available so upload metadata can still be inspected when a
+//! part body is binary.
 
 use bytes::Bytes;
 use memchr::memmem;
@@ -32,6 +33,13 @@ pub struct MultipartPart {
     /// to log consumers / tests; the proxy itself does not read it.
     #[allow(dead_code)]
     pub name: Option<String>,
+    /// Optional `filename="…"` parameter from `Content-Disposition`.
+    #[allow(dead_code)]
+    pub filename: Option<String>,
+    /// Optional per-part `Content-Type` header value.
+    pub content_type: Option<String>,
+    /// Raw part headers, excluding the header/body separator.
+    pub headers: Bytes,
     /// Body payload bytes (between the `\r\n\r\n` after the part headers
     /// and the next boundary delimiter, exclusive).
     pub body: Bytes,
@@ -109,8 +117,13 @@ pub fn parse_parts(body: &Bytes, boundary: &str) -> Vec<MultipartPart> {
         let body_slice = trim_trailing_crlf(body_slice);
 
         let name = extract_disposition_name(headers);
+        let filename = extract_disposition_param(headers, "filename");
+        let content_type = extract_header(headers, "content-type");
         out.push(MultipartPart {
             name,
+            filename,
+            content_type,
+            headers: body.slice_ref(headers),
             body: body.slice_ref(body_slice),
         });
     }
@@ -147,6 +160,10 @@ fn trim_trailing_crlf(slice: &[u8]) -> &[u8] {
 }
 
 fn extract_disposition_name(headers: &[u8]) -> Option<String> {
+    extract_disposition_param(headers, "name")
+}
+
+fn extract_disposition_param(headers: &[u8], target: &str) -> Option<String> {
     let text = std::str::from_utf8(headers).ok()?;
     for line in text.lines() {
         let lower = line.to_ascii_lowercase();
@@ -154,12 +171,31 @@ fn extract_disposition_name(headers: &[u8]) -> Option<String> {
             let original = &line[line.len() - rest.len()..];
             for param in original.split(';') {
                 let trimmed = param.trim();
-                if let Some(value) = trimmed.strip_prefix("name=") {
+                if let Some((name, value)) = trimmed.split_once('=') {
+                    if !name.trim().eq_ignore_ascii_case(target) {
+                        continue;
+                    }
                     let v = value.trim_matches('"');
                     if !v.is_empty() {
                         return Some(v.to_string());
                     }
                 }
+            }
+        }
+    }
+    None
+}
+
+fn extract_header(headers: &[u8], target: &str) -> Option<String> {
+    let text = std::str::from_utf8(headers).ok()?;
+    for line in text.lines() {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case(target) {
+            let value = value.trim();
+            if !value.is_empty() {
+                return Some(value.to_string());
             }
         }
     }
@@ -188,9 +224,30 @@ mod tests {
         let parts = parse_parts(&Bytes::from(raw), boundary);
         assert_eq!(parts.len(), 2);
         assert_eq!(parts[0].name.as_deref(), Some("a"));
+        assert_eq!(parts[0].filename, None);
+        assert_eq!(parts[0].content_type, None);
         assert_eq!(parts[0].body.as_ref(), b"hello");
         assert_eq!(parts[1].name.as_deref(), Some("b"));
         assert_eq!(parts[1].body.as_ref(), b"<sqli>");
+    }
+
+    #[test]
+    fn parses_file_part_metadata() {
+        let boundary = "kw-boundary";
+        let mut raw = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .into_bytes();
+        raw.extend_from_slice(b"\x89PNG\r\n");
+        raw.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let parts = parse_parts(&Bytes::from(raw), boundary);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].name.as_deref(), Some("file"));
+        assert_eq!(parts[0].filename.as_deref(), Some("avatar.png"));
+        assert_eq!(parts[0].content_type.as_deref(), Some("image/png"));
+        assert!(std::str::from_utf8(&parts[0].headers)
+            .expect("headers are utf8")
+            .contains("filename=\"avatar.png\""));
     }
 
     #[test]

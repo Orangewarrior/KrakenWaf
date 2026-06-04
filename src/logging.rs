@@ -1,4 +1,7 @@
-use crate::{rules::Severity, waf::{Finding, InspectionContext}};
+use crate::{
+    rules::Severity,
+    waf::{Finding, InspectionContext},
+};
 use anyhow::Result;
 use serde::Serialize;
 use std::{fs, io::Write as _, path::Path};
@@ -38,7 +41,11 @@ pub struct SecurityEvent {
 
 impl SecurityEvent {
     #[must_use]
-    pub fn from_finding(finding: &Finding, ctx: &InspectionContext, request_payload: String) -> Self {
+    pub fn from_finding(
+        finding: &Finding,
+        ctx: &InspectionContext,
+        request_payload: String,
+    ) -> Self {
         Self {
             timestamp: finding.timestamp.clone(),
             request_id: ctx.request_id.clone(),
@@ -78,9 +85,9 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
     let (critical_writer, critical_guard) = tracing_appender::non_blocking(critical_appender);
 
     let filter = if verbose {
-        EnvFilter::new("info,krakenwaf=debug,hyper_util=warn,reqwest=warn")
+        EnvFilter::new("info,krakenwaf=debug,hyper_util=warn")
     } else {
-        EnvFilter::new("info,hyper_util=warn,reqwest=warn")
+        EnvFilter::new("info,hyper_util=warn")
     };
 
     tracing_subscriber::registry()
@@ -101,10 +108,15 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
         )
         .init();
 
-    Ok(LoggingHandles { raw_guard, json_guard, critical_writer, critical_guard })
+    Ok(LoggingHandles {
+        raw_guard,
+        json_guard,
+        critical_writer,
+        critical_guard,
+    })
 }
 
-#[must_use] 
+#[must_use]
 pub fn sanitize_for_log(s: &str) -> String {
     // Strip control characters (except the three we translate), then escape
     // characters that could break the key="value" format used by write_critical:
@@ -117,7 +129,6 @@ pub fn sanitize_for_log(s: &str) -> String {
         .replace('\t', "\\t")
         .replace('"', "\\\"")
 }
-
 
 pub fn write_critical(handles: &LoggingHandles, event: &SecurityEvent) {
     // Values are quoted so a payload containing ` injected=field` cannot forge
@@ -141,9 +152,14 @@ pub fn write_critical(handles: &LoggingHandles, event: &SecurityEvent) {
         event.cwe,
         event.reference_url,
     );
-    if let Err(err) = std::io::Write::write_all(&mut handles.critical_writer.clone(), line.as_bytes()) {
+    if let Err(err) =
+        std::io::Write::write_all(&mut handles.critical_writer.clone(), line.as_bytes())
+    {
         // Avoid routing through tracing here (would recurse into write_critical).
-        let _ = writeln!(std::io::stderr(), "krakenwaf: critical log write failed: {err}");
+        let _ = writeln!(
+            std::io::stderr(),
+            "krakenwaf: critical log write failed: {err}"
+        );
     }
 }
 

@@ -5,23 +5,30 @@ use crate::{
     cli::WafMode,
     error::KrakenError,
     geo::GeoIpResult,
-    logging::{SecurityEvent, write_critical},
-    multipart_extract::{extract_boundary, parse_parts},
+    logging::{write_critical, SecurityEvent},
+    multipart_extract::{extract_boundary, parse_parts, MultipartPart},
     waf::{Decision, Finding, InspectionContext, ResponseContext},
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use http::{
-    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
     header::{CONNECTION, COOKIE, HOST, LOCATION, UPGRADE},
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
 };
 use http_body_util::{BodyExt, Full};
-use hyper::body::Incoming;
-use reqwest::{Client, redirect::Policy};
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
+use hyper::{body::Incoming, upgrade};
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::{TokioExecutor, TokioIo},
 };
+use rustls::{ClientConfig, RootCertStore};
+use rustls_pki_types::{pem::PemObject, CertificateDer};
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info, warn};
 use url::{Host, Url};
 use uuid::Uuid;
@@ -81,9 +88,13 @@ const MAX_FORWARDED_HEADER_BYTES: usize = 32 * 1024;
 /// keep the inspection loop alive indefinitely.
 const BODY_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+type UpstreamConnector = hyper_rustls::HttpsConnector<HttpConnector>;
+type UpstreamClient = Client<UpstreamConnector, Full<Bytes>>;
+
 pub struct ProxyClient {
-    client: Client,
+    client: UpstreamClient,
     upstream: Url,
+    upstream_timeout: std::time::Duration,
     internal_header_name: Option<HeaderName>,
 }
 
@@ -120,7 +131,11 @@ impl ForwardedOrigin {
     fn public_port_for_url(&self) -> Option<u16> {
         let default = (self.proto == "http" && self.port == Some(80))
             || (self.proto == "https" && self.port == Some(443));
-        if default { None } else { self.port }
+        if default {
+            None
+        } else {
+            self.port
+        }
     }
 }
 
@@ -156,6 +171,49 @@ impl std::fmt::Display for BodyInspectionError {
 
 impl std::error::Error for BodyInspectionError {}
 
+fn build_upstream_client(upstream_ca: Option<&str>) -> Result<UpstreamClient> {
+    let tls_config = build_upstream_tls_config(upstream_ca)?;
+    let connector = HttpsConnectorBuilder::new()
+        .with_tls_config(tls_config)
+        .https_or_http()
+        .enable_http1()
+        .enable_http2()
+        .build();
+    Ok(Client::builder(TokioExecutor::new()).build(connector))
+}
+
+fn build_upstream_tls_config(upstream_ca: Option<&str>) -> Result<ClientConfig> {
+    let mut roots = RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+
+    if let Some(ca_path) = upstream_ca {
+        let pem = std::fs::read(ca_path)
+            .with_context(|| format!("--upstream-ca: failed to read '{ca_path}'"))?;
+        let mut added = 0usize;
+        for cert in CertificateDer::pem_slice_iter(&pem) {
+            let cert = cert.with_context(|| {
+                format!("--upstream-ca: '{ca_path}' is not a valid PEM certificate bundle")
+            })?;
+            roots.add(cert).with_context(|| {
+                format!("--upstream-ca: failed to parse certificate in '{ca_path}'")
+            })?;
+            added += 1;
+        }
+        anyhow::ensure!(
+            added > 0,
+            "--upstream-ca: '{ca_path}' contained no certificates"
+        );
+    }
+
+    Ok(
+        ClientConfig::builder_with_provider(rustls::crypto::aws_lc_rs::default_provider().into())
+            .with_safe_default_protocol_versions()
+            .context("failed to build upstream TLS protocol configuration")?
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    )
+}
+
 impl ProxyClient {
     /// # Errors
     /// Returns an error if the upstream URL is invalid or the HTTP client cannot be built.
@@ -170,33 +228,7 @@ impl ProxyClient {
             Url::parse(upstream).with_context(|| format!("invalid upstream URL: {upstream}"))?;
         validate_upstream(&upstream, allow_private_upstream)?;
 
-        let mut builder = Client::builder()
-            .use_rustls_tls()
-            .redirect(Policy::none())
-            .timeout(std::time::Duration::from_secs(timeout_secs));
-
-        // Optionally trust a private / custom CA for the upstream TLS handshake.
-        // The certificate(s) are *added* to the built-in public webpki roots —
-        // full chain verification is still enforced (this is NOT an
-        // "accept any certificate" switch) — so a backend that presents a
-        // private-PKI / internal-CA certificate can be fronted without
-        // weakening validation, while public upstreams keep working.
-        if let Some(ca_path) = upstream_ca {
-            let pem = std::fs::read(ca_path)
-                .with_context(|| format!("--upstream-ca: failed to read '{ca_path}'"))?;
-            let certs = reqwest::Certificate::from_pem_bundle(&pem).with_context(|| {
-                format!("--upstream-ca: '{ca_path}' is not a valid PEM certificate bundle")
-            })?;
-            anyhow::ensure!(
-                !certs.is_empty(),
-                "--upstream-ca: '{ca_path}' contained no certificates"
-            );
-            for cert in certs {
-                builder = builder.add_root_certificate(cert);
-            }
-        }
-
-        let client = builder.build()?;
+        let client = build_upstream_client(upstream_ca)?;
 
         let internal_header_name = internal_header_name.and_then(|value| {
             if value.trim().is_empty() {
@@ -209,6 +241,7 @@ impl ProxyClient {
         Ok(Self {
             client,
             upstream,
+            upstream_timeout: std::time::Duration::from_secs(timeout_secs),
             internal_header_name,
         })
     }
@@ -343,6 +376,13 @@ impl ProxyClient {
             }
         }
 
+        if is_websocket_upgrade(req.headers()) {
+            let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
+            return self
+                .handle_websocket_upgrade(state, req, request_id, traceparent, &forwarded_origin)
+                .await;
+        }
+
         let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut(), &client_ip)
             .await
         {
@@ -385,30 +425,11 @@ impl ProxyClient {
         };
 
         if !skip_inspection {
-            // HTTP Parameter Pollution check (HPP_detect CMC module): inspect the
-            // raw query string and the request body for a duplicated parameter
-            // name. Runs once the body is available so both locations are covered.
-            let query = context.uri.split_once('?').map_or("", |(_, q)| q);
-            let body_text = String::from_utf8_lossy(&body_bytes);
-            if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
-                let event = build_event(&context, &finding, Some(&body_bytes));
-                if let Some(response) = self.log_and_enforce(state, event).await {
-                    return response;
-                }
-            }
-
-            let full_request = format_full_request_bytes(&context, Some(&body_bytes));
-            match state
-                .waf
-                .inspect_complete_payload_with_context(&full_request, Some(&context.method))
+            if let Some(response) = self
+                .inspect_buffered_request_body(state, &context, &body_bytes)
+                .await
             {
-                Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
-                Decision::Block(finding) => {
-                    let event = build_event(&context, &finding, Some(&body_bytes));
-                    if let Some(response) = self.log_and_enforce(state, event).await {
-                        return response;
-                    }
-                }
+                return response;
             }
         }
 
@@ -436,6 +457,123 @@ impl ProxyClient {
                 response
             }
         }
+    }
+
+    async fn inspect_buffered_request_body(
+        &self,
+        state: &AppState,
+        context: &InspectionContext,
+        body_bytes: &Bytes,
+    ) -> Option<Response<Full<Bytes>>> {
+        let body_for_inspection = request_body_for_text_inspection(context, body_bytes);
+
+        // HTTP Parameter Pollution check (HPP_detect CMC module): inspect the
+        // raw query string and the request body for a duplicated parameter
+        // name. Runs once the body is available so both locations are covered.
+        let query = context.uri.split_once('?').map_or("", |(_, q)| q);
+        let body_text = String::from_utf8_lossy(&body_for_inspection);
+        if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
+            let event = build_event(context, &finding, Some(body_bytes));
+            if let Some(response) = self.log_and_enforce(state, event).await {
+                return Some(response);
+            }
+        }
+
+        let full_request = format_full_request_bytes(context, Some(&body_for_inspection));
+        match state
+            .waf
+            .inspect_complete_payload_with_context(&full_request, Some(&context.method))
+        {
+            Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
+            Decision::Block(finding) => {
+                let event = build_event(context, &finding, Some(body_bytes));
+                self.log_and_enforce(state, event).await
+            }
+        }
+    }
+
+    async fn handle_websocket_upgrade(
+        &self,
+        state: &AppState,
+        mut req: Request<Incoming>,
+        request_id: &str,
+        traceparent: &str,
+        forwarded_origin: &ForwardedOrigin,
+    ) -> Response<Full<Bytes>> {
+        match self
+            .open_upstream_websocket(&req, request_id, traceparent, forwarded_origin)
+            .await
+        {
+            Ok((upstream, response, leftover)) => {
+                let on_upgrade = upgrade::on(&mut req);
+                tokio::spawn(async move {
+                    match on_upgrade.await {
+                        Ok(upgraded) => {
+                            let mut downstream = TokioIo::new(upgraded);
+                            let mut upstream = upstream;
+                            if !leftover.is_empty()
+                                && downstream.write_all(&leftover).await.is_err()
+                            {
+                                return;
+                            }
+                            let _ =
+                                tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
+                        }
+                        Err(err) => {
+                            warn!(target: "krakenwaf", error=%err, "websocket client upgrade failed");
+                        }
+                    }
+                });
+
+                let mut response = response;
+                apply_response_policy(state, &mut response);
+                response
+            }
+            Err(err) => {
+                warn!(target: "krakenwaf", error=%err, "websocket upstream upgrade failed");
+                let mut response = plain_response(
+                    StatusCode::BAD_GATEWAY,
+                    "KrakenWaf websocket upstream failure",
+                );
+                apply_response_policy(state, &mut response);
+                response
+            }
+        }
+    }
+
+    async fn open_upstream_websocket(
+        &self,
+        req: &Request<Incoming>,
+        request_id: &str,
+        traceparent: &str,
+        forwarded_origin: &ForwardedOrigin,
+    ) -> Result<(tokio::net::TcpStream, Response<Full<Bytes>>, Bytes)> {
+        anyhow::ensure!(
+            self.upstream.scheme() == "http",
+            "websocket tunneling currently supports http:// upstreams"
+        );
+
+        let host = self
+            .upstream
+            .host_str()
+            .ok_or_else(|| anyhow::anyhow!("upstream host is missing"))?;
+        let port = self
+            .upstream
+            .port_or_known_default()
+            .ok_or_else(|| anyhow::anyhow!("upstream port is missing"))?;
+        let mut stream = tokio::net::TcpStream::connect((host, port)).await?;
+
+        let request = build_upstream_websocket_request(
+            &self.upstream,
+            req,
+            request_id,
+            traceparent,
+            forwarded_origin,
+        )?;
+        stream.write_all(&request).await?;
+
+        let (response, leftover) = read_upstream_websocket_response(&mut stream).await?;
+        Ok((stream, response, leftover))
     }
 
     /// Log the detection event and, in `Block` mode, return a 403 response.
@@ -520,7 +658,11 @@ impl ProxyClient {
         // *replace* the upstream base entirely (SSRF / upstream hijack).
         let target = build_upstream_target(&self.upstream, &uri);
         let method_str = method.as_str().to_string();
-        let mut builder = self.client.request(method, target);
+        let target_uri: Uri = target
+            .as_str()
+            .parse()
+            .with_context(|| format!("failed to build upstream URI from {target}"))?;
+        let mut request_builder = Request::builder().method(method).uri(target_uri);
 
         // RFC 9110 §7.6.1 / RFC 7230 §6.1: every token listed in Connection:
         // is hop-by-hop and must be removed before forwarding.
@@ -546,7 +688,7 @@ impl ProxyClient {
                     "request rejected: forwarded headers exceed limits (count<={MAX_FORWARDED_HEADERS}, bytes<={MAX_FORWARDED_HEADER_BYTES})"
                 );
             }
-            builder = builder.header(name, value);
+            request_builder = request_builder.header(name, value);
         }
         if let Some(cookie_header) = cookie_header {
             forwarded_count += 1;
@@ -558,28 +700,32 @@ impl ProxyClient {
                     "request rejected: forwarded headers exceed limits (count<={MAX_FORWARDED_HEADERS}, bytes<={MAX_FORWARDED_HEADER_BYTES})"
                 );
             }
-            builder = builder.header(COOKIE, cookie_header);
+            request_builder = request_builder.header(COOKIE, cookie_header);
         }
 
-        builder = builder.header("x-forwarded-proto", forwarded_origin.proto.as_str());
-        builder = builder.header("x-forwarded-host", forwarded_origin.host.as_str());
+        request_builder =
+            request_builder.header("x-forwarded-proto", forwarded_origin.proto.as_str());
+        request_builder =
+            request_builder.header("x-forwarded-host", forwarded_origin.host.as_str());
         if let Some(port) = forwarded_origin.port {
-            builder = builder.header("x-forwarded-port", port.to_string());
+            request_builder = request_builder.header("x-forwarded-port", port.to_string());
         }
-        builder = builder.header("x-request-id", request_id);
-        builder = builder.header("traceparent", traceparent);
+        request_builder = request_builder.header("x-request-id", request_id);
+        request_builder = request_builder.header("traceparent", traceparent);
         if let Some(header_name) = &self.internal_header_name {
-            builder = builder.header(header_name, "1");
+            request_builder = request_builder.header(header_name, "1");
         }
 
-        let response = builder
-            .body(body)
-            .send()
-            .await
+        let request = request_builder
+            .body(Full::new(body))
             .map_err(|err| KrakenError::Upstream(err.to_string()))?;
 
-        let status =
-            StatusCode::from_u16(response.status().as_u16()).unwrap_or(StatusCode::BAD_GATEWAY);
+        let response = tokio::time::timeout(self.upstream_timeout, self.client.request(request))
+            .await
+            .map_err(|_| KrakenError::Upstream("upstream request timed out".to_string()))?
+            .map_err(|err| KrakenError::Upstream(err.to_string()))?;
+
+        let status = response.status();
         let mut response_builder = Response::builder().status(status);
         for (name, value) in response.headers() {
             if !is_hop_by_hop(name) {
@@ -607,18 +753,21 @@ impl ProxyClient {
         let inspect_body = response_body_should_be_inspected(&resp_headers_map);
 
         let mut body_buf = BytesMut::new();
-        let mut response = response;
-        while let Some(chunk) = response
-            .chunk()
+        let mut response_body = response.into_body();
+        while let Some(frame) = response_body
+            .frame()
             .await
+            .transpose()
             .map_err(|err| KrakenError::Upstream(err.to_string()))?
         {
-            body_buf.extend_from_slice(&chunk);
-            if body_buf.len() > max_response {
-                anyhow::bail!(
-                    "upstream response body exceeds limit of {max_response} bytes; \
-                     increase --max-upstream-response-bytes if the upstream legitimately returns large responses"
-                );
+            if let Some(chunk) = frame.data_ref() {
+                body_buf.extend_from_slice(chunk);
+                if body_buf.len() > max_response {
+                    anyhow::bail!(
+                        "upstream response body exceeds limit of {max_response} bytes; \
+                         increase --max-upstream-response-bytes if the upstream legitimately returns large responses"
+                    );
+                }
             }
         }
         let mut bytes = body_buf.freeze();
@@ -761,9 +910,10 @@ impl ProxyClient {
 ///    `BODY_FRAME_TIMEOUT` still guards against slowloris).
 /// 2. Apply `Content-Encoding` decoders (gzip / br / deflate / zstd) with
 ///    a zip-bomb expansion-ratio guard.
-/// 3. If `Content-Type` is `multipart/form-data`, extract each part's
-///    cleartext payload and run inspection on each.
-/// 4. Run a single inspection pass on the (possibly decoded) body.
+/// 3. If `Content-Type` is `multipart/form-data`, inspect each text part plus
+///    every part's metadata. Binary file bodies are excluded from textual
+///    matching to avoid random image/video bytes firing string rules.
+/// 4. Run a single inspection pass on the (possibly decoded) textual view.
 ///
 /// The function returns the **original** (still-compressed) bytes — the
 /// upstream sees what the client sent. The decoded view is used only for
@@ -834,46 +984,56 @@ async fn consume_and_inspect_body(
         return Ok(raw_body);
     }
 
-    let limits = &state.memory_limits;
+    let decoded_body = decode_body_for_inspection(state, ctx, &raw_body)?;
+    inspect_multipart_parts(state, ctx, &decoded_body, &raw_body)?;
+    inspect_decoded_body(state, ctx, &decoded_body, raw_body)
+}
 
-    // Build the cleartext view used by every detection engine.
+fn decode_body_for_inspection(
+    state: &AppState,
+    ctx: &InspectionContext,
+    raw_body: &Bytes,
+) -> std::result::Result<Bytes, BodyInspectionError> {
     let encodings = ctx_header(ctx, "content-encoding")
         .map(|v| parse_content_encoding(&v))
         .unwrap_or_default();
+    if encodings.is_empty() {
+        return Ok(raw_body.clone());
+    }
 
-    let decoded_body: Bytes = if encodings.is_empty() {
-        raw_body.clone()
-    } else {
-        match decompress_body_for_inspection(
-            &raw_body,
-            &encodings,
-            ctx.body_limit,
-            limits.max_decompress_ratio,
-        ) {
-            Ok(out) => out,
-            Err(err) => {
-                tracing::warn!(
-                    target: "krakenwaf",
-                    request_id = %ctx.request_id,
-                    error = %err,
-                    "request body decompression failed; rejecting"
-                );
-                return Err(BodyInspectionError::Other(anyhow::anyhow!(
-                    "body decompression rejected: {err}"
-                )));
-            }
-        }
-    };
+    decompress_body_for_inspection(
+        raw_body,
+        &encodings,
+        ctx.body_limit,
+        state.memory_limits.max_decompress_ratio,
+    )
+    .map_err(|err| {
+        tracing::warn!(
+            target: "krakenwaf",
+            request_id = %ctx.request_id,
+            error = %err,
+            "request body decompression failed; rejecting"
+        );
+        BodyInspectionError::Other(anyhow::anyhow!("body decompression rejected: {err}"))
+    })
+}
 
-    // Multipart extraction: scan each part's payload independently.
+fn inspect_multipart_parts(
+    state: &AppState,
+    ctx: &InspectionContext,
+    decoded_body: &Bytes,
+    raw_body: &Bytes,
+) -> std::result::Result<(), BodyInspectionError> {
+    // Multipart extraction: scan each part's inspectable view independently.
     if let Some(ct) = ctx_header(ctx, "content-type") {
         if let Some(boundary) = extract_boundary(&ct) {
-            let parts = parse_parts(&decoded_body, &boundary);
+            let parts = parse_parts(decoded_body, &boundary);
             for part in &parts {
-                if part.body.is_empty() {
+                let part_view = multipart_part_for_text_inspection(part);
+                if part_view.is_empty() {
                     continue;
                 }
-                let part_payload = format_full_request_bytes(ctx, Some(&part.body));
+                let part_payload = format_full_request_bytes(ctx, Some(&part_view));
                 match state
                     .waf
                     .inspect_complete_payload_with_context(&part_payload, Some(&ctx.method))
@@ -889,9 +1049,18 @@ async fn consume_and_inspect_body(
             }
         }
     }
+    Ok(())
+}
 
+fn inspect_decoded_body(
+    state: &AppState,
+    ctx: &InspectionContext,
+    decoded_body: &Bytes,
+    raw_body: Bytes,
+) -> std::result::Result<Bytes, BodyInspectionError> {
     // Single full-body inspection on the cleartext view.
-    let full = format_full_request_bytes(ctx, Some(&decoded_body));
+    let body_for_inspection = request_body_for_text_inspection(ctx, decoded_body);
+    let full = format_full_request_bytes(ctx, Some(&body_for_inspection));
     match state
         .waf
         .inspect_complete_payload_with_context(&full, Some(&ctx.method))
@@ -917,6 +1086,110 @@ fn ctx_header(ctx: &InspectionContext, target: &str) -> Option<String> {
         }
     }
     None
+}
+
+fn request_body_for_text_inspection(ctx: &InspectionContext, body: &Bytes) -> Bytes {
+    let Some(ct) = ctx_header(ctx, "content-type") else {
+        return body.clone();
+    };
+    let Some(boundary) = extract_boundary(&ct) else {
+        return body.clone();
+    };
+    let parts = parse_parts(body, &boundary);
+    if parts.is_empty() {
+        return body.clone();
+    }
+
+    let mut out = Vec::with_capacity(body.len().min(64 * 1024));
+    for part in &parts {
+        out.extend_from_slice(&part.headers);
+        out.extend_from_slice(b"\n\n");
+        if multipart_part_body_should_be_inspected(part) {
+            out.extend_from_slice(&part.body);
+        }
+        out.push(b'\n');
+    }
+    Bytes::from(out)
+}
+
+fn multipart_part_for_text_inspection(part: &MultipartPart) -> Bytes {
+    let mut out = Vec::with_capacity(part.headers.len() + part.body.len().min(8 * 1024) + 2);
+    out.extend_from_slice(&part.headers);
+    out.extend_from_slice(b"\n\n");
+    if multipart_part_body_should_be_inspected(part) {
+        out.extend_from_slice(&part.body);
+    }
+    Bytes::from(out)
+}
+
+fn multipart_part_body_should_be_inspected(part: &MultipartPart) -> bool {
+    if part.body.is_empty() {
+        return false;
+    }
+    if let Some(content_type) = &part.content_type {
+        if media_type_is_textual(content_type) {
+            return true;
+        }
+        if media_type_is_binary(content_type) {
+            return false;
+        }
+    }
+    looks_like_text(&part.body)
+}
+
+fn media_type_is_textual(value: &str) -> bool {
+    let media_type = value
+        .split(';')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase();
+    media_type.starts_with("text/")
+        || media_type == "application/json"
+        || media_type == "application/xml"
+        || media_type == "application/xhtml+xml"
+        || media_type == "application/javascript"
+        || media_type == "application/x-javascript"
+        || media_type == "application/x-www-form-urlencoded"
+        || media_type == "application/yaml"
+        || media_type == "application/graphql"
+        || media_type.ends_with("+json")
+        || media_type.ends_with("+xml")
+        || media_type == "image/svg+xml"
+}
+
+fn media_type_is_binary(value: &str) -> bool {
+    let media_type = value
+        .split(';')
+        .next()
+        .unwrap_or(value)
+        .trim()
+        .to_ascii_lowercase();
+    media_type.starts_with("image/")
+        || media_type.starts_with("video/")
+        || media_type.starts_with("audio/")
+        || media_type == "application/octet-stream"
+        || media_type == "application/pdf"
+        || media_type == "application/zip"
+        || media_type == "application/gzip"
+        || media_type == "application/x-7z-compressed"
+        || media_type == "application/x-rar-compressed"
+}
+
+fn looks_like_text(bytes: &[u8]) -> bool {
+    let sample_len = bytes.len().min(4096);
+    if sample_len == 0 {
+        return false;
+    }
+    let sample = &bytes[..sample_len];
+    if sample.contains(&0) {
+        return false;
+    }
+    let suspicious = sample
+        .iter()
+        .filter(|&&b| !(b == b'\n' || b == b'\r' || b == b'\t' || (0x20..=0x7e).contains(&b)))
+        .count();
+    suspicious * 100 <= sample_len * 10
 }
 
 fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>) -> SecurityEvent {
@@ -1006,9 +1279,9 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
             Host::Domain(domain) => {
                 // Eager DNS resolution at startup mitigates DNS-rebinding by giving the
                 // operator visibility into which IPs the upstream resolves to before any
-                // request is forwarded. We do NOT pin the IP at the connection layer
-                // (would require a custom resolver inside reqwest); operators that need
-                // hard pinning should configure the upstream as an explicit IP literal.
+                // request is forwarded. We do NOT pin the IP at the connection layer;
+                // operators that need hard pinning should configure the upstream as an
+                // explicit IP literal.
                 let port = upstream.port_or_known_default().unwrap_or(0);
                 let host_port = format!("{domain}:{port}");
                 match std::net::ToSocketAddrs::to_socket_addrs(&host_port.as_str()) {
@@ -1148,6 +1421,148 @@ fn rewrite_upstream_location(
     parsed.set_host(Some(origin.host_without_port())).ok()?;
     parsed.set_port(origin.public_port_for_url()).ok()?;
     HeaderValue::from_str(parsed.as_str()).ok()
+}
+
+fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
+    headers
+        .get(UPGRADE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
+        && headers
+            .get(CONNECTION)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
+            })
+}
+
+fn build_upstream_websocket_request(
+    upstream: &Url,
+    req: &Request<Incoming>,
+    request_id: &str,
+    traceparent: &str,
+    origin: &ForwardedOrigin,
+) -> Result<Vec<u8>> {
+    let target = build_upstream_target(upstream, req.uri());
+    let path = if target.query().is_some() {
+        format!("{}?{}", target.path(), target.query().unwrap_or_default())
+    } else {
+        target.path().to_string()
+    };
+
+    let authority = target
+        .host_str()
+        .map(|host| match target.port() {
+            Some(port) => format!("{host}:{port}"),
+            None => host.to_string(),
+        })
+        .ok_or_else(|| anyhow::anyhow!("upstream host is missing"))?;
+
+    let mut out = Vec::with_capacity(1024);
+    out.extend_from_slice(req.method().as_str().as_bytes());
+    out.push(b' ');
+    out.extend_from_slice(path.as_bytes());
+    out.extend_from_slice(b" HTTP/1.1\r\n");
+    out.extend_from_slice(b"Host: ");
+    out.extend_from_slice(authority.as_bytes());
+    out.extend_from_slice(b"\r\n");
+
+    let connection_hop = connection_listed_headers(req.headers());
+    for (name, value) in req.headers() {
+        if name == HOST
+            || connection_hop
+                .iter()
+                .any(|hop| hop == name && hop != UPGRADE)
+        {
+            continue;
+        }
+        out.extend_from_slice(name.as_str().as_bytes());
+        out.extend_from_slice(b": ");
+        out.extend_from_slice(value.as_bytes());
+        out.extend_from_slice(b"\r\n");
+    }
+
+    append_header_line(&mut out, "x-forwarded-proto", origin.proto.as_str());
+    append_header_line(&mut out, "x-forwarded-host", origin.host.as_str());
+    if let Some(port) = origin.port {
+        append_header_line(&mut out, "x-forwarded-port", &port.to_string());
+    }
+    append_header_line(&mut out, "x-request-id", request_id);
+    append_header_line(&mut out, "traceparent", traceparent);
+    out.extend_from_slice(b"\r\n");
+    Ok(out)
+}
+
+fn append_header_line(out: &mut Vec<u8>, name: &str, value: &str) {
+    out.extend_from_slice(name.as_bytes());
+    out.extend_from_slice(b": ");
+    out.extend_from_slice(value.as_bytes());
+    out.extend_from_slice(b"\r\n");
+}
+
+async fn read_upstream_websocket_response(
+    stream: &mut tokio::net::TcpStream,
+) -> Result<(Response<Full<Bytes>>, Bytes)> {
+    const MAX_WS_HANDSHAKE_BYTES: usize = 32 * 1024;
+
+    let mut buf = Vec::with_capacity(1024);
+    let header_end = loop {
+        if buf.len() > MAX_WS_HANDSHAKE_BYTES {
+            anyhow::bail!("upstream websocket handshake exceeded {MAX_WS_HANDSHAKE_BYTES} bytes");
+        }
+
+        let mut chunk = [0u8; 1024];
+        let n = stream.read(&mut chunk).await?;
+        if n == 0 {
+            anyhow::bail!("upstream closed during websocket handshake");
+        }
+        buf.extend_from_slice(&chunk[..n]);
+
+        if let Some(idx) = find_header_terminator(&buf) {
+            break idx;
+        }
+    };
+
+    let headers = &buf[..header_end];
+    let leftover = Bytes::copy_from_slice(&buf[header_end + 4..]);
+    let text = std::str::from_utf8(headers)?;
+    let mut lines = text.split("\r\n");
+    let status_line = lines
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("upstream websocket response missing status line"))?;
+    let status = parse_http_status(status_line)?;
+    let mut builder = Response::builder().status(status);
+
+    for line in lines {
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        builder = builder.header(name.trim(), value.trim());
+    }
+
+    let response = builder
+        .body(Full::new(Bytes::new()))
+        .map_err(|err| anyhow::anyhow!("failed to build websocket response: {err}"))?;
+    Ok((response, leftover))
+}
+
+fn find_header_terminator(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn parse_http_status(status_line: &str) -> Result<StatusCode> {
+    let code = status_line
+        .split_whitespace()
+        .nth(1)
+        .ok_or_else(|| anyhow::anyhow!("bad upstream websocket status line: {status_line}"))?
+        .parse::<u16>()?;
+    StatusCode::from_u16(code)
+        .map_err(|err| anyhow::anyhow!("bad upstream websocket status code {code}: {err}"))
 }
 
 /// Decide whether the upstream response body should be fed to the
@@ -1514,8 +1929,8 @@ fn derive_module_label(engine: &str, rule_match: &str) -> String {
 
 #[cfg(test)]
 mod redirect_tests {
-    use super::{ForwardedOrigin, combine_request_cookie_headers, rewrite_upstream_location};
-    use http::{HeaderMap, HeaderValue, header::COOKIE};
+    use super::{combine_request_cookie_headers, rewrite_upstream_location, ForwardedOrigin};
+    use http::{header::COOKIE, HeaderMap, HeaderValue};
     use url::Url;
 
     #[test]
@@ -1546,10 +1961,12 @@ mod redirect_tests {
             host: "dvwa.local:8444".to_string(),
             port: Some(8444),
         };
-        assert!(
-            rewrite_upstream_location(&HeaderValue::from_static("index.php"), &upstream, &origin,)
-                .is_none()
-        );
+        assert!(rewrite_upstream_location(
+            &HeaderValue::from_static("index.php"),
+            &upstream,
+            &origin,
+        )
+        .is_none());
     }
 
     #[test]
@@ -1560,14 +1977,12 @@ mod redirect_tests {
             host: "dvwa.local:8444".to_string(),
             port: Some(8444),
         };
-        assert!(
-            rewrite_upstream_location(
-                &HeaderValue::from_static("https://example.test/login"),
-                &upstream,
-                &origin,
-            )
-            .is_none()
-        );
+        assert!(rewrite_upstream_location(
+            &HeaderValue::from_static("https://example.test/login"),
+            &upstream,
+            &origin,
+        )
+        .is_none());
     }
 
     #[test]
@@ -1582,6 +1997,68 @@ mod redirect_tests {
             combined,
             HeaderValue::from_static("PHPSESSID=abc; security=low")
         );
+    }
+}
+
+#[cfg(test)]
+mod multipart_request_inspection_tests {
+    use super::{looks_like_text, media_type_is_textual, request_body_for_text_inspection};
+    use crate::waf::InspectionContext;
+    use bytes::Bytes;
+
+    fn ctx(boundary: &str) -> InspectionContext {
+        InspectionContext {
+            client_ip: "127.0.0.1".into(),
+            method: "POST".into(),
+            uri: "/profile/image/file".into(),
+            path: "/profile/image/file".into(),
+            headers: format!(
+                "host: localhost\ncontent-type: multipart/form-data; boundary={boundary}"
+            ),
+            body_limit: 1024 * 1024,
+            request_id: "test".into(),
+            country: String::new(),
+            continent_name: String::new(),
+        }
+    }
+
+    #[test]
+    fn multipart_image_body_is_removed_from_textual_inspection_view() {
+        let boundary = "kw-boundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n"
+        )
+        .into_bytes();
+        body.extend_from_slice(b"\x89PNG\r\n../<script onload=alert(1)>\r\n");
+        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+        let body = Bytes::from(body);
+
+        let view = request_body_for_text_inspection(&ctx(boundary), &body);
+        let text = String::from_utf8_lossy(&view);
+
+        assert!(text.contains("filename=\"avatar.png\""));
+        assert!(text.contains("Content-Type: image/png"));
+        assert!(!text.contains("../<script"));
+    }
+
+    #[test]
+    fn multipart_text_field_stays_in_textual_inspection_view() {
+        let boundary = "kw-boundary";
+        let body = Bytes::from(format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"comment\"\r\n\r\n<script>alert(1)</script>\r\n--{boundary}--\r\n"
+        ));
+
+        let view = request_body_for_text_inspection(&ctx(boundary), &body);
+        let text = String::from_utf8_lossy(&view);
+
+        assert!(text.contains("name=\"comment\""));
+        assert!(text.contains("<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn svg_file_body_is_still_textually_inspected() {
+        assert!(media_type_is_textual("image/svg+xml"));
+        assert!(looks_like_text(br#"<svg onload="alert(1)"></svg>"#));
     }
 }
 

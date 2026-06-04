@@ -15,7 +15,7 @@ impl CrlfMatch {
 }
 
 impl CrlfInjectionCmcBuilder {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -117,6 +117,12 @@ const ESCAPED_BREAKS: &[&str] = &[
 ];
 
 const DECODED_UNICODE_BREAKS: &[&str] = &["嘊", "嘍", "č", "Ċ", "\u{2028}", "\u{2029}"];
+
+const MULTIPART_PART_HEADER_NAMES: &[&str] = &[
+    "content-disposition",
+    "content-type",
+    "content-transfer-encoding",
+];
 
 impl CrlfInjectionCmc {
     #[allow(clippy::unused_self)]
@@ -251,9 +257,22 @@ fn is_normal_http_framing_break(input: &str, break_idx: usize) -> bool {
         return true;
     }
 
+    if is_multipart_part_header_continuation(input, break_idx, prev) {
+        return true;
+    }
+
     HEADER_NAMES
         .iter()
         .any(|name| starts_with_header_name_and_separator(prev, name))
+}
+
+fn is_multipart_part_header_continuation(input: &str, break_idx: usize, prev: &str) -> bool {
+    if !is_multipart_part_header_line(prev) {
+        return false;
+    }
+
+    let next = input[break_idx..].trim_start_matches(['\r', '\n', ' ', '\t']);
+    is_multipart_part_header_line(next.lines().next().unwrap_or_default())
 }
 
 fn starts_with_header_name_and_separator(line: &str, name: &str) -> bool {
@@ -311,6 +330,16 @@ fn is_http_header_line(line: &str) -> bool {
                     | b'~'
             )
         })
+}
+
+fn is_multipart_part_header_line(line: &str) -> bool {
+    let Some((name, _value)) = line.split_once(':') else {
+        return false;
+    };
+    let name = name.trim();
+    MULTIPART_PART_HEADER_NAMES
+        .iter()
+        .any(|expected| name.eq_ignore_ascii_case(expected))
 }
 
 fn is_request_line(line: &str) -> bool {
@@ -396,6 +425,40 @@ mod tests {
         );
 
         assert!(cmc.detect(request).is_none());
+    }
+
+    #[test]
+    fn ignores_normal_multipart_part_headers() {
+        let cmc = CrlfInjectionCmcBuilder::new().build();
+        let request = concat!(
+            "post /vulnerabilities/upload/ http/1.1\n",
+            "host: localhost\n",
+            "content-type: multipart/form-data; boundary=kw\n",
+            "\n",
+            "content-disposition: form-data; name=\"uploaded\"; filename=\"avatar.png\"\r\n",
+            "content-type: image/png\r\n",
+            "\r\n",
+            "png bytes"
+        );
+
+        assert!(cmc.detect(request).is_none());
+    }
+
+    #[test]
+    fn still_detects_header_injection_after_multipart_part_header() {
+        let cmc = CrlfInjectionCmcBuilder::new().build();
+        let request = concat!(
+            "post /vulnerabilities/upload/ http/1.1\n",
+            "host: localhost\n",
+            "content-type: multipart/form-data; boundary=kw\n",
+            "\n",
+            "content-disposition: form-data; name=\"uploaded\"; filename=\"avatar.png\"\r\n",
+            "set-cookie: admin=true\r\n",
+            "\r\n",
+            "png bytes"
+        );
+
+        assert!(cmc.detect(request).is_some());
     }
 
     #[test]

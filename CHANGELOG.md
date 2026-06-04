@@ -1,14 +1,11 @@
 ## [2.34.1] - 2026-06-04
 
-> **WAF login fix + updater status reporting.** Two operator-facing fixes landed
-> in the current tree. First, the proxy now normalizes split HTTP/2 `Cookie`
-> headers into a single semicolon-delimited header before forwarding upstream,
-> which restores DVWA login and setup flows through the WAF. Second,
-> `soldier_update` now prints clear progress for address-list and MaxMind
-> updates: it tells you when a download starts, which file it is writing to,
-> how far the download has progressed, when extraction finishes, and the final
-> save path. The updater still returns the same errors as before, but it no
-> longer looks stalled while a large database is being fetched.
+> **Proxy compatibility + core client cleanup.** This tree fixes the main lab
+> false positives seen with DVWA and OWASP Juice Shop: split HTTP/2 cookies,
+> multipart image uploads, Socket.IO polling, and WebSocket upgrade handling.
+> The proxy core now uses Hyper/Hyper-rustls for upstream forwarding instead of
+> `reqwest`; `reqwest` remains for updater/attack tooling only. The updater also
+> gained explicit progress reporting so long downloads no longer look stalled.
 
 ### Proxy cookie forwarding fix (`src/proxy.rs`)
 
@@ -20,6 +17,83 @@
   invalid format and restart the login flow with `302 /login.php`.
 - Added regression coverage for split HTTP/2 cookies and for redirect rewriting
   of absolute upstream `Location` values back to the public origin.
+
+### Multipart upload false-positive fixes (`src/proxy.rs`, `src/multipart_extract.rs`, `src/cmc/crlf_injection_detect.rs`)
+
+- Multipart parsing now preserves per-part metadata (`Content-Disposition`
+  `name` / `filename`, per-part `Content-Type`, and raw part headers) so the WAF
+  can inspect upload metadata without treating every file byte as text.
+- Binary file parts such as PNG/JPEG images, audio, video, archives, PDFs, and
+  `application/octet-stream` are excluded from textual body matching. Textual
+  parts, form fields, JSON/XML-like parts, and `image/svg+xml` remain inspected.
+- The post-body HPP check and the final full-request inspection now use the same
+  multipart-aware textual view, preventing a second pass over raw image bytes
+  from reintroducing upload false positives.
+- `CRLF_injection_detect` now recognizes normal multipart part-header framing
+  (`Content-Disposition` followed by `Content-Type` /
+  `Content-Transfer-Encoding`) and no longer blocks legitimate DVWA/Juice Shop
+  image uploads as `cmc::crlf_injection_detect:control-line-header`.
+- The CRLF change is intentionally narrow: an injected response/control header
+  such as `Set-Cookie:` after a multipart part header is still detected and
+  blocked.
+- Added regression coverage for multipart image uploads, text fields that must
+  still be inspected, SVG inspection, normal multipart part headers, and CRLF
+  header injection after multipart metadata.
+
+### Juice Shop WebSocket / Socket.IO compatibility (`src/proxy.rs`, `src/cmc/request_smuggling_detect.rs`)
+
+- WebSocket upgrade requests now use a Tokio/Hyper tunnel instead of the normal
+  buffered HTTP forwarding path, preserving the upstream `101 Switching
+  Protocols` handshake and then relaying bytes full-duplex between browser and
+  backend.
+- The tunnel currently targets `http://` upstreams, which covers local Juice
+  Shop/DVWA style lab backends while keeping HTTPS upstream support out of this
+  narrow fix.
+- `request_smuggling_detect` now treats short Socket.IO polling frames on
+  `/socket.io/?EIO=...&transport=polling` as legitimate browser/app traffic
+  instead of flagging them only because `Content-Length` is small.
+- The Socket.IO exception is path- and transport-scoped: short
+  `Content-Length` probes outside Socket.IO polling remain detected as request
+  smuggling signals.
+- Verified against OWASP Juice Shop on `127.0.0.1:3000`: a WebSocket handshake
+  through KrakenWAF returns `101 Switching Protocols`, and a short polling POST
+  reaches the application, which returns its own `400 Session ID unknown` for an
+  intentionally fake SID instead of a WAF block.
+
+### Core upstream client moved from `reqwest` to Hyper (`src/proxy.rs`, `src/logging.rs`, `Cargo.toml`)
+
+- The proxy core no longer uses `reqwest` for normal upstream forwarding.
+  `ProxyClient` now builds a `hyper-util` legacy client with a
+  `hyper-rustls` HTTPS connector and sends upstream requests as
+  `http::Request<Full<Bytes>>`.
+- The Hyper client path is used for regular HTTP/HTTPS upstream traffic; the
+  WebSocket path remains a direct Tokio/Hyper upgrade tunnel.
+- Existing forwarding behavior was preserved: hop-by-hop headers are stripped,
+  split `Cookie` headers are merged, `X-Forwarded-*`, `x-request-id`,
+  `traceparent`, and the optional internal header are still injected, upstream
+  `Location` headers are rewritten, and response-body inspection still enforces
+  `--max-upstream-response-bytes`.
+- `--upstream-ca` is now handled through a rustls `RootCertStore` seeded with
+  WebPKI roots plus the operator-provided PEM bundle; TLS validation remains
+  strict.
+- The rustls upstream client explicitly selects the `aws_lc_rs` crypto provider
+  so builds do not depend on process-global provider auto-detection.
+- The WAF logging filter no longer carries a `reqwest` target. `reqwest` remains
+  available for updater/attack tooling, not for the proxy client path.
+
+### Real validation (`vectorscan-engine`, `attack.rs`)
+
+- Built successfully with `cargo build --features vectorscan-engine`.
+- Ran a real local WAF sweep with `--enable-vectorscan`,
+  `--enable-libinjection-sqli`, `--enable-libinjection-xss`, CMC config loaded
+  from `rules/cmc/config.yaml`, backend `target/debug/demo_server`, and
+  `target/debug/attack --concurrency 50`.
+- Result: `577` total requests, `577` blocked, `0` bypassed, `0` errors,
+  `0` score failures, status `ALL PAYLOADS BLOCKED`.
+- Also verified the Hyper proxy path against OWASP Juice Shop on
+  `127.0.0.1:3000`: normal GET returned `200 OK`, WebSocket returned
+  `101 Switching Protocols`, and Socket.IO polling reached the application
+  instead of being blocked by KrakenWAF.
 
 ### `soldier_update` progress reporting (`src/bin/soldier_update.rs`, `src/update.rs`)
 

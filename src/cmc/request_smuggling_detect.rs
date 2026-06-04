@@ -15,7 +15,7 @@ impl RequestSmugglingMatch {
 }
 
 impl RequestSmugglingCmcBuilder {
-    #[must_use] 
+    #[must_use]
     pub fn new() -> Self {
         Self
     }
@@ -80,6 +80,10 @@ fn has_header_value(input: &str, name: &str, expected_value: &str) -> bool {
 }
 
 fn has_small_content_length(input: &str) -> bool {
+    if is_socketio_polling_request(input) {
+        return false;
+    }
+
     let name = "content-length";
     let mut start = 0usize;
 
@@ -112,6 +116,14 @@ fn has_small_content_length(input: &str) -> bool {
     }
 
     false
+}
+
+fn is_socketio_polling_request(input: &str) -> bool {
+    let first_line = input.lines().next().unwrap_or_default();
+    first_line.starts_with("post ")
+        && first_line.contains("/socket.io/")
+        && first_line.contains("transport=polling")
+        && first_line.contains("eio=")
 }
 
 fn has_header_name_boundary(bytes: &[u8], start: usize, end: usize) -> bool {
@@ -193,5 +205,33 @@ mod tests {
             .is_none());
         assert!(cmc.detect("payload=transfer-encoding: gzip").is_none());
         assert!(cmc.detect("payload=x-session-hijack: false").is_none());
+    }
+
+    #[test]
+    fn ignores_legitimate_short_socketio_polling_frames() {
+        let cmc = RequestSmugglingCmcBuilder::new().build();
+        let request = concat!(
+            "post /socket.io/?eio=4&transport=polling&t=abc&sid=xyz http/1.1\r\n",
+            "host: localhost\r\n",
+            "content-length: 2\r\n",
+            "\r\n",
+            "40"
+        );
+
+        assert!(cmc.detect(request).is_none());
+    }
+
+    #[test]
+    fn still_detects_short_content_length_outside_socketio_polling() {
+        let cmc = RequestSmugglingCmcBuilder::new().build();
+        let request = concat!(
+            "post /api/upload http/1.1\r\n",
+            "host: localhost\r\n",
+            "content-length: 2\r\n",
+            "\r\n",
+            "ab"
+        );
+
+        assert!(cmc.detect(request).is_some());
     }
 }
