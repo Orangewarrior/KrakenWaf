@@ -5,22 +5,22 @@ use crate::{
     cli::WafMode,
     error::KrakenError,
     geo::GeoIpResult,
-    logging::{write_critical, SecurityEvent},
+    logging::{SecurityEvent, write_critical},
     multipart_extract::{extract_boundary, parse_parts},
     waf::{Decision, Finding, InspectionContext, ResponseContext},
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use http::{
-    header::{CONNECTION, HOST, UPGRADE},
-    HeaderMap, HeaderName, Method, Request, Response, StatusCode, Uri,
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
+    header::{CONNECTION, COOKIE, HOST, LOCATION, UPGRADE},
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
-use reqwest::{redirect::Policy, Client};
+use reqwest::{Client, redirect::Policy};
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use tracing::{error, info, warn};
 use url::{Host, Url};
@@ -36,7 +36,11 @@ struct BodyTracker {
 
 impl BodyTracker {
     fn new(global: Arc<AtomicUsize>, ip: Arc<AtomicUsize>) -> Self {
-        Self { global, ip, bytes: 0 }
+        Self {
+            global,
+            ip,
+            bytes: 0,
+        }
     }
 
     fn add(&mut self, n: usize) {
@@ -81,6 +85,43 @@ pub struct ProxyClient {
     client: Client,
     upstream: Url,
     internal_header_name: Option<HeaderName>,
+}
+
+#[derive(Debug, Clone)]
+struct ForwardedOrigin {
+    proto: String,
+    host: String,
+    port: Option<u16>,
+}
+
+impl ForwardedOrigin {
+    fn from_headers(headers: &HeaderMap, state: &AppState) -> Self {
+        let proto = if state.cli.no_tls { "http" } else { "https" }.to_string();
+        let host = headers
+            .get(HOST)
+            .and_then(|value| value.to_str().ok())
+            .filter(|value| !value.trim().is_empty())
+            .map_or_else(|| state.cli.listen.to_string(), str::to_owned);
+        let port = host_port(&host).or_else(|| Some(state.cli.listen.port()));
+        Self { proto, host, port }
+    }
+
+    fn host_without_port(&self) -> &str {
+        let trimmed = self.host.trim();
+        if let Some(rest) = trimmed.strip_prefix('[') {
+            if let Some((addr, _)) = rest.rsplit_once("]:") {
+                return addr;
+            }
+            return trimmed;
+        }
+        trimmed.rsplit_once(':').map_or(trimmed, |(host, _)| host)
+    }
+
+    fn public_port_for_url(&self) -> Option<u16> {
+        let default = (self.proto == "http" && self.port == Some(80))
+            || (self.proto == "https" && self.port == Some(443));
+        if default { None } else { self.port }
+    }
 }
 
 #[derive(Debug)]
@@ -195,7 +236,9 @@ impl ProxyClient {
         );
 
         let started = std::time::Instant::now();
-        let mut resp = self.dispatch(state, req, client_ip, &request_id, &traceparent).await;
+        let mut resp = self
+            .dispatch(state, req, client_ip, &request_id, &traceparent)
+            .await;
         state
             .metrics
             .observe_latency_ms(u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX));
@@ -243,7 +286,8 @@ impl ProxyClient {
 
         let geo = state
             .geo_reader
-            .as_ref().map_or_else(GeoIpResult::empty, |r| r.lookup(&effective_ip));
+            .as_ref()
+            .map_or_else(GeoIpResult::empty, |r| r.lookup(&effective_ip));
 
         let context = InspectionContext {
             client_ip: effective_ip.clone(),
@@ -289,9 +333,7 @@ impl ProxyClient {
 
         if !skip_inspection {
             match state.waf.inspect_early(&context).await {
-                Decision::Allow
-                | Decision::Monitor(_)
-                | Decision::SilentReplace { .. } => {}
+                Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, None);
                     if let Some(response) = self.log_and_enforce(state, event).await {
@@ -301,7 +343,9 @@ impl ProxyClient {
             }
         }
 
-        let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut(), &client_ip).await {
+        let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut(), &client_ip)
+            .await
+        {
             Ok(bytes) => bytes,
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
                 return block_content_response(
@@ -358,9 +402,7 @@ impl ProxyClient {
                 .waf
                 .inspect_complete_payload_with_context(&full_request, Some(&context.method))
             {
-                Decision::Allow
-                | Decision::Monitor(_)
-                | Decision::SilentReplace { .. } => {}
+                Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, Some(&body_bytes));
                     if let Some(response) = self.log_and_enforce(state, event).await {
@@ -370,8 +412,19 @@ impl ProxyClient {
             }
         }
 
+        let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
+
         match self
-            .forward_request(state, method, uri, req.headers(), body_bytes, request_id, traceparent)
+            .forward_request(
+                state,
+                method,
+                uri,
+                req.headers(),
+                body_bytes,
+                request_id,
+                traceparent,
+                &forwarded_origin,
+            )
             .await
         {
             Ok(response) => response,
@@ -459,6 +512,7 @@ impl ProxyClient {
         body: Bytes,
         request_id: &str,
         traceparent: &str,
+        forwarded_origin: &ForwardedOrigin,
     ) -> Result<Response<Full<Bytes>>> {
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
@@ -474,9 +528,11 @@ impl ProxyClient {
 
         let mut forwarded_count: usize = 0;
         let mut forwarded_bytes: usize = 0;
+        let cookie_header = combine_request_cookie_headers(headers);
         for (name, value) in headers {
             if is_hop_by_hop(name)
                 || name == HOST
+                || name == COOKIE
                 || connection_hop.iter().any(|hop| hop == name)
             {
                 continue;
@@ -492,8 +548,24 @@ impl ProxyClient {
             }
             builder = builder.header(name, value);
         }
+        if let Some(cookie_header) = cookie_header {
+            forwarded_count += 1;
+            forwarded_bytes += COOKIE.as_str().len() + cookie_header.as_bytes().len();
+            if forwarded_count > MAX_FORWARDED_HEADERS
+                || forwarded_bytes > MAX_FORWARDED_HEADER_BYTES
+            {
+                anyhow::bail!(
+                    "request rejected: forwarded headers exceed limits (count<={MAX_FORWARDED_HEADERS}, bytes<={MAX_FORWARDED_HEADER_BYTES})"
+                );
+            }
+            builder = builder.header(COOKIE, cookie_header);
+        }
 
-        builder = builder.header("x-forwarded-proto", "https");
+        builder = builder.header("x-forwarded-proto", forwarded_origin.proto.as_str());
+        builder = builder.header("x-forwarded-host", forwarded_origin.host.as_str());
+        if let Some(port) = forwarded_origin.port {
+            builder = builder.header("x-forwarded-port", port.to_string());
+        }
         builder = builder.header("x-request-id", request_id);
         builder = builder.header("traceparent", traceparent);
         if let Some(header_name) = &self.internal_header_name {
@@ -511,7 +583,13 @@ impl ProxyClient {
         let mut response_builder = Response::builder().status(status);
         for (name, value) in response.headers() {
             if !is_hop_by_hop(name) {
-                response_builder = response_builder.header(name, value);
+                if name == LOCATION {
+                    let value = rewrite_upstream_location(value, &self.upstream, forwarded_origin)
+                        .unwrap_or_else(|| value.clone());
+                    response_builder = response_builder.header(name, value);
+                } else {
+                    response_builder = response_builder.header(name, value);
+                }
             }
         }
         // Stream the upstream body in chunks so an oversized response cannot
@@ -525,10 +603,7 @@ impl ProxyClient {
         // any further allocation pressure. This protects WAF latency on
         // file downloads (PDF, mp4, large JPEGs, …) while still scanning
         // text/html, application/json, and friends.
-        let resp_headers_map = response_builder
-            .headers_ref()
-            .cloned()
-            .unwrap_or_default();
+        let resp_headers_map = response_builder.headers_ref().cloned().unwrap_or_default();
         let inspect_body = response_body_should_be_inspected(&resp_headers_map);
 
         let mut body_buf = BytesMut::new();
@@ -553,7 +628,11 @@ impl ProxyClient {
         let resp_ctx = ResponseContext {
             status: status.as_u16(),
             headers: resp_headers,
-            body: if inspect_body { bytes.clone() } else { Bytes::new() },
+            body: if inspect_body {
+                bytes.clone()
+            } else {
+                Bytes::new()
+            },
         };
         let resp_decision = state.waf.inspect_response(&resp_ctx);
         match resp_decision {
@@ -718,18 +797,24 @@ async fn accumulate_body_frames(
         };
         if let Some(chunk) = frame.data_ref() {
             if acc.len() + chunk.len() > ctx.body_limit {
-                return Err(BodyInspectionError::TooLarge { limit: ctx.body_limit });
+                return Err(BodyInspectionError::TooLarge {
+                    limit: ctx.body_limit,
+                });
             }
             if state.max_inflight_body_bytes > 0
                 && state.inflight_body_bytes.load(Ordering::Relaxed) + chunk.len()
                     > state.max_inflight_body_bytes
             {
-                return Err(BodyInspectionError::TooLarge { limit: state.max_inflight_body_bytes });
+                return Err(BodyInspectionError::TooLarge {
+                    limit: state.max_inflight_body_bytes,
+                });
             }
             if state.max_per_ip_body_bytes > 0
                 && tracker.ip.load(Ordering::Relaxed) + chunk.len() > state.max_per_ip_body_bytes
             {
-                return Err(BodyInspectionError::TooLarge { limit: state.max_per_ip_body_bytes });
+                return Err(BodyInspectionError::TooLarge {
+                    limit: state.max_per_ip_body_bytes,
+                });
             }
             tracker.add(chunk.len());
             acc.extend_from_slice(chunk);
@@ -788,15 +873,12 @@ async fn consume_and_inspect_body(
                 if part.body.is_empty() {
                     continue;
                 }
-                let part_payload =
-                    format_full_request_bytes(ctx, Some(&part.body));
+                let part_payload = format_full_request_bytes(ctx, Some(&part.body));
                 match state
                     .waf
                     .inspect_complete_payload_with_context(&part_payload, Some(&ctx.method))
                 {
-                    Decision::Allow
-                    | Decision::Monitor(_)
-                    | Decision::SilentReplace { .. } => {}
+                    Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
                     Decision::Block(finding) => {
                         return Err(BodyInspectionError::Blocked {
                             finding,
@@ -814,9 +896,7 @@ async fn consume_and_inspect_body(
         .waf
         .inspect_complete_payload_with_context(&full, Some(&ctx.method))
     {
-        Decision::Allow
-        | Decision::Monitor(_)
-        | Decision::SilentReplace { .. } => Ok(raw_body),
+        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => Ok(raw_body),
         Decision::Block(finding) => Err(BodyInspectionError::Blocked {
             finding,
             partial_body: raw_body,
@@ -829,7 +909,9 @@ async fn consume_and_inspect_body(
 /// The flattened representation is one `Name: value` per line.
 fn ctx_header(ctx: &InspectionContext, target: &str) -> Option<String> {
     for line in ctx.headers.lines() {
-        let Some((name, value)) = line.split_once(':') else { continue };
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
         if name.trim().eq_ignore_ascii_case(target) {
             return Some(value.trim().to_string());
         }
@@ -931,8 +1013,7 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
                 let host_port = format!("{domain}:{port}");
                 match std::net::ToSocketAddrs::to_socket_addrs(&host_port.as_str()) {
                     Ok(iter) => {
-                        let resolved: Vec<std::net::IpAddr> =
-                            iter.map(|sa| sa.ip()).collect();
+                        let resolved: Vec<std::net::IpAddr> = iter.map(|sa| sa.ip()).collect();
                         for ip in &resolved {
                             let is_local = match ip {
                                 std::net::IpAddr::V4(v4) => {
@@ -942,9 +1023,7 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
                                         || v4.is_unspecified()
                                 }
                                 std::net::IpAddr::V6(v6) => {
-                                    v6.is_loopback()
-                                        || v6.is_unspecified()
-                                        || v6.is_unique_local()
+                                    v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local()
                                 }
                             };
                             if is_local {
@@ -1036,6 +1115,41 @@ fn build_upstream_target(upstream: &Url, uri: &Uri) -> Url {
     target
 }
 
+fn host_port(host: &str) -> Option<u16> {
+    let trimmed = host.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix('[') {
+        let (_, port) = rest.rsplit_once("]:")?;
+        return port.parse().ok();
+    }
+    let (_, port) = trimmed.rsplit_once(':')?;
+    port.parse().ok()
+}
+
+fn upstream_authority_matches(location: &Url, upstream: &Url) -> bool {
+    location.scheme() == upstream.scheme()
+        && location.host_str() == upstream.host_str()
+        && location.port_or_known_default() == upstream.port_or_known_default()
+}
+
+fn rewrite_upstream_location(
+    value: &HeaderValue,
+    upstream: &Url,
+    origin: &ForwardedOrigin,
+) -> Option<HeaderValue> {
+    let text = value.to_str().ok()?;
+    let mut parsed = Url::parse(text).ok()?;
+    if !upstream_authority_matches(&parsed, upstream) {
+        return None;
+    }
+    parsed.set_scheme(&origin.proto).ok()?;
+    parsed.set_host(Some(origin.host_without_port())).ok()?;
+    parsed.set_port(origin.public_port_for_url()).ok()?;
+    HeaderValue::from_str(parsed.as_str()).ok()
+}
+
 /// Decide whether the upstream response body should be fed to the
 /// detection engines. Binary types (images, video, audio, generic
 /// `application/octet-stream`) contain no text the WAF can reason about,
@@ -1044,10 +1158,17 @@ fn response_body_should_be_inspected(headers: &http::HeaderMap) -> bool {
     let Some(value) = headers.get("content-type") else {
         return true;
     };
-    let Ok(text) = value.to_str() else { return true };
-    let normalised = text.split(';').next().unwrap_or(text).trim().to_ascii_lowercase();
+    let Ok(text) = value.to_str() else {
+        return true;
+    };
+    let normalised = text
+        .split(';')
+        .next()
+        .unwrap_or(text)
+        .trim()
+        .to_ascii_lowercase();
     // Allow-list of "text-ish" prefixes — everything else is treated as binary.
-    
+
     normalised.starts_with("text/")
         || normalised.starts_with("application/json")
         || normalised.starts_with("application/xml")
@@ -1111,6 +1232,27 @@ fn connection_listed_headers(headers: &HeaderMap) -> Vec<HeaderName> {
     out
 }
 
+fn combine_request_cookie_headers(headers: &HeaderMap) -> Option<HeaderValue> {
+    let mut combined = String::new();
+    for value in headers.get_all(COOKIE) {
+        let Ok(raw) = value.to_str() else {
+            continue;
+        };
+        let raw = raw.trim();
+        if raw.is_empty() {
+            continue;
+        }
+        if !combined.is_empty() {
+            combined.push_str("; ");
+        }
+        combined.push_str(raw);
+    }
+    if combined.is_empty() {
+        return None;
+    }
+    HeaderValue::from_str(&combined).ok()
+}
+
 fn apply_response_policy(state: &AppState, response: &mut Response<Full<Bytes>>) {
     let is_websocket_upgrade = response.status() == StatusCode::SWITCHING_PROTOCOLS
         || response.headers().contains_key(UPGRADE)
@@ -1143,7 +1285,7 @@ fn block_content_response(
     response
 }
 
-#[must_use] 
+#[must_use]
 pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
     // All header names/values are static literals so the builder cannot actually fail.
     // Falling back to a bare Response::new keeps the request path infallible if the
@@ -1175,17 +1317,16 @@ fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Optio
 /// do. The rightmost untrusted value is therefore the real client. Returns
 /// `None` when the header is absent, malformed, or every value resolves to
 /// a trusted hop.
-fn forwarded_header_real_ip(
-    headers: &http::HeaderMap,
-    trusted: &[ipnet::IpNet],
-) -> Option<String> {
+fn forwarded_header_real_ip(headers: &http::HeaderMap, trusted: &[ipnet::IpNet]) -> Option<String> {
     use std::net::IpAddr;
     let raw = header_value_case_insensitive(headers, "forwarded")?;
     let elements: Vec<&str> = raw.split(',').collect();
     for element in elements.iter().rev() {
         for kv in element.split(';') {
             let kv = kv.trim();
-            let Some((k, v)) = kv.split_once('=') else { continue };
+            let Some((k, v)) = kv.split_once('=') else {
+                continue;
+            };
             if !k.eq_ignore_ascii_case("for") {
                 continue;
             }
@@ -1368,6 +1509,79 @@ fn derive_module_label(engine: &str, rule_match: &str) -> String {
         format!("libinjection:{variant}")
     } else {
         engine.to_string()
+    }
+}
+
+#[cfg(test)]
+mod redirect_tests {
+    use super::{ForwardedOrigin, combine_request_cookie_headers, rewrite_upstream_location};
+    use http::{HeaderMap, HeaderValue, header::COOKIE};
+    use url::Url;
+
+    #[test]
+    fn rewrites_absolute_upstream_location_to_public_origin() {
+        let upstream = Url::parse("http://127.0.0.1:8080").expect("url");
+        let origin = ForwardedOrigin {
+            proto: "https".to_string(),
+            host: "dvwa.local:8444".to_string(),
+            port: Some(8444),
+        };
+        let rewritten = rewrite_upstream_location(
+            &HeaderValue::from_static("http://127.0.0.1:8080/index.php"),
+            &upstream,
+            &origin,
+        )
+        .expect("rewrite");
+        assert_eq!(
+            rewritten,
+            HeaderValue::from_static("https://dvwa.local:8444/index.php")
+        );
+    }
+
+    #[test]
+    fn leaves_relative_location_untouched() {
+        let upstream = Url::parse("http://127.0.0.1:8080").expect("url");
+        let origin = ForwardedOrigin {
+            proto: "https".to_string(),
+            host: "dvwa.local:8444".to_string(),
+            port: Some(8444),
+        };
+        assert!(
+            rewrite_upstream_location(&HeaderValue::from_static("index.php"), &upstream, &origin,)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn leaves_external_location_untouched() {
+        let upstream = Url::parse("http://127.0.0.1:8080").expect("url");
+        let origin = ForwardedOrigin {
+            proto: "https".to_string(),
+            host: "dvwa.local:8444".to_string(),
+            port: Some(8444),
+        };
+        assert!(
+            rewrite_upstream_location(
+                &HeaderValue::from_static("https://example.test/login"),
+                &upstream,
+                &origin,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn combines_split_http2_cookie_headers_with_semicolons() {
+        let mut headers = HeaderMap::new();
+        headers.append(COOKIE, HeaderValue::from_static("PHPSESSID=abc"));
+        headers.append(COOKIE, HeaderValue::from_static("security=low"));
+
+        let combined = combine_request_cookie_headers(&headers).expect("cookie");
+
+        assert_eq!(
+            combined,
+            HeaderValue::from_static("PHPSESSID=abc; security=low")
+        );
     }
 }
 
