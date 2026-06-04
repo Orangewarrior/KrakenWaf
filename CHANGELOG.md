@@ -1,3 +1,37 @@
+## [2.34.1] - 2026-06-04
+
+> **WAF login fix + updater status reporting.** Two operator-facing fixes landed
+> in the current tree. First, the proxy now normalizes split HTTP/2 `Cookie`
+> headers into a single semicolon-delimited header before forwarding upstream,
+> which restores DVWA login and setup flows through the WAF. Second,
+> `soldier_update` now prints clear progress for address-list and MaxMind
+> updates: it tells you when a download starts, which file it is writing to,
+> how far the download has progressed, when extraction finishes, and the final
+> save path. The updater still returns the same errors as before, but it no
+> longer looks stalled while a large database is being fetched.
+
+### Proxy cookie forwarding fix (`src/proxy.rs`)
+
+- Multiple request `Cookie` headers received over HTTP/2 are now merged into one
+  backend-safe header using `"; "` separators before the request is forwarded to
+  upstream.
+- This resolves the browser-only DVWA login/setup failure where Chrome and
+  Firefox could store the session cookie but the backend would receive it in an
+  invalid format and restart the login flow with `302 /login.php`.
+- Added regression coverage for split HTTP/2 cookies and for redirect rewriting
+  of absolute upstream `Location` values back to the public origin.
+
+### `soldier_update` progress reporting (`src/bin/soldier_update.rs`, `src/update.rs`)
+
+- `soldier_update` now prints an initial status line showing which mode is
+  running and which config file is being used.
+- Address-list downloads now report the target directory, the source URL, the
+  current byte count / percentage, completion, and the final saved file.
+- `maxmind-geo` downloads now report the `.tar.gz` source, progress, extraction
+  into `db/geo/GeoLite2-City.mmdb`, and the final saved database path.
+- The reporting is plumbed through a small update-event abstraction so the
+  existing silent callers keep working unchanged.
+
 ## [2.34.0] - 2026-05-31
 
 > **HTTP Parameter Pollution release.** A new CMC module, **`HPP_detect`**,
