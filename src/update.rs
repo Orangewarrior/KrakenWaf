@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use bytes::Bytes;
 use chrono::{Datelike, Local, Timelike};
 use reqwest::Client;
 use serde::Deserialize;
@@ -9,7 +10,7 @@ use std::{
     net::IpAddr,
     path::{Path, PathBuf},
     process::Command,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::{
     net::lookup_host,
@@ -23,6 +24,92 @@ const ERROR_LOG: &str = "logs/console_local/errors.txt";
 const ADDR_LIST_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
 const GEO_DB_DIR: &str = "db/geo";
 const GEO_DB_FILE: &str = "GeoLite2-City.mmdb";
+const DOWNLOAD_PROGRESS_MIN_INTERVAL: Duration = Duration::from_secs(1);
+const DOWNLOAD_PROGRESS_MIN_BYTES: u64 = 5 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub enum UpdateEvent<'a> {
+    Step {
+        message: &'a str,
+    },
+    DownloadStarted {
+        url: &'a Url,
+        destination: Option<&'a Path>,
+    },
+    DownloadProgress {
+        url: &'a Url,
+        downloaded: u64,
+        total: Option<u64>,
+    },
+    DownloadFinished {
+        url: &'a Url,
+        bytes: u64,
+    },
+    FileSaved {
+        path: &'a Path,
+        bytes: u64,
+    },
+}
+
+pub trait UpdateReporter {
+    fn report(&self, event: UpdateEvent<'_>);
+}
+
+#[derive(Debug, Default)]
+pub struct NoopUpdateReporter;
+
+impl UpdateReporter for NoopUpdateReporter {
+    fn report(&self, _event: UpdateEvent<'_>) {}
+}
+
+#[derive(Debug, Default)]
+pub struct StderrUpdateReporter;
+
+impl UpdateReporter for StderrUpdateReporter {
+    fn report(&self, event: UpdateEvent<'_>) {
+        match event {
+            UpdateEvent::Step { message } => eprintln!("[soldier_update] {message}"),
+            UpdateEvent::DownloadStarted { url, destination } => {
+                if let Some(destination) = destination {
+                    eprintln!(
+                        "[soldier_update] downloading {url} -> {}",
+                        destination.display()
+                    );
+                } else {
+                    eprintln!("[soldier_update] downloading {url}");
+                }
+            }
+            UpdateEvent::DownloadProgress {
+                url: _,
+                downloaded,
+                total,
+            } => {
+                if let Some(total) = total {
+                    let pct = percent_tenths(downloaded, total);
+                    eprintln!(
+                        "[soldier_update] downloaded {} / {} ({}.{:01}%)",
+                        human_bytes(downloaded),
+                        human_bytes(total),
+                        pct / 10,
+                        pct % 10
+                    );
+                } else {
+                    eprintln!("[soldier_update] downloaded {}", human_bytes(downloaded));
+                }
+            }
+            UpdateEvent::DownloadFinished { url: _, bytes } => {
+                eprintln!("[soldier_update] download finished: {}", human_bytes(bytes));
+            }
+            UpdateEvent::FileSaved { path, bytes } => {
+                eprintln!(
+                    "[soldier_update] saved {} ({})",
+                    path.display(),
+                    human_bytes(bytes)
+                );
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct UpdateConfig {
@@ -260,7 +347,26 @@ pub async fn update_addr_list_from_config(
     list_name: &str,
 ) -> Result<()> {
     let config = load_update_config(config_path)?;
-    update_addr_list(repo_root, &config, list_name).await
+    update_addr_list_with_reporter(repo_root, &config, list_name, &NoopUpdateReporter).await
+}
+
+/// Load an address-list update section from YAML and execute it with status reporting.
+///
+/// # Errors
+/// Returns an error if the config is invalid, the named list is unknown, a
+/// configured list download fails, DQS is enabled without a key, or DQS
+/// validation fails.
+pub async fn update_addr_list_from_config_with_reporter(
+    repo_root: &Path,
+    config_path: &Path,
+    list_name: &str,
+    reporter: &dyn UpdateReporter,
+) -> Result<()> {
+    reporter.report(UpdateEvent::Step {
+        message: "loading update configuration",
+    });
+    let config = load_update_config(config_path)?;
+    update_addr_list_with_reporter(repo_root, &config, list_name, reporter).await
 }
 
 /// Download an address-list section and validate Spamhaus DQS when enabled.
@@ -274,8 +380,24 @@ pub async fn update_addr_list(
     config: &UpdateConfig,
     list_name: &str,
 ) -> Result<()> {
+    update_addr_list_with_reporter(repo_root, config, list_name, &NoopUpdateReporter).await
+}
+
+/// Download an address-list section and validate Spamhaus DQS when enabled,
+/// reporting status to the supplied reporter.
+///
+/// # Errors
+/// Returns an error if the named list is unknown, a configured list download
+/// fails, DQS is enabled without `SPAMHAUS_DQS_KEY`, or DQS validation/write
+/// fails.
+pub async fn update_addr_list_with_reporter(
+    repo_root: &Path,
+    config: &UpdateConfig,
+    list_name: &str,
+    reporter: &dyn UpdateReporter,
+) -> Result<()> {
     match list_name {
-        "spamhaus" => update_spamhaus(repo_root, config).await,
+        "spamhaus" => update_spamhaus_with_reporter(repo_root, config, reporter).await,
         "blocklist" => {
             let title = title_or_default(&config.blocklist.title, "Blocklist site");
             let list_urls = config.blocklist.lists.url_file.values();
@@ -284,9 +406,15 @@ pub async fn update_addr_list(
                 log_update_error(repo_root, &err);
                 return Err(err);
             }
-            download_addr_list_url_files(repo_root, "blocklist", &title, &list_urls)
-                .await
-                .inspect_err(|err| log_update_error(repo_root, err))
+            download_addr_list_url_files_with_reporter(
+                repo_root,
+                "blocklist",
+                &title,
+                &list_urls,
+                reporter,
+            )
+            .await
+            .inspect_err(|err| log_update_error(repo_root, err))
         }
         "firehol" => {
             let title = title_or_default(&config.firehol.title, "Firehol");
@@ -296,11 +424,13 @@ pub async fn update_addr_list(
                 log_update_error(repo_root, &err);
                 return Err(err);
             }
-            download_addr_list_url_files(repo_root, "firehol", &title, &list_urls)
-                .await
-                .inspect_err(|err| log_update_error(repo_root, err))
+            download_addr_list_url_files_with_reporter(
+                repo_root, "firehol", &title, &list_urls, reporter,
+            )
+            .await
+            .inspect_err(|err| log_update_error(repo_root, err))
         }
-        "maxmind-geo" => update_maxmind_geo(repo_root, config)
+        "maxmind-geo" => update_maxmind_geo_with_reporter(repo_root, config, reporter)
             .await
             .inspect_err(|err| log_update_error(repo_root, err)),
         other => {
@@ -317,14 +447,30 @@ pub async fn update_addr_list(
 /// Returns an error if a configured list download fails, DQS is enabled without
 /// `SPAMHAUS_DQS_KEY`, or DQS validation/write fails.
 pub async fn update_spamhaus(repo_root: &Path, config: &UpdateConfig) -> Result<()> {
+    update_spamhaus_with_reporter(repo_root, config, &NoopUpdateReporter).await
+}
+
+/// Download Spamhaus URL lists and validate DQS zones when enabled, reporting
+/// status to the supplied reporter.
+///
+/// # Errors
+/// Returns an error if a configured list download fails, DQS is enabled without
+/// `SPAMHAUS_DQS_KEY`, or DQS validation/write fails.
+pub async fn update_spamhaus_with_reporter(
+    repo_root: &Path,
+    config: &UpdateConfig,
+    reporter: &dyn UpdateReporter,
+) -> Result<()> {
     let title = title_or_default(&config.spamhaus.title, "Spamhaus site");
     let list_urls = config.spamhaus.lists.url_file.values();
     if !list_urls.is_empty() {
-        download_addr_list_url_files(repo_root, "spamhaus", &title, &list_urls)
-            .await
-            .inspect_err(|err| {
-                log_update_error(repo_root, err);
-            })?;
+        download_addr_list_url_files_with_reporter(
+            repo_root, "spamhaus", &title, &list_urls, reporter,
+        )
+        .await
+        .inspect_err(|err| {
+            log_update_error(repo_root, err);
+        })?;
     }
 
     if !config.spamhaus.dqs_key {
@@ -335,6 +481,9 @@ pub async fn update_spamhaus(repo_root: &Path, config: &UpdateConfig) -> Result<
             log_update_error(repo_root, &err);
             return Err(err);
         }
+        reporter.report(UpdateEvent::Step {
+            message: "Spamhaus DQS validation disabled; URL file update complete",
+        });
         return Ok(());
     }
 
@@ -350,6 +499,9 @@ pub async fn update_spamhaus(repo_root: &Path, config: &UpdateConfig) -> Result<
         return Err(err);
     };
 
+    reporter.report(UpdateEvent::Step {
+        message: "validating Spamhaus DQS zones",
+    });
     validate_spamhaus_dqs_zones(repo_root, &token, &config.spamhaus.zones)
         .await
         .inspect_err(|err| {
@@ -368,11 +520,38 @@ pub async fn download_addr_list_url_files(
     title: &str,
     urls: &[String],
 ) -> Result<()> {
+    download_addr_list_url_files_with_reporter(
+        repo_root,
+        list_name,
+        title,
+        urls,
+        &NoopUpdateReporter,
+    )
+    .await
+}
+
+/// Download configured text lists into `rules/addr/<list_name>`, reporting
+/// progress and final output files to the supplied reporter.
+///
+/// # Errors
+/// Returns an error if the HTTP client cannot be built, a URL is invalid, a
+/// download returns a non-2xx status, the body is not UTF-8 text, or a file
+/// cannot be written.
+pub async fn download_addr_list_url_files_with_reporter(
+    repo_root: &Path,
+    list_name: &str,
+    title: &str,
+    urls: &[String],
+    reporter: &dyn UpdateReporter,
+) -> Result<()> {
     if urls.is_empty() {
         return Ok(());
     }
 
     let out_dir = safe_addr_list_output_dir(repo_root, list_name)?;
+    reporter.report(UpdateEvent::Step {
+        message: "address-list output directory ready",
+    });
     let client = Client::builder()
         .use_rustls_tls()
         .timeout(ADDR_LIST_DOWNLOAD_TIMEOUT)
@@ -381,27 +560,25 @@ pub async fn download_addr_list_url_files(
     for raw_url in urls {
         let url =
             Url::parse(raw_url).with_context(|| format!("invalid address list URL: {raw_url}"))?;
-        let response = client
-            .get(url.clone())
-            .send()
-            .await
-            .with_context(|| format!("failed to download address list {url}"))?;
-        if !response.status().is_success() {
-            anyhow::bail!(
-                "address list download failed from {} with HTTP {}",
-                url,
-                response.status()
-            );
-        }
-
-        let body = response
-            .text()
-            .await
-            .with_context(|| format!("failed to read address list {url}"))?;
         let file_name = output_file_name_for_url(list_name, &url)?;
+        let destination = out_dir.join(&file_name);
+        let bytes = download_url_bytes(
+            &client,
+            &url,
+            Some(destination.as_path()),
+            reporter,
+            "address list",
+        )
+        .await?;
+        let body = String::from_utf8(bytes.to_vec())
+            .with_context(|| format!("address list {url} is not valid UTF-8 text"))?;
         let content = with_addr_list_metadata(title, &url, &body);
-        fs::write(out_dir.join(&file_name), content)
+        fs::write(&destination, content.as_bytes())
             .with_context(|| format!("failed to write address list {file_name}"))?;
+        reporter.report(UpdateEvent::FileSaved {
+            path: &destination,
+            bytes: content.len() as u64,
+        });
     }
 
     Ok(())
@@ -507,6 +684,104 @@ fn with_addr_list_metadata(title: &str, url: &Url, body: &str) -> String {
     )
 }
 
+async fn download_url_bytes(
+    client: &Client,
+    url: &Url,
+    destination: Option<&Path>,
+    reporter: &dyn UpdateReporter,
+    label: &str,
+) -> Result<Bytes> {
+    download_url_bytes_with_request(client.get(url.clone()), url, destination, reporter, label)
+        .await
+}
+
+async fn download_url_bytes_with_request(
+    request: reqwest::RequestBuilder,
+    url: &Url,
+    destination: Option<&Path>,
+    reporter: &dyn UpdateReporter,
+    label: &str,
+) -> Result<Bytes> {
+    reporter.report(UpdateEvent::DownloadStarted { url, destination });
+    let mut response = request
+        .send()
+        .await
+        .with_context(|| format!("{label} download request failed: {url}"))?;
+
+    if !response.status().is_success() {
+        anyhow::bail!(
+            "{label} download failed from {} with HTTP {}",
+            url,
+            response.status()
+        );
+    }
+
+    let total = response.content_length();
+    let mut body = Vec::with_capacity(total.and_then(|len| len.try_into().ok()).unwrap_or(0));
+    let mut downloaded = 0_u64;
+    let mut last_report = Instant::now();
+    let mut last_reported_bytes = 0_u64;
+
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .with_context(|| format!("failed to read {label} response body from {url}"))?
+    {
+        downloaded += chunk.len() as u64;
+        body.extend_from_slice(&chunk);
+        let enough_time = last_report.elapsed() >= DOWNLOAD_PROGRESS_MIN_INTERVAL;
+        let enough_bytes =
+            downloaded.saturating_sub(last_reported_bytes) >= DOWNLOAD_PROGRESS_MIN_BYTES;
+        if enough_time || enough_bytes {
+            reporter.report(UpdateEvent::DownloadProgress {
+                url,
+                downloaded,
+                total,
+            });
+            last_report = Instant::now();
+            last_reported_bytes = downloaded;
+        }
+    }
+
+    reporter.report(UpdateEvent::DownloadProgress {
+        url,
+        downloaded,
+        total,
+    });
+    reporter.report(UpdateEvent::DownloadFinished {
+        url,
+        bytes: downloaded,
+    });
+    Ok(Bytes::from(body))
+}
+
+fn percent_tenths(downloaded: u64, total: u64) -> u64 {
+    if total == 0 {
+        return 0;
+    }
+    ((u128::from(downloaded) * 1000) / u128::from(total))
+        .min(1000)
+        .try_into()
+        .unwrap_or(1000)
+}
+
+fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
+    let mut divisor = 1_u64;
+    let mut unit = 0_usize;
+    while bytes / divisor >= 1024 && unit + 1 < UNITS.len() {
+        divisor = divisor.saturating_mul(1024);
+        unit += 1;
+    }
+    if unit == 0 {
+        format!("{bytes} {}", UNITS[unit])
+    } else {
+        let whole = bytes / divisor;
+        let fraction = ((bytes % divisor) * 100) / divisor;
+        format!("{whole}.{fraction:02} {}", UNITS[unit])
+    }
+}
+
 #[must_use]
 pub fn spamhaus_dqs_zones() -> Vec<String> {
     default_spamhaus_zones()
@@ -605,12 +880,27 @@ pub fn scheduled_soldier_jobs_for_values(
 /// # Errors
 /// Returns an error when the config cannot be loaded, credentials are missing,
 /// the download fails, or the archive cannot be extracted.
-pub async fn update_maxmind_geo_from_config(
+pub async fn update_maxmind_geo_from_config(repo_root: &Path, config_path: &Path) -> Result<()> {
+    let config = load_update_config(config_path)?;
+    update_maxmind_geo_with_reporter(repo_root, &config, &NoopUpdateReporter).await
+}
+
+/// Load update configuration and trigger a `MaxMind` `GeoIP` database refresh
+/// with status reporting.
+///
+/// # Errors
+/// Returns an error when the config cannot be loaded, credentials are missing,
+/// the download fails, or the archive cannot be extracted.
+pub async fn update_maxmind_geo_from_config_with_reporter(
     repo_root: &Path,
     config_path: &Path,
+    reporter: &dyn UpdateReporter,
 ) -> Result<()> {
+    reporter.report(UpdateEvent::Step {
+        message: "loading update configuration",
+    });
     let config = load_update_config(config_path)?;
-    update_maxmind_geo(repo_root, &config).await
+    update_maxmind_geo_with_reporter(repo_root, &config, reporter).await
 }
 
 /// Download and extract the `MaxMind` GeoLite2-City database to `db/geo/`.
@@ -623,9 +913,26 @@ pub async fn update_maxmind_geo_from_config(
 /// Returns an error when `active` is false, env var credentials are missing,
 /// the HTTP request fails, or the `.mmdb` file is not found in the archive.
 pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Result<()> {
+    update_maxmind_geo_with_reporter(repo_root, config, &NoopUpdateReporter).await
+}
+
+/// Download and extract the `MaxMind` GeoLite2-City database to `db/geo/`,
+/// reporting download progress and the final `.mmdb` path.
+///
+/// # Errors
+/// Returns an error when `active` is false, env var credentials are missing,
+/// the HTTP request fails, or the `.mmdb` file is not found in the archive.
+pub async fn update_maxmind_geo_with_reporter(
+    repo_root: &Path,
+    config: &UpdateConfig,
+    reporter: &dyn UpdateReporter,
+) -> Result<()> {
     let cfg = &config.maxmind_geo;
 
     if !cfg.active {
+        reporter.report(UpdateEvent::Step {
+            message: "maxmind-geo is disabled; no download needed",
+        });
         return Ok(());
     }
 
@@ -649,9 +956,11 @@ pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Resu
     }
 
     let out_dir = repo_root.join(GEO_DB_DIR);
-    fs::create_dir_all(&out_dir).with_context(|| {
-        format!("failed to create GeoIP DB directory {}", out_dir.display())
-    })?;
+    fs::create_dir_all(&out_dir)
+        .with_context(|| format!("failed to create GeoIP DB directory {}", out_dir.display()))?;
+    reporter.report(UpdateEvent::Step {
+        message: "GeoIP output directory ready",
+    });
 
     let client = Client::builder()
         .use_rustls_tls()
@@ -659,7 +968,7 @@ pub async fn update_maxmind_geo(repo_root: &Path, config: &UpdateConfig) -> Resu
         .build()?;
 
     for raw_url in &urls {
-        download_and_extract_mmdb(repo_root, &client, &account_id, &key, raw_url).await?;
+        download_and_extract_mmdb(repo_root, &client, &account_id, &key, raw_url, reporter).await?;
     }
 
     Ok(())
@@ -671,35 +980,36 @@ async fn download_and_extract_mmdb(
     account_id: &str,
     key: &str,
     url: &str,
+    reporter: &dyn UpdateReporter,
 ) -> Result<()> {
-    let parsed = Url::parse(url)
-        .with_context(|| format!("invalid MaxMind download URL: {url}"))?;
+    let parsed = Url::parse(url).with_context(|| format!("invalid MaxMind download URL: {url}"))?;
+    let destination = repo_root.join(GEO_DB_DIR).join(GEO_DB_FILE);
+    let bytes = download_url_bytes_with_request(
+        client.get(parsed.clone()).basic_auth(account_id, Some(key)),
+        &parsed,
+        Some(destination.as_path()),
+        reporter,
+        "MaxMind DB",
+    )
+    .await?;
 
-    let response = client
-        .get(parsed.clone())
-        .basic_auth(account_id, Some(key))
-        .send()
-        .await
-        .with_context(|| format!("MaxMind DB download request failed: {url}"))?;
-
-    if !response.status().is_success() {
-        anyhow::bail!(
-            "MaxMind DB download failed from {} with HTTP {}",
-            url,
-            response.status()
-        );
-    }
-
-    let bytes = response
-        .bytes()
-        .await
-        .with_context(|| format!("failed to read MaxMind DB response body from {url}"))?;
-
-    extract_mmdb_from_targz(repo_root, &bytes)
-        .with_context(|| format!("failed to extract {GEO_DB_FILE} from archive downloaded from {url}"))
+    reporter.report(UpdateEvent::Step {
+        message: "extracting GeoLite2-City.mmdb from downloaded archive",
+    });
+    let final_path = extract_mmdb_from_targz(repo_root, &bytes).with_context(|| {
+        format!("failed to extract {GEO_DB_FILE} from archive downloaded from {url}")
+    })?;
+    let size = fs::metadata(&final_path)
+        .map(|metadata| metadata.len())
+        .unwrap_or_default();
+    reporter.report(UpdateEvent::FileSaved {
+        path: &final_path,
+        bytes: size,
+    });
+    Ok(())
 }
 
-fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<()> {
+fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<PathBuf> {
     use flate2::read::GzDecoder;
     use tar::Archive;
 
@@ -730,7 +1040,7 @@ fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<()> {
                     final_path.display()
                 )
             })?;
-            return Ok(());
+            return Ok(final_path);
         }
     }
 
