@@ -1,7 +1,7 @@
 use clap::Parser;
 use krakenwaf::update::{
-    StderrUpdateReporter, default_config_path, log_update_error,
-    update_addr_list_from_config_with_reporter, update_kraken_waf,
+    default_config_path, log_update_error, update_addr_list_from_config_with_reporter,
+    update_kraken_waf, StderrUpdateReporter,
 };
 use std::path::PathBuf;
 

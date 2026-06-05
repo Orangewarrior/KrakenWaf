@@ -1,3 +1,37 @@
+## [2.34.2] - 2026-06-04
+
+> **`soldier_update` DNS hardening.** Updater downloads and Spamhaus DQS
+> validation now resolve hostnames through Quad9 DNS-over-TLS with DNSSEC
+> validation enabled, making the resolver path explicit for Spamhaus, FireHOL,
+> generic blocklist, and MaxMind update flows.
+
+### `soldier_update` Quad9 DoT/DNSSEC resolver (`src/update.rs`, `Cargo.toml`)
+
+- All HTTP download clients created by the updater now use a shared Hickory DNS
+  resolver configured for Quad9 DNS-over-TLS (`ResolverConfig::quad9_tls()`).
+  This covers Spamhaus URL downloads, FireHOL/blocklist downloads, and MaxMind
+  GeoIP archive downloads.
+- DNSSEC validation is enabled on the resolver (`validate = true`) with EDNS0
+  and dual-stack IPv4/IPv6 lookups. The updater disables `/etc/hosts` fallback
+  for these lookups so downloads do not silently bypass the Quad9 DoT resolver.
+- Spamhaus DQS validation no longer uses `tokio::net::lookup_host`; it uses the
+  same global Quad9 DoT/DNSSEC resolver as downloads. NXDOMAIN/no-record answers
+  are still treated as “not listed”, while validation, transport, or resolver
+  failures remain hard errors.
+- `soldier_update` progress output now includes a status line when the Quad9
+  DNS-over-TLS resolver is ready for download work.
+
+### Documentation updates (`docs/`)
+
+- Documented the Quad9 DNS-over-TLS, DNSSEC validation, encrypted TLS DNS
+  transport, and disabled `/etc/hosts` fallback behavior in the operational
+  docs for Spamhaus DQS, FireHOL feeds, generic blocklist downloads, MaxMind
+  GeoIP downloads, and updater-related secrets.
+- Clarified Spamhaus DQS error handling: NXDOMAIN/no-record responses mean
+  "not listed", while DNSSEC validation failures, TLS/DoT transport failures,
+  or resolver errors fail the update instead of silently switching resolver
+  policy.
+
 ## [2.34.1] - 2026-06-04
 
 > **Proxy compatibility + core client cleanup.** This tree fixes the main lab

@@ -37,6 +37,12 @@ next source.
 Every place in the docs and config that mentions one of these variables also
 notes the file option.
 
+For `soldier_update` downloads and Spamhaus DQS validation, these credentials
+only authenticate the upstream service. DNS resolution for those updater paths
+uses Quad9 DNS-over-TLS with DNSSEC validation enabled; DNS queries are carried
+over encrypted TLS transport, and `/etc/hosts` fallback is disabled for that
+resolver.
+
 ## Examples
 
 ### Docker / Docker Compose

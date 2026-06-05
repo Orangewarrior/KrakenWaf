@@ -69,6 +69,12 @@ Run the updater once manually (credentials must be exported first):
 
 The `.mmdb` file is saved to `db/geo/GeoLite2-City.mmdb`.
 
+During the MaxMind archive download, `soldier_update` resolves MaxMind
+hostnames through Quad9 DNS-over-TLS with DNSSEC validation enabled. The DNS
+lookup itself is carried over TLS, and `/etc/hosts` fallback is disabled for the
+updater resolver so the download path consistently uses the configured
+DoT/DNSSEC resolver.
+
 ### 5. Restart KrakenWaf
 
 The WAF loads the database at startup.  After the first download (or any update)

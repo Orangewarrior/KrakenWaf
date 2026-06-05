@@ -9,6 +9,11 @@ target/release/soldier_update --addr-list firehol
 The updater reads the `firehol` section in `conf/update.yaml`, downloads every
 `lists.url_file` entry, and writes the files into `rules/addr/firehol/`.
 
+For these downloads, `soldier_update` resolves feed hostnames through Quad9
+DNS-over-TLS with DNSSEC validation enabled. DNS queries use encrypted TLS
+transport, and the updater disables `/etc/hosts` fallback for this resolver path
+so feed downloads do not silently bypass the configured DoT/DNSSEC policy.
+
 ```yaml
 firehol:
   title: "Firehol"

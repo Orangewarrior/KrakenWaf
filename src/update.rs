@@ -1,21 +1,24 @@
 use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::{Datelike, Local, Timelike};
-use reqwest::Client;
+use hickory_resolver::{
+    config::{LookupIpStrategy, ResolveHosts, ResolverConfig},
+    name_server::TokioConnectionProvider,
+    ResolveError, Resolver, TokioResolver,
+};
+use reqwest::{dns, Client};
 use serde::Deserialize;
 use std::{
     ffi::OsStr,
     fs::{self, OpenOptions},
     io::Write as _,
-    net::IpAddr,
+    net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
     process::Command,
+    sync::{Arc, LazyLock},
     time::{Duration, Instant},
 };
-use tokio::{
-    net::lookup_host,
-    time::{sleep, timeout},
-};
+use tokio::time::{sleep, timeout};
 use url::Url;
 
 pub const DEFAULT_UPDATE_CONFIG: &str = "conf/update.yaml";
@@ -26,6 +29,66 @@ const GEO_DB_DIR: &str = "db/geo";
 const GEO_DB_FILE: &str = "GeoLite2-City.mmdb";
 const DOWNLOAD_PROGRESS_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const DOWNLOAD_PROGRESS_MIN_BYTES: u64 = 5 * 1024 * 1024;
+
+static QUAD9_DOT_DNS_RESOLVER: LazyLock<Arc<Quad9DotDnsResolver>> =
+    LazyLock::new(|| Arc::new(Quad9DotDnsResolver::new()));
+
+#[derive(Clone)]
+struct Quad9DotDnsResolver {
+    resolver: Arc<TokioResolver>,
+}
+
+impl Quad9DotDnsResolver {
+    fn new() -> Self {
+        let mut builder = Resolver::builder_with_config(
+            ResolverConfig::quad9_tls(),
+            TokioConnectionProvider::default(),
+        );
+        let opts = builder.options_mut();
+        opts.validate = true;
+        opts.edns0 = true;
+        opts.ip_strategy = LookupIpStrategy::Ipv4AndIpv6;
+        opts.use_hosts_file = ResolveHosts::Never;
+        opts.timeout = Duration::from_secs(5);
+        opts.attempts = 2;
+
+        Self {
+            resolver: Arc::new(builder.build()),
+        }
+    }
+
+    async fn lookup_ip(&self, host: &str) -> std::result::Result<Vec<IpAddr>, ResolveError> {
+        let lookup = self.resolver.lookup_ip(host).await?;
+        Ok(lookup.into_iter().collect())
+    }
+}
+
+impl dns::Resolve for Quad9DotDnsResolver {
+    fn resolve(&self, name: dns::Name) -> dns::Resolving {
+        let resolver = self.clone();
+        Box::pin(async move {
+            let addrs = resolver
+                .lookup_ip(name.as_str())
+                .await?
+                .into_iter()
+                .map(|ip| SocketAddr::new(ip, 0))
+                .collect::<Vec<_>>();
+            Ok(Box::new(addrs.into_iter()) as dns::Addrs)
+        })
+    }
+}
+
+fn quad9_dot_dns_resolver() -> Arc<Quad9DotDnsResolver> {
+    Arc::clone(&QUAD9_DOT_DNS_RESOLVER)
+}
+
+fn update_http_client() -> Result<Client> {
+    Ok(Client::builder()
+        .use_rustls_tls()
+        .dns_resolver(quad9_dot_dns_resolver())
+        .timeout(ADDR_LIST_DOWNLOAD_TIMEOUT)
+        .build()?)
+}
 
 #[derive(Debug, Clone, Copy)]
 pub enum UpdateEvent<'a> {
@@ -552,10 +615,10 @@ pub async fn download_addr_list_url_files_with_reporter(
     reporter.report(UpdateEvent::Step {
         message: "address-list output directory ready",
     });
-    let client = Client::builder()
-        .use_rustls_tls()
-        .timeout(ADDR_LIST_DOWNLOAD_TIMEOUT)
-        .build()?;
+    let client = update_http_client()?;
+    reporter.report(UpdateEvent::Step {
+        message: "DNS resolver ready: Quad9 DNS-over-TLS with DNSSEC validation",
+    });
 
     for raw_url in urls {
         let url =
@@ -962,10 +1025,10 @@ pub async fn update_maxmind_geo_with_reporter(
         message: "GeoIP output directory ready",
     });
 
-    let client = Client::builder()
-        .use_rustls_tls()
-        .timeout(ADDR_LIST_DOWNLOAD_TIMEOUT)
-        .build()?;
+    let client = update_http_client()?;
+    reporter.report(UpdateEvent::Step {
+        message: "DNS resolver ready: Quad9 DNS-over-TLS with DNSSEC validation",
+    });
 
     for raw_url in &urls {
         download_and_extract_mmdb(repo_root, &client, &account_id, &key, raw_url, reporter).await?;
@@ -1062,14 +1125,10 @@ pub async fn query_spamhaus_dqs(
     let query = build_spamhaus_dqs_query(ip, token, zone)
         .with_context(|| format!("unsupported Spamhaus DQS IP address: {ip}"))?;
 
-    let lookup_target = query.clone();
-    let lookup = timeout(
-        Duration::from_secs(3),
-        lookup_host((lookup_target.as_str(), 0)),
-    )
-    .await;
+    let resolver = quad9_dot_dns_resolver();
+    let lookup = timeout(Duration::from_secs(5), resolver.lookup_ip(&query)).await;
     let addrs = match lookup {
-        Ok(Ok(addrs)) => addrs.collect::<Vec<_>>(),
+        Ok(Ok(addrs)) => addrs,
         Ok(Err(err)) if dns_not_listed(&err) => return Ok(None),
         Ok(Err(err)) => {
             return Err(err).with_context(|| format!("Spamhaus DQS lookup failed for {query}"));
@@ -1080,7 +1139,7 @@ pub async fn query_spamhaus_dqs(
     Ok(addrs.first().map(|addr| SpamhausDqsMatch {
         zone: zone.to_ascii_lowercase(),
         query,
-        response: addr.ip(),
+        response: *addr,
     }))
 }
 
@@ -1127,13 +1186,8 @@ fn is_supported_dqs_zone(zone: &str) -> bool {
     matches!(zone, "sbl" | "xbl" | "authbl")
 }
 
-fn dns_not_listed(err: &std::io::Error) -> bool {
-    matches!(
-        err.kind(),
-        std::io::ErrorKind::NotFound
-            | std::io::ErrorKind::AddrNotAvailable
-            | std::io::ErrorKind::Other
-    )
+fn dns_not_listed(err: &ResolveError) -> bool {
+    err.is_nx_domain() || err.is_no_records_found()
 }
 
 pub fn log_update_error(repo_root: &Path, err: &anyhow::Error) {

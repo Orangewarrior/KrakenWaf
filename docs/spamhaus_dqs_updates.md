@@ -6,6 +6,11 @@ download files in the SIA download API. The updater writes local marker files
 under `rules/addr/spamhaus/` for auditability, and the WAF queries the selected
 DQS zones at runtime when `--blocklist-ip` is enabled.
 
+`soldier_update` resolves Spamhaus download and DQS hostnames through Quad9
+DNS-over-TLS. The resolver enables DNSSEC validation, uses encrypted TLS
+transport for DNS, and disables `/etc/hosts` fallback for this updater path so
+the lookup policy is explicit.
+
 ## Why use Spamhaus IP lists
 
 Spamhaus datasets add external reputation to the WAF before request parsing.
@@ -124,6 +129,11 @@ exports. They record which DQS zones were validated and are used by the WAF for
 log source paths. Full SIA download exports require a SIA/JWT bearer token and
 enterprise access to a specific dataset; a DQS DNS key is not accepted by that
 endpoint.
+
+DNS failures in the DQS validation path are handled strictly: NXDOMAIN or
+no-record answers mean "not listed", while DNSSEC validation failures, TLS/DoT
+transport failures, and resolver errors make the update fail instead of
+silently continuing with a different resolver.
 
 ## Run automatic updates
 

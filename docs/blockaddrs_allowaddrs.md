@@ -68,6 +68,11 @@ target/release/soldier_update --addr-list blocklist
 target/release/soldier_update --addr-list firehol
 ```
 
+`soldier_update` resolves configured download hostnames through Quad9
+DNS-over-TLS with DNSSEC validation enabled. DNS queries use encrypted TLS
+transport, and `/etc/hosts` fallback is disabled for the updater resolver so
+blocklist downloads follow the same explicit DoT/DNSSEC policy.
+
 Each downloaded file receives a metadata header with the YAML `title`. When a
 client IP matches one of these files, JSON, raw, and SQLite logs include that
 title and the local source path, for example:
