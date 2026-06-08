@@ -2,9 +2,9 @@ use anyhow::{Context, Result};
 use bytes::Bytes;
 use chrono::{Datelike, Local, Timelike};
 use hickory_resolver::{
-    config::{LookupIpStrategy, ResolveHosts, ResolverConfig},
-    name_server::TokioConnectionProvider,
-    ResolveError, Resolver, TokioResolver,
+    config::{LookupIpStrategy, ResolveHosts, ResolverConfig, QUAD9},
+    net::{runtime::TokioRuntimeProvider, NetError},
+    Resolver, TokioResolver,
 };
 use reqwest::{dns, Client};
 use serde::Deserialize;
@@ -44,9 +44,12 @@ struct Quad9DotDnsResolver {
 
 impl Quad9DotDnsResolver {
     fn new() -> Self {
+        // hickory-resolver 0.26 dropped the `ResolverConfig::quad9_tls()` helper;
+        // build the same Quad9 DNS-over-TLS profile from the bundled `QUAD9`
+        // server group instead (`ResolverConfig::tls(&QUAD9)`).
         let mut builder = Resolver::builder_with_config(
-            ResolverConfig::quad9_tls(),
-            TokioConnectionProvider::default(),
+            ResolverConfig::tls(&QUAD9),
+            TokioRuntimeProvider::default(),
         );
         let opts = builder.options_mut();
         opts.validate = true;
@@ -57,13 +60,19 @@ impl Quad9DotDnsResolver {
         opts.attempts = 2;
 
         Self {
-            resolver: Arc::new(builder.build()),
+            // `build()` became fallible in 0.26; the Quad9 config is static and
+            // valid, so a failure here is a programming error, not runtime input.
+            resolver: Arc::new(
+                builder
+                    .build()
+                    .expect("failed to build Quad9 DNS-over-TLS resolver"),
+            ),
         }
     }
 
-    async fn lookup_ip(&self, host: &str) -> std::result::Result<Vec<IpAddr>, ResolveError> {
+    async fn lookup_ip(&self, host: &str) -> std::result::Result<Vec<IpAddr>, NetError> {
         let lookup = self.resolver.lookup_ip(host).await?;
-        Ok(lookup.into_iter().collect())
+        Ok(lookup.iter().collect())
     }
 }
 
@@ -1190,7 +1199,7 @@ fn is_supported_dqs_zone(zone: &str) -> bool {
     matches!(zone, "sbl" | "xbl" | "authbl")
 }
 
-fn dns_not_listed(err: &ResolveError) -> bool {
+fn dns_not_listed(err: &NetError) -> bool {
     err.is_nx_domain() || err.is_no_records_found()
 }
 

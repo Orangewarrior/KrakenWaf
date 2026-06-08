@@ -1,3 +1,38 @@
+## [2.35.1] - 2026-06-08
+
+> **Security: clear the open DNS advisories + English-only repository.** Upgrades
+> the DNS resolver stack to remediate the two `hickory-proto` DoS advisories with
+> no in-tree workaround, and finishes translating the last Portuguese comments
+> and changelog entries to English.
+
+### Dependency security — `hickory-resolver` 0.25 → 0.26.1 (`Cargo.toml`, `Cargo.lock`, `src/update.rs`, `deny.toml`)
+
+- Bumped `hickory-resolver` to `0.26.1`, which pulls in `hickory-proto 0.26.1`
+  and `hickory-net 0.26.1`, removing the vulnerable `hickory-proto 0.25.2` from
+  the dependency tree. This remediates the two outstanding **vulnerability**
+  advisories — `RUSTSEC-2026-0118` (NSEC3 closest-encloser unbounded loop) and
+  `RUSTSEC-2026-0119` (O(n²) name-compression CPU exhaustion) — at the source
+  rather than ignoring them.
+- Migrated the `soldier_update` Quad9 DNS-over-TLS resolver to the 0.26 API:
+  the removed `ResolverConfig::quad9_tls()` helper is reconstructed from the
+  bundled `config::QUAD9` server group via `ResolverConfig::tls(&QUAD9)`; the
+  connection provider moves to `net::runtime::TokioRuntimeProvider`; the error
+  type becomes `net::NetError` (still exposing `is_nx_domain()` /
+  `is_no_records_found()`, so the Spamhaus DQS "not listed" handling is
+  unchanged); and `LookupIp` is iterated via `.iter()`. DNSSEC validation,
+  EDNS0, dual-stack lookups, and the disabled `/etc/hosts` fallback all carry
+  over unchanged.
+- Dropped the now-unnecessary `RUSTSEC-2026-0118` / `RUSTSEC-2026-0119` ignores
+  from `deny.toml`. The only remaining ignores are the two **unmaintained**
+  (non-CVE) advisories with no available fix: `bincode` (RUSTSEC-2025-0141) and
+  `proc-macro-error2` (RUSTSEC-2026-0173, build-time only via `sea-orm-macros`).
+
+### Documentation — English-only repository (`conf/proxy.yaml`, `src/proxy_config.rs`, `CHANGELOG.md`)
+
+- Translated the remaining Portuguese content to English: the inline comments in
+  `conf/proxy.yaml` (mirrored in the `proxy_config` `CANONICAL` test fixture) and
+  five legacy changelog entries under `2.7.11` and `1.2.7`. No behavior change.
+
 ## [2.35.0] - 2026-06-08
 
 > **Update journaling + isolated observability port.** The `soldier_update`

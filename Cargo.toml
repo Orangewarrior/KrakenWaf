@@ -35,7 +35,7 @@ http-body-util = "0.1"
 hyper = { version = "1.9", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server", "http1", "http2", "tokio"] }
 hyper-rustls = { version = "0.27", features = ["http1", "http2", "webpki-tokio"] }
-hickory-resolver = { version = "0.25", features = ["tokio", "tls-ring", "dnssec-ring"] }
+hickory-resolver = { version = "0.26", features = ["tokio", "tls-ring", "dnssec-ring"] }
 ipnet = "2.10"
 once_cell = "1.19"
 percent-encoding = "2.3"
