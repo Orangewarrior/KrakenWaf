@@ -350,17 +350,17 @@ mod tests {
     /// comments, so the parser is pinned against the exact shipped format.
     const CANONICAL: &str = "\
 listen : 127.0.0.1:443
-upstream : https://127.0.0.1:8080 # host definido pelo usuario
-upstream-timeout-secs: # quando vazio por default é um valor definido pelo WAF
-upstream-ca: # vazio -> confia só nas CAs públicas
-allow-private-upstream: false # desativado
-internal-header-name: #vazio desativado por default
+upstream : https://127.0.0.1:8080 # host defined by the user
+upstream-timeout-secs: # when empty, defaults to a value defined by the WAF
+upstream-ca: # empty -> trusts only public CAs
+allow-private-upstream: false # disabled
+internal-header-name: # empty: disabled by default
 real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 127.0.0.1/32
 sni-map: ./rules/tls/sni_map.csv # default
-no-tls: false # no tls desativado por default
+no-tls: false # no-tls disabled by default
 header-protection-injection: ./rules/headers_http/relax.headers
-blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
+blockmsg: ./alert/blockalert.html # if left empty, no page is used
 metrics-port: 4343
 ";
 
@@ -374,7 +374,7 @@ metrics-port: 4343
         assert_eq!(cfg.upstream_timeout_secs, None);
         assert_eq!(cfg.upstream_ca, None);
         assert_eq!(cfg.allow_private_upstream, Some(false));
-        // `#vazio…` directly after the colon is a comment → field stays unset.
+        // `# empty…` directly after the colon is a comment → field stays unset.
         assert_eq!(cfg.internal_header_name, None);
         assert_eq!(cfg.real_ip_header.as_deref(), Some("X-Forwarded-For"));
         assert_eq!(

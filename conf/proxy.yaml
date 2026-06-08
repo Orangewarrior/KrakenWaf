@@ -19,21 +19,21 @@
 #     built-in 15 s default.
 
 listen : 127.0.0.1:443
-upstream : https://127.0.0.1:8080 # host definido pelo usuario
-upstream-timeout-secs: # quando vazio por default é um valor definido pelo WAF
-upstream-ca: # vazio -> confia só nas CAs públicas; caminho PEM p/ confiar numa CA privada do upstream
-allow-private-upstream: false # desativado
-internal-header-name: #vazio desativado por default
+upstream : https://127.0.0.1:8080 # host defined by the user
+upstream-timeout-secs: # when empty, defaults to a value defined by the WAF
+upstream-ca: # empty -> trusts only public CAs; PEM path to trust a private upstream CA
+allow-private-upstream: false # disabled
+internal-header-name: # empty: disabled by default
 real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 127.0.0.1/32
 sni-map: ./rules/tls/sni_map.csv # default
-no-tls: false # no tls desativado por default
+no-tls: false # no-tls disabled by default
 header-protection-injection: ./rules/headers_http/relax.headers
-blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
-# Porta dedicada para observabilidade (/metrics, /livez, /readyz, health). Liga
-# no mesmo IP do `listen`, em porta separada, reaproveitando os mesmos certs TLS
-# do listening (HTTP puro só quando o WAF roda com --no-tls). Permite isolar e
-# rotear o scraping do Prometheus de forma independente do tráfego proxiado. Se
-# --metrics-port não for passado na linha de comando, o WAF abre este arquivo e
-# usa a porta abaixo (default 4343).
+blockmsg: ./alert/blockalert.html # if left empty, no page is used
+# Dedicated observability port (/metrics, /livez, /readyz, health). Binds the
+# same IP as `listen`, on a separate port, reusing the same TLS certs as the
+# listener (plain HTTP only when the WAF runs with --no-tls). Lets you isolate
+# and route Prometheus scraping independently from proxied traffic. When
+# --metrics-port is not passed on the command line, the WAF opens this file and
+# uses the port below (default 4343).
 metrics-port: 4343
