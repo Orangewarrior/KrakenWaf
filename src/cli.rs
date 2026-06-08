@@ -31,6 +31,16 @@ pub struct Cli {
     #[arg(long, default_value = "0.0.0.0:8443")]
     pub listen: SocketAddr,
 
+    /// TCP port for the dedicated observability listener (`/metrics` plus the
+    /// `/livez`, `/readyz`, and `/__krakenwaf/health` probes). It binds the same
+    /// IP as `--listen` but on this separate port and reuses the `--listen` TLS
+    /// certificates (it serves plain HTTP only when the whole WAF runs with
+    /// `--no-tls`), so operators can firewall, route, and scrape observability
+    /// in isolation from proxied traffic. When omitted, the WAF reads
+    /// `metrics-port` from `conf/proxy.yaml` (shipped default: 4343).
+    #[arg(long = "metrics-port")]
+    pub metrics_port: Option<u16>,
+
     #[arg(long, default_value = "http://127.0.0.1:8080")]
     pub upstream: String,
 

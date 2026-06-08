@@ -156,6 +156,215 @@ fn metrics_access_allowed(snap: &RuleSet, effective_ip: &str, peer_ip: &str) -> 
     ip_is_loopback(effective_ip) || ip_is_loopback(peer_ip)
 }
 
+/// Serve the observability endpoints — `/livez`, `/readyz`,
+/// `/__krakenwaf/{health,livez,readyz}`, and (when `include_metrics`) `/metrics`.
+///
+/// Returns `Some(response)` when `req` targets an endpoint this function owns
+/// (including access-denied responses), and `None` otherwise so the caller can
+/// continue down its own pipeline. Shared by the data-plane listener (which sets
+/// `include_metrics = false`, keeping liveness/readiness inline but delegating
+/// `/metrics` to the dedicated port) and the observability listener (which sets
+/// `include_metrics = true`).
+fn serve_observability(
+    req: &Request<Incoming>,
+    state: &Arc<AppState>,
+    client_ip: &str,
+    include_metrics: bool,
+) -> Option<Response<Full<Bytes>>> {
+    let path = req.uri().path();
+    let is_health = path == "/__krakenwaf/health"
+        || path == "/__krakenwaf/livez"
+        || path == "/__krakenwaf/readyz"
+        || path == "/livez"
+        || path == "/readyz";
+    let is_metrics = include_metrics && path == "/metrics";
+    if !(is_health || is_metrics) {
+        return None;
+    }
+
+    // Resolve the effective IP (honours X-Forwarded-For + trusted proxy CIDRs)
+    // so that IP restrictions apply correctly behind a load balancer.
+    let effective_ip = effective_client_ip(client_ip, req.headers(), state);
+
+    // Check YAML-based only_addrs restriction first (if configured).
+    if let Some(config) = &state.allow_path_config {
+        use crate::allowpaths::PathDecision;
+        if matches!(config.check(path, path, &effective_ip), PathDecision::Block) {
+            let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
+            state.response_header_policy.apply(resp.headers_mut(), false);
+            return Some(resp);
+        }
+    }
+    // Fallback: allowlist.txt-based restriction (rules/addr/allowlist.txt).
+    let snap = state.waf.rules_snapshot();
+    if !snap.is_ip_allowed(client_ip) {
+        let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
+        state.response_header_policy.apply(resp.headers_mut(), false);
+        return Some(resp);
+    }
+    if path == "/__krakenwaf/livez" || path == "/livez" {
+        let mut response = plain_response(StatusCode::OK, "ok");
+        state.response_header_policy.apply(response.headers_mut(), false);
+        return Some(response);
+    }
+    if path == "/__krakenwaf/health" || path == "/__krakenwaf/readyz" || path == "/readyz" {
+        // Readiness: WAF must have at least one rule loaded.
+        let ready = !snap.uri_keywords.is_empty()
+            || !snap.header_keywords.is_empty()
+            || !snap.body_keywords.is_empty()
+            || !snap.path_regex.is_empty()
+            || !snap.blocked_ips.is_empty()
+            || !snap.blocked_ip_prefixes.is_empty();
+        let mut response = if ready {
+            plain_response(StatusCode::OK, "KrakenWaf OK")
+        } else {
+            plain_response(StatusCode::SERVICE_UNAVAILABLE, "KrakenWaf not ready")
+        };
+        state.response_header_policy.apply(response.headers_mut(), false);
+        return Some(response);
+    }
+    // /metrics exposes operational intelligence (per-module block counts,
+    // latency, which engines fire). Unlike liveness/readiness it must not be
+    // world-readable by default: with no allowlist configured, restrict it to
+    // loopback. Remote scraping is opt-in via rules/addr/allowlist.txt (or the
+    // allow-paths YAML), both already enforced above.
+    if !metrics_access_allowed(&snap, &effective_ip, client_ip) {
+        warn!(
+            target: "krakenwaf",
+            ip = %effective_ip,
+            "denied /metrics from non-loopback client with no allowlist configured; \
+             add the scraper IP to rules/addr/allowlist.txt to permit remote scraping"
+        );
+        let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
+        state.response_header_policy.apply(resp.headers_mut(), false);
+        return Some(resp);
+    }
+    let mut response = Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
+        .body(Full::new(Bytes::from(state.metrics.render_prometheus())))
+        .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
+    state.response_header_policy.apply(response.headers_mut(), false);
+    Some(response)
+}
+
+/// Drive a single accepted observability connection to completion, bounded by
+/// the same connection timeout as the data plane. Shared by the TLS and plain
+/// observability listeners. Serves the full observability surface (health probes
+/// + `/metrics`) and answers any other path with 404 — it is not a reverse proxy.
+async fn serve_observability_conn<I>(io: I, peer: std::net::SocketAddr, state: Arc<AppState>)
+where
+    I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
+{
+    let timeout_secs = state.connection_timeout_secs;
+    let client_ip = peer.ip().to_string();
+    let state_for_service = Arc::clone(&state);
+    let builder = Builder::new(TokioExecutor::new());
+    let service = service_fn(move |req: Request<Incoming>| {
+        let state = Arc::clone(&state_for_service);
+        let client_ip = client_ip.clone();
+        async move {
+            let resp = serve_observability(&req, &state, &client_ip, true).unwrap_or_else(|| {
+                let mut resp = plain_response(StatusCode::NOT_FOUND, "Not found");
+                state.response_header_policy.apply(resp.headers_mut(), false);
+                resp
+            });
+            Ok::<_, std::convert::Infallible>(resp)
+        }
+    });
+    let conn = builder.serve_connection(io, service);
+    match timeout(Duration::from_secs(timeout_secs), conn).await {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => error!(target: "krakenwaf", "observability connection error: {err}"),
+        Err(_) => error!(target: "krakenwaf", "observability connection timed out"),
+    }
+}
+
+/// Start the dedicated **TLS** observability listener on its own port.
+///
+/// Serves `/metrics` and the health probes, reusing the data-plane
+/// [`TlsConfigStore`] so the same certificates (and SNI map) back both ports —
+/// only the port differs, giving operators an isolated, independently
+/// routable/firewallable observability surface.
+///
+/// # Errors
+/// Returns an error if the TCP listener cannot bind to `listener_addr`.
+pub async fn run_metrics(
+    listener_addr: std::net::SocketAddr,
+    tls_store: TlsConfigStore,
+    state: Arc<AppState>,
+) -> Result<()> {
+    let listener = TcpListener::bind(listener_addr).await?;
+    info!(target: "krakenwaf", addr=%listener_addr, tls=true, "KrakenWaf observability listener started");
+
+    let shutdown = wait_for_shutdown_signal();
+    tokio::pin!(shutdown);
+
+    loop {
+        let (stream, peer) = tokio::select! {
+            result = listener.accept() => result?,
+            () = &mut shutdown => break,
+        };
+
+        let acceptor = tls_store.acceptor();
+        let state = state.clone();
+        task::spawn(async move {
+            let handshake_secs = state.tls_handshake_timeout_secs;
+            let accepted = if handshake_secs > 0 {
+                match timeout(Duration::from_secs(handshake_secs), acceptor.accept(stream)).await {
+                    Ok(Ok(tls_stream)) => Some(tls_stream),
+                    _ => None,
+                }
+            } else {
+                acceptor.accept(stream).await.ok()
+            };
+            let Some(tls_stream) = accepted else {
+                warn!(
+                    target: "krakenwaf",
+                    peer = %peer,
+                    "observability TLS handshake failed or timed out; dropping connection"
+                );
+                return;
+            };
+            serve_observability_conn(TokioIo::new(tls_stream), peer, state).await;
+        });
+    }
+
+    info!(target: "krakenwaf", "observability listener shutting down");
+    Ok(())
+}
+
+/// Start the dedicated **plain-HTTP** observability listener (used only when the
+/// whole WAF runs with `--no-tls`, e.g. integration tests or LB-terminated TLS).
+///
+/// # Errors
+/// Returns an error if the TCP listener cannot bind to `listener_addr`.
+pub async fn run_metrics_plain(
+    listener_addr: std::net::SocketAddr,
+    state: Arc<AppState>,
+) -> Result<()> {
+    let listener = TcpListener::bind(listener_addr).await?;
+    info!(target: "krakenwaf", addr=%listener_addr, tls=false, "KrakenWaf observability listener started (plain HTTP)");
+
+    let shutdown = wait_for_shutdown_signal();
+    tokio::pin!(shutdown);
+
+    loop {
+        let (stream, peer) = tokio::select! {
+            result = listener.accept() => result?,
+            () = &mut shutdown => break,
+        };
+
+        let state = state.clone();
+        task::spawn(async move {
+            serve_observability_conn(TokioIo::new(stream), peer, state).await;
+        });
+    }
+
+    info!(target: "krakenwaf", "observability listener shutting down");
+    Ok(())
+}
+
 /// Resolves when the process receives SIGINT or, on Unix, SIGTERM.
 async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
@@ -370,84 +579,14 @@ async fn handle(
     state: Arc<AppState>,
     client_ip: String,
 ) -> Response<Full<Bytes>> {
-    let path = req.uri().path();
-
-    // Health and metrics endpoints bypass per-IP concurrency and backpressure gates.
-    // Root-level /livez and /readyz are aliases for the namespaced paths.
-    if path == "/__krakenwaf/health"
-        || path == "/__krakenwaf/livez"
-        || path == "/__krakenwaf/readyz"
-        || path == "/livez"
-        || path == "/readyz"
-        || path == "/metrics"
-    {
-        // Resolve the effective IP (honours X-Forwarded-For + trusted proxy CIDRs)
-        // so that IP restrictions apply correctly behind a load balancer.
-        let effective_ip = effective_client_ip(&client_ip, req.headers(), &state);
-
-        // Check YAML-based only_addrs restriction first (if configured).
-        if let Some(config) = &state.allow_path_config {
-            use crate::allowpaths::PathDecision;
-            if matches!(config.check(path, path, &effective_ip), PathDecision::Block) {
-                let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-                state.response_header_policy.apply(resp.headers_mut(), false);
-                return resp;
-            }
-        }
-        // Fallback: allowlist.txt-based restriction (rules/addr/allowlist.txt).
-        let snap = state.waf.rules_snapshot();
-        if !snap.is_ip_allowed(&client_ip) {
-            let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-            state.response_header_policy.apply(resp.headers_mut(), false);
-            return resp;
-        }
-        if path == "/__krakenwaf/livez" || path == "/livez" {
-            let mut response = plain_response(StatusCode::OK, "ok");
-            state.response_header_policy.apply(response.headers_mut(), false);
-            return response;
-        }
-        if path == "/__krakenwaf/health" || path == "/__krakenwaf/readyz" || path == "/readyz" {
-            // Readiness: WAF must have at least one rule loaded.
-            let ready = !snap.uri_keywords.is_empty()
-                || !snap.header_keywords.is_empty()
-                || !snap.body_keywords.is_empty()
-                || !snap.path_regex.is_empty()
-                || !snap.blocked_ips.is_empty()
-                || !snap.blocked_ip_prefixes.is_empty();
-            if ready {
-                let mut response = plain_response(StatusCode::OK, "KrakenWaf OK");
-                state.response_header_policy.apply(response.headers_mut(), false);
-                return response;
-            }
-            let mut response =
-                plain_response(StatusCode::SERVICE_UNAVAILABLE, "KrakenWaf not ready");
-            state.response_header_policy.apply(response.headers_mut(), false);
-            return response;
-        }
-        // /metrics exposes operational intelligence (per-module block counts,
-        // latency, which engines fire). Unlike liveness/readiness it must not be
-        // world-readable by default: with no allowlist configured, restrict it to
-        // loopback. Remote scraping is opt-in via rules/addr/allowlist.txt (or the
-        // allow-paths YAML), both already enforced above.
-        if !metrics_access_allowed(&snap, &effective_ip, &client_ip) {
-            warn!(
-                target: "krakenwaf",
-                ip = %effective_ip,
-                "denied /metrics from non-loopback client with no allowlist configured; \
-                 add the scraper IP to rules/addr/allowlist.txt to permit remote scraping"
-            );
-            let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-            state.response_header_policy.apply(resp.headers_mut(), false);
-            return resp;
-        }
-        // /metrics
-        let mut response = Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
-            .body(Full::new(Bytes::from(state.metrics.render_prometheus())))
-            .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
-        state.response_header_policy.apply(response.headers_mut(), false);
-        return response;
+    // Liveness/readiness probes bypass per-IP concurrency and backpressure gates
+    // and are still answered inline on the data-plane port (load balancers and
+    // k8s probe the serving port). `/metrics`, however, is *not* served here: it
+    // moved to the dedicated observability listener (see `run_metrics`) so the
+    // Prometheus surface can be firewalled/routed in isolation — hence
+    // `include_metrics = false`.
+    if let Some(resp) = serve_observability(&req, &state, &client_ip, false) {
+        return resp;
     }
 
     // ── BAN-list short-circuit ────────────────────────────────────────────────

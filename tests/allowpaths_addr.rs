@@ -87,6 +87,8 @@ fn ensure_backend() {
 struct WafGuard {
     child: Child,
     _tmpdir: tempfile::TempDir,
+    /// Port of the dedicated observability listener (`/metrics` + health probes).
+    metrics_port: u16,
 }
 
 impl Drop for WafGuard {
@@ -104,6 +106,7 @@ fn spawn_waf_with_only_addrs(waf_port: u16) -> WafGuard {
     let rules_dir = format!("{project_root}/rules");
     let listen = format!("127.0.0.1:{waf_port}");
     let upstream = format!("http://{}", backend_addr());
+    let metrics_port = pick_free_port();
 
     let tmpdir = tempfile::tempdir().expect("tmpdir");
 
@@ -139,6 +142,10 @@ fn spawn_waf_with_only_addrs(waf_port: u16) -> WafGuard {
             &rules_dir,
             "--allow-paths",
             "lists.yaml",
+            // Dedicated observability port (TLS-less under --no-tls). A unique
+            // port per instance avoids collisions between parallel tests.
+            "--metrics-port",
+            &metrics_port.to_string(),
             // Trust loopback as a proxy so X-Forwarded-For is honoured.
             "--trusted-proxy-cidrs",
             "127.0.0.0/8",
@@ -151,7 +158,7 @@ fn spawn_waf_with_only_addrs(waf_port: u16) -> WafGuard {
         .spawn()
         .expect("spawn krakenwaf");
 
-    WafGuard { child, _tmpdir: tmpdir }
+    WafGuard { child, _tmpdir: tmpdir, metrics_port }
 }
 
 /// Spawn a plain WAF (no allow-paths) for attack-blocking tests.
@@ -160,6 +167,7 @@ fn spawn_plain_waf(waf_port: u16) -> WafGuard {
     let rules_dir = format!("{project_root}/rules");
     let listen = format!("127.0.0.1:{waf_port}");
     let upstream = format!("http://{}", backend_addr());
+    let metrics_port = pick_free_port();
     let tmpdir = tempfile::tempdir().expect("tmpdir");
 
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
@@ -172,6 +180,10 @@ fn spawn_plain_waf(waf_port: u16) -> WafGuard {
             &upstream,
             "--rules-dir",
             &rules_dir,
+            // Dedicated observability port (TLS-less under --no-tls). A unique
+            // port per instance avoids collisions between parallel tests.
+            "--metrics-port",
+            &metrics_port.to_string(),
         ])
         .current_dir(tmpdir.path())
         .stdout(Stdio::null())
@@ -179,7 +191,7 @@ fn spawn_plain_waf(waf_port: u16) -> WafGuard {
         .spawn()
         .expect("spawn krakenwaf");
 
-    WafGuard { child, _tmpdir: tmpdir }
+    WafGuard { child, _tmpdir: tmpdir, metrics_port }
 }
 
 fn http_client() -> reqwest::Client {
@@ -395,30 +407,71 @@ async fn test_sqli_blocked_on_unrestricted_path() {
     );
 }
 
-/// WAF's own /metrics endpoint is accessible from localhost.
+/// WAF's own /metrics endpoint is accessible from localhost on the dedicated
+/// observability port (it no longer lives on the reverse-proxy port).
 #[tokio::test]
 async fn test_waf_metrics_accessible_from_localhost() {
     ensure_backend();
     let port = pick_free_port();
-    let _waf = spawn_plain_waf(port);
+    let waf = spawn_plain_waf(port);
     let client = http_client();
     wait_for_waf(&client, port).await;
 
-    let resp = client
+    // The data-plane port no longer serves /metrics: it is proxied like any
+    // other path, so it must NOT return Prometheus output there.
+    let proxied = client
         .get(format!("{}/metrics", waf_base(port)))
         .send()
         .await
         .expect("request");
-    assert_eq!(
-        resp.status(),
-        StatusCode::OK,
-        "/metrics must be 200 from localhost with no allowlist configured"
+    assert!(
+        !proxied
+            .text()
+            .await
+            .unwrap_or_default()
+            .contains("krakenwaf_requests_inspected_total"),
+        "/metrics must NOT be served on the reverse-proxy port anymore"
     );
 
-    let body = resp.text().await.expect("body");
+    // The dedicated observability port serves Prometheus metrics.
+    let metrics_url = format!("http://127.0.0.1:{}/metrics", waf.metrics_port);
+    let mut last_status = None;
+    let mut body = String::new();
+    for _ in 0..100 {
+        if let Ok(resp) = client
+            .get(&metrics_url)
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await
+        {
+            last_status = Some(resp.status());
+            if resp.status() == StatusCode::OK {
+                body = resp.text().await.expect("body");
+                break;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(150)).await;
+    }
+    assert_eq!(
+        last_status,
+        Some(StatusCode::OK),
+        "/metrics must be 200 from localhost on the observability port"
+    );
     assert!(
         body.contains("krakenwaf_requests_inspected_total"),
         "/metrics must return Prometheus counters"
+    );
+
+    // Health probes remain available on the observability port too.
+    let livez = client
+        .get(format!("http://127.0.0.1:{}/livez", waf.metrics_port))
+        .send()
+        .await
+        .expect("livez request");
+    assert_eq!(
+        livez.status(),
+        StatusCode::OK,
+        "/livez must be 200 on the observability port"
     );
 }
 

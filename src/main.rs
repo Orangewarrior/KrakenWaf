@@ -41,8 +41,12 @@ use std::{
     path::PathBuf,
     sync::{atomic::AtomicUsize, Arc},
 };
-use tracing::{error, info};
+use tracing::{error, info, warn};
 use waf::rate_limit::{PersistenceMode, RateLimiter};
+
+/// Built-in fallback port for the dedicated observability listener, used when
+/// neither `--metrics-port` nor `conf/proxy.yaml`'s `metrics-port` supplies one.
+const DEFAULT_METRICS_PORT: u16 = 4343;
 
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
@@ -267,6 +271,46 @@ async fn main() -> Result<()> {
     // grow without bound under source-IP rotation (e.g. an IPv6 /64 flood).
     server::spawn_ip_map_janitor(state.clone());
 
+    // ── Observability listener (/metrics + health probes) ─────────────────────
+    // Metrics moved off the reverse-proxy port onto a dedicated listener so the
+    // Prometheus surface can be firewalled/routed in isolation. Port resolution:
+    // --metrics-port → conf/proxy.yaml `metrics-port` → built-in default. It
+    // binds the same IP as --listen and, in TLS mode, reuses the listener's TLS
+    // store (same certs); under --no-tls it serves plain HTTP.
+    let metrics_port = cli.metrics_port.unwrap_or_else(|| {
+        proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml"))
+            .ok()
+            .and_then(|cfg| cfg.metrics_port)
+            .unwrap_or(DEFAULT_METRICS_PORT)
+    });
+    let metrics_addr = std::net::SocketAddr::new(cli.listen.ip(), metrics_port);
+    if metrics_addr == cli.listen {
+        warn!(
+            target: "krakenwaf",
+            %metrics_addr,
+            "metrics-port equals the proxy listen port; observability stays inline on the \
+             main port and no separate listener is started"
+        );
+    } else {
+        let obs_state = state.clone();
+        if cli.no_tls {
+            tokio::spawn(async move {
+                if let Err(err) = server::run_metrics_plain(metrics_addr, obs_state).await {
+                    error!(target: "krakenwaf", %metrics_addr, "observability listener failed: {err:#}");
+                }
+            });
+        } else {
+            let obs_store = tls_store
+                .clone()
+                .expect("tls_store is Some when !cli.no_tls");
+            tokio::spawn(async move {
+                if let Err(err) = server::run_metrics(metrics_addr, obs_store, obs_state).await {
+                    error!(target: "krakenwaf", %metrics_addr, "observability listener failed: {err:#}");
+                }
+            });
+        }
+    }
+
     info!(
         target: "krakenwaf",
         libinjection_sqli_enabled = cli.libinjection_sqli_enabled(),
@@ -278,6 +322,7 @@ async fn main() -> Result<()> {
         allow_paths_file = ?cli.allow_paths_file,
         no_tls = cli.no_tls,
         upstream = %cli.upstream,
+        metrics_listen = %metrics_addr,
         rate_limit_per_minute = effective_limit,
         max_coroutines_per_ip = rl_config.max_coroutines_per_ip,
         redis_backend = rl_config.redis.is_some(),
