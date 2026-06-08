@@ -1,3 +1,34 @@
+## [2.36.0] - 2026-06-08
+
+> **Human-readable `occurred_at` + raw forensic payloads.** Vulnerability rows
+> now store `occurred_at` in a friendly `YYYY-MM-DD HH:MM:SS` form instead of a
+> dense RFC 3339 string, and the `request_payload` evidence column is persisted
+> verbatim — no HTML sanitization — so analysts can read an attacker's exact
+> payload when crafting rules.
+
+### Human-readable `occurred_at` timestamps (`src/storage.rs`)
+
+- Added `format_occurred_at`, which normalises the engine's RFC 3339 timestamp
+  (e.g. `2026-06-08T15:42:14.282795004+00:00`) into the human-friendly
+  `YYYY-MM-DD HH:MM:SS` UTC form (e.g. `2026-06-08 15:42:14`) before it is
+  written to the `occurred_at` column of the `vulnerabilities` table. Every new
+  row is now easy to read at a glance.
+- The new format also matches SQLite's own `datetime('now')` output, so the
+  `purge_old_events` retention query (`occurred_at < datetime('now', ?)`) now
+  compares like-for-like text instead of mismatched RFC 3339 strings.
+- Timestamps that cannot be parsed are preserved verbatim, so no forensic data
+  is ever silently dropped. Covered by new `storage::tests` unit tests.
+
+### Raw forensic `request_payload` — sanitization removed (`Cargo.toml`)
+
+- Removed the `ammonia` dependency. In a WAF the `request_payload` column is
+  evidence: running an attacker's payload through `ammonia::clean` (HTML
+  sanitization) mangles or strips the very bytes an analyst needs to read to
+  build an effective rule. The payload is now stored exactly as observed, with
+  only the existing length truncation applied. (Critical/raw log lines continue
+  to escape control characters for log-format safety; the persisted evidence
+  itself is untouched.)
+
 ## [2.35.0] - 2026-06-08
 
 > **Update journaling + isolated observability port.** The `soldier_update`

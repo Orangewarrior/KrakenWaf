@@ -371,6 +371,19 @@ async fn migrate_to_v4(db: &DatabaseConnection) -> Result<()> {
 // ALTER TABLE, table-name introspection) operate exclusively on compile-time constants
 // or values controlled by the operator running the binary — never on request data.
 
+/// Normalises the RFC 3339 timestamp emitted by the engine
+/// (e.g. `2026-06-08T15:42:14.282795004+00:00`) into the human-friendly
+/// `YYYY-MM-DD HH:MM:SS` UTC form (e.g. `2026-06-08 15:42:14`) stored in the
+/// `occurred_at` column. This format also matches `SQLite`'s `datetime('now')`
+/// output, keeping `purge_old_events` comparisons correct. If the input cannot
+/// be parsed, the original string is preserved so no forensic data is lost.
+fn format_occurred_at(raw: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(raw).map_or_else(
+        |_| raw.to_string(),
+        |dt| dt.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(),
+    )
+}
+
 async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Result<()> {
     if events.is_empty() {
         return Ok(());
@@ -383,7 +396,7 @@ async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Resu
         cwe: Set(event.cwe.clone()),
         description: Set(event.description.clone()),
         reference_url: Set(event.reference_url.clone()),
-        occurred_at: Set(event.timestamp.clone()),
+        occurred_at: Set(format_occurred_at(&event.timestamp)),
         rule_match: Set(event.rule_match.clone()),
         rule_line_match: Set(event.rule_line_match.clone()),
         client_ip: Set(event.client_ip.clone()),
@@ -413,6 +426,29 @@ async fn purge_old_events(db: &DatabaseConnection) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `occurred_at` must be stored in the human-friendly `YYYY-MM-DD HH:MM:SS`
+    /// UTC form, regardless of the sub-second precision or offset in the source
+    /// RFC 3339 timestamp.
+    #[test]
+    fn occurred_at_is_human_readable() {
+        assert_eq!(
+            format_occurred_at("2026-06-08T15:42:14.282795004+00:00"),
+            "2026-06-08 15:42:14"
+        );
+        // A non-UTC offset is normalised to UTC.
+        assert_eq!(
+            format_occurred_at("2026-06-08T17:42:14+02:00"),
+            "2026-06-08 15:42:14"
+        );
+    }
+
+    /// An unparseable timestamp must be preserved verbatim so forensic data is
+    /// never silently dropped.
+    #[test]
+    fn occurred_at_preserves_unparseable_input() {
+        assert_eq!(format_occurred_at("not-a-timestamp"), "not-a-timestamp");
+    }
 
     /// Open a fresh connection to a `SQLite` file, mirroring `SqliteStore::new`.
     /// A new connection per call faithfully simulates a process restart against
