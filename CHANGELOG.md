@@ -1,3 +1,73 @@
+## [2.35.0] - 2026-06-08
+
+> **Update journaling + isolated observability port.** The `soldier_update`
+> updater now writes a structured JSONL action journal for every update it runs
+> (repository checkout and every address-list / GeoIP refresh), and the metrics
+> / health surface moves off the reverse-proxy port onto a dedicated,
+> independently-routable TLS listener configured via the new `--metrics-port`
+> flag.
+
+### `soldier_update` JSONL action journal (`src/update.rs`, `src/bin/soldier_update.rs`)
+
+- Added `update::log_update_action`, which appends one self-contained JSON object
+  per line to `logs/updates/lastupdate.jsonl`. Each record carries a
+  `timestamp`, `action` (e.g. `kraken-update`, `addr-list`), `target` (e.g.
+  `repository`, `spamhaus`, `maxmind-geo`), `status` (`started` / `success` /
+  `error`), and a free-form `detail` string. Logging is best-effort and never
+  aborts an in-progress update.
+- `soldier_update` now journals **every** action it performs — the KrakenWaf
+  repository update and all address-list / GeoIP refreshes — recording the start
+  of the action and its outcome. The "no action selected" usage error is also
+  journalled. Errors continue to be appended to
+  `logs/console_local/errors.txt` in addition to the JSONL journal.
+
+### Dedicated observability listener (`src/cli.rs`, `src/server.rs`, `src/main.rs`, `src/proxy_config.rs`, `conf/proxy.yaml`)
+
+- `/metrics` no longer shares the reverse-proxy port. All observability
+  endpoints — `/metrics` plus the `/livez`, `/readyz`, and
+  `/__krakenwaf/{health,livez,readyz}` probes — are now served by a separate
+  listener so the Prometheus surface can be firewalled and routed in isolation
+  from proxied traffic.
+- New `--metrics-port <PORT>` flag. The observability listener binds the **same
+  IP** as `--listen` on this separate port and reuses the `--listen` TLS
+  certificate store (the same certs/SNI map); it serves plain HTTP only when the
+  whole WAF runs with `--no-tls`. Operators thus get an isolated, independently
+  routable TLS endpoint without managing a second certificate set.
+- When `--metrics-port` is omitted, the WAF reads `metrics-port` from
+  `conf/proxy.yaml`; absent that, it falls back to the built-in default `4343`.
+  A new `metrics-port: 4343` field is shipped on the last line of
+  `conf/proxy.yaml` and is parsed/validated/merged by `ProxyConfig` like the
+  other proxy knobs (explicit CLI flag → YAML → built-in default).
+- Liveness/readiness probes remain answered inline on the data-plane port as
+  well, so existing load-balancer and Kubernetes health checks targeting the
+  serving port are unaffected. The data-plane port now treats `/metrics` as an
+  ordinary proxied path.
+- The observability listener returns `404` for any non-observability path — it
+  is not a reverse proxy. If `--metrics-port` resolves to the same value as the
+  proxy `--listen` port, the separate listener is skipped with a warning and
+  observability stays inline on the main port.
+
+### Dependency advisories (`deny.toml`)
+
+- Added justified `cargo-deny` ignores for three transitive advisories that are
+  unrelated to this change and have no safe upgrade today:
+  `RUSTSEC-2026-0118` and `RUSTSEC-2026-0119` (`hickory-proto` 0.25 DNSSEC DoS,
+  reachable only through the `soldier_update` Quad9 DoT resolver — the 0.26 fix
+  is a breaking resolver migration, tracked separately) and `RUSTSEC-2026-0173`
+  (`proc-macro-error2` unmaintained, a build-time-only dependency via
+  `sea-orm-macros`). Each ignore carries a reason string per the existing
+  `deny.toml` convention.
+
+### Tests (`src/proxy_config.rs`, `tests/allowpaths_addr.rs`)
+
+- Added `ProxyConfig` unit coverage for `metrics-port` parsing, validation
+  (rejecting `0` and non-numeric values), and CLI merge precedence; the
+  canonical-config test now asserts the shipped `metrics-port: 4343` default.
+- Updated the metrics integration test to scrape the dedicated observability
+  port (with a unique port per spawned instance) and to assert `/metrics` is no
+  longer served on the reverse-proxy port, while health probes remain available
+  on both.
+
 ## [2.34.2] - 2026-06-04
 
 > **`soldier_update` DNS hardening.** Updater downloads and Spamhaus DQS

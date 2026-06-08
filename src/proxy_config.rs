@@ -39,6 +39,7 @@ pub struct ProxyConfig {
     pub no_tls: Option<bool>,
     pub header_protection_injection: Option<String>,
     pub blockmsg: Option<String>,
+    pub metrics_port: Option<u16>,
 }
 
 impl ProxyConfig {
@@ -167,6 +168,16 @@ impl ProxyConfig {
                         cfg.blockmsg = Some(value.to_string());
                     }
                 }
+                "metrics-port" => {
+                    if set {
+                        cfg.metrics_port = Some(value.parse().with_context(|| {
+                            format!(
+                                "line {lineno}: 'metrics-port' must be a TCP port in 1..=65535, \
+                                 got '{value}'"
+                            )
+                        })?);
+                    }
+                }
                 other => bail!("line {lineno}: unknown proxy config key '{other}'"),
             }
         }
@@ -214,6 +225,11 @@ impl ProxyConfig {
             http::header::HeaderName::from_bytes(name.as_bytes()).with_context(|| {
                 format!("'real-ip-header' is not a valid HTTP header name: '{name}'")
             })?;
+        }
+        if let Some(port) = self.metrics_port {
+            if port == 0 {
+                bail!("'metrics-port' must be a TCP port in 1..=65535, got 0");
+            }
         }
         Ok(())
     }
@@ -285,6 +301,11 @@ impl ProxyConfig {
                 cli.blockmsg = Some(blockmsg.clone());
             }
         }
+        if let Some(port) = self.metrics_port {
+            if !is_explicit("metrics-port") {
+                cli.metrics_port = Some(port);
+            }
+        }
     }
 }
 
@@ -340,6 +361,7 @@ sni-map: ./rules/tls/sni_map.csv # default
 no-tls: false # no tls desativado por default
 header-protection-injection: ./rules/headers_http/relax.headers
 blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
+metrics-port: 4343
 ";
 
     #[test]
@@ -366,6 +388,7 @@ blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
             Some("./rules/headers_http/relax.headers")
         );
         assert_eq!(cfg.blockmsg.as_deref(), Some("./alert/blockalert.html"));
+        assert_eq!(cfg.metrics_port, Some(4343));
     }
 
     #[test]
@@ -424,6 +447,36 @@ blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
     }
 
     #[test]
+    fn non_numeric_metrics_port_is_rejected() {
+        assert!(ProxyConfig::parse("metrics-port: soon\n").is_err());
+    }
+
+    #[test]
+    fn zero_metrics_port_fails_validation() {
+        let cfg = ProxyConfig {
+            metrics_port: Some(0),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn metrics_port_merges_when_flag_absent() {
+        let cfg = ProxyConfig {
+            metrics_port: Some(9443),
+            ..Default::default()
+        };
+        let mut cli = base_cli();
+        cfg.merge_into(&mut cli, &|_| false);
+        assert_eq!(cli.metrics_port, Some(9443));
+        // Explicit CLI flag wins over the file.
+        let mut cli2 = base_cli();
+        cli2.metrics_port = Some(7000);
+        cfg.merge_into(&mut cli2, &|f| f == "metrics-port");
+        assert_eq!(cli2.metrics_port, Some(7000));
+    }
+
+    #[test]
     fn validate_rejects_bad_listen() {
         let cfg = ProxyConfig {
             listen: Some("not-an-addr".to_string()),
@@ -479,6 +532,7 @@ blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
             Some("./rules/headers_http/relax.headers")
         );
         assert_eq!(cli.blockmsg.as_deref(), Some("./alert/blockalert.html"));
+        assert_eq!(cli.metrics_port, Some(4343));
     }
 
     #[test]

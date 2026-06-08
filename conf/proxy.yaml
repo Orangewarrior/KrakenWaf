@@ -30,3 +30,10 @@ sni-map: ./rules/tls/sni_map.csv # default
 no-tls: false # no tls desativado por default
 header-protection-injection: ./rules/headers_http/relax.headers
 blockmsg: ./alert/blockalert.html # se deixar vazio vai usar nenhuma pagina
+# Porta dedicada para observabilidade (/metrics, /livez, /readyz, health). Liga
+# no mesmo IP do `listen`, em porta separada, reaproveitando os mesmos certs TLS
+# do listening (HTTP puro só quando o WAF roda com --no-tls). Permite isolar e
+# rotear o scraping do Prometheus de forma independente do tráfego proxiado. Se
+# --metrics-port não for passado na linha de comando, o WAF abre este arquivo e
+# usa a porta abaixo (default 4343).
+metrics-port: 4343

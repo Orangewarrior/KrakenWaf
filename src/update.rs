@@ -24,6 +24,10 @@ use url::Url;
 pub const DEFAULT_UPDATE_CONFIG: &str = "conf/update.yaml";
 const ADDR_RULES_DIR: &str = "rules/addr";
 const ERROR_LOG: &str = "logs/console_local/errors.txt";
+/// Structured, append-only journal of every update action (one JSON object per
+/// line). Mirrors `logs/console_local/errors.txt` but in machine-readable JSONL
+/// so dashboards / `jq` can track what the updater did and when.
+const UPDATE_ACTION_LOG: &str = "logs/updates/lastupdate.jsonl";
 const ADDR_LIST_DOWNLOAD_TIMEOUT: Duration = Duration::from_mins(5);
 const GEO_DB_DIR: &str = "db/geo";
 const GEO_DB_FILE: &str = "GeoLite2-City.mmdb";
@@ -1197,6 +1201,46 @@ pub fn log_update_error(repo_root: &Path, err: &anyhow::Error) {
     }
     if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
         let _ = writeln!(file, "{} {err:#}", chrono::Utc::now().to_rfc3339());
+    }
+}
+
+/// Append a structured JSON record describing a single update action to
+/// `logs/updates/lastupdate.jsonl`.
+///
+/// Every line is a self-contained JSON object so the journal can be tailed or
+/// parsed with `jq` without a surrounding array. Covers *all* update resources
+/// — the `KrakenWaf` repository checkout (`kraken-update`) as well as every
+/// address-list / `GeoIP` refresh — so a single file answers "what did the
+/// updater do, to what, and did it succeed?".
+///
+/// This is best-effort observability: a failure to create the directory or open
+/// the file is swallowed so logging never aborts an in-progress update.
+///
+/// * `action` — the update verb, e.g. `"kraken-update"` or `"addr-list"`.
+/// * `target` — the resource the action touched, e.g. `"repository"`,
+///   `"spamhaus"`, `"maxmind-geo"`.
+/// * `status` — `"started"`, `"success"`, or `"error"`.
+/// * `detail` — free-form human context (config path, error message, …).
+pub fn log_update_action(
+    repo_root: &Path,
+    action: &str,
+    target: &str,
+    status: &str,
+    detail: &str,
+) {
+    let path = repo_root.join(UPDATE_ACTION_LOG);
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let record = serde_json::json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "action": action,
+        "target": target,
+        "status": status,
+        "detail": detail,
+    });
+    if let Ok(mut file) = OpenOptions::new().create(true).append(true).open(&path) {
+        let _ = writeln!(file, "{record}");
     }
 }
 
