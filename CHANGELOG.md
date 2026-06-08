@@ -2139,7 +2139,7 @@ on both incoming requests and upstream responses.
 ## [2.7.11] - 2026-04-05
 
 ### Fixed
-- Corrigido erro de compilação em `src/waf/engine.rs` causado por caracteres literais de nova linha/carriage return/NUL em `inspection_views`, substituindo-os por escapes válidos (`\n`, `\r`, `\0`).
+- Fixed a compilation error in `src/waf/engine.rs` caused by literal newline/carriage-return/NUL characters in `inspection_views`, replacing them with valid escapes (`\n`, `\r`, `\0`).
 
 # Changelog
 
@@ -2190,12 +2190,12 @@ on both incoming requests and upstream responses.
 ## [1.2.7] - 2026-04-04
 
 ### Fixed
-- Corrigido o parser de reparo de escapes JSON em `src/rules/loader.rs`, substituindo literais de caractere inválidos por escapes corretos com `\\`, eliminando o erro `E0762: unterminated character literal`.
-- Mantido o diretório raiz do artefato alinhado com a versão atual do projeto.
+- Fixed the JSON escape-repair parser in `src/rules/loader.rs`, replacing invalid character literals with correct `\\` escapes, eliminating the `E0762: unterminated character literal` error.
+- Kept the artifact root directory aligned with the project's current version.
 
 ### Changed
-- Atualizado `crypto-common` para `0.1.7`.
-- Atualizado `generic-array` para `1.3.5`.
+- Updated `crypto-common` to `0.1.7`.
+- Updated `generic-array` to `1.3.5`.
 
 ## [1.2.6] - 2026-04-04
 
