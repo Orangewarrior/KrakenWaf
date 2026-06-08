@@ -47,6 +47,17 @@
   proxy `--listen` port, the separate listener is skipped with a warning and
   observability stays inline on the main port.
 
+### Dependency advisories (`deny.toml`)
+
+- Added justified `cargo-deny` ignores for three transitive advisories that are
+  unrelated to this change and have no safe upgrade today:
+  `RUSTSEC-2026-0118` and `RUSTSEC-2026-0119` (`hickory-proto` 0.25 DNSSEC DoS,
+  reachable only through the `soldier_update` Quad9 DoT resolver — the 0.26 fix
+  is a breaking resolver migration, tracked separately) and `RUSTSEC-2026-0173`
+  (`proc-macro-error2` unmaintained, a build-time-only dependency via
+  `sea-orm-macros`). Each ignore carries a reason string per the existing
+  `deny.toml` convention.
+
 ### Tests (`src/proxy_config.rs`, `tests/allowpaths_addr.rs`)
 
 - Added `ProxyConfig` unit coverage for `metrics-port` parsing, validation

@@ -8,6 +8,24 @@ ignore = [
     # crates (postcard, bitcode, rkyv) are not API-compatible drop-ins.
     # No safe upgrade exists; tracking for future migration.
     { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is feature-complete, no CVE; tracking migration to postcard/bitcode" },
+
+    # hickory-proto 0.25.x DNSSEC DoS pair. Both are only reachable through the
+    # `soldier_update` Quad9 DNS-over-TLS resolver (download + Spamhaus DQS
+    # hostname resolution) — never on the request-serving data plane — and only
+    # when an upstream resolver returns a crafted response. The fix lives in the
+    # 0.26 line, which is a breaking migration: hickory-resolver 0.26 removes
+    # `ResolverConfig::quad9_tls()`, makes `name_server` private, drops the
+    # `LookupIp` iterator, and splits code into `hickory-net`, so it cannot be a
+    # drop-in bump of the updater's resolver. Tracking the 0.26 migration
+    # separately rather than rushing a security-sensitive DNS rewrite.
+    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25 NSEC3 DoS; only in soldier_update DoT resolver, 0.26 fix is a breaking migration — tracked" },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25 name-compression DoS; only in soldier_update DoT resolver, 0.26 fix is a breaking migration — tracked" },
+
+    # proc-macro-error2 is unmaintained (RUSTSEC-2026-0173). It is a build-time
+    # only proc-macro dependency pulled transitively via sea-orm-macros → sea-bae;
+    # nothing ships in the runtime binary. No safe upgrade is available and the
+    # fix depends on sea-orm dropping the dependency upstream. Tracking.
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; build-time only via sea-orm-macros, no runtime exposure, no upgrade available — tracked" },
 ]
 
 [licenses]
