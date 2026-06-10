@@ -198,6 +198,27 @@ pub fn normalize_str(raw: &str) -> String {
     String::from_utf8_lossy(normalized.as_ref()).into_owned()
 }
 
+/// Strip a leading run of ASCII control characters and spaces from `s`,
+/// returning the trimmed sub-slice.
+///
+/// This mirrors the WHATWG URL parser's "remove any leading C0 control or
+/// space" rule and is the global mitigation for the *control-character prefix*
+/// evasion: an attacker who writes `\t\r\nhttps://evil.example` (often sent as
+/// `%09%0d%0a…`) hides the dangerous scheme behind invisible bytes that a
+/// `starts_with("https:")` check would otherwise miss, yet a browser strips
+/// before navigating.
+///
+/// Only the **leading** prefix is removed — control bytes in the *middle* of a
+/// value (e.g. an injected CRLF used for response splitting) are preserved so
+/// other detectors still see them. Stripping is done on `char` boundaries using
+/// [`char::is_control`] plus the space character, so it composes safely after
+/// [`normalize_str`] has already percent-decoded and UTF-16-transcoded the
+/// input. Exposed for reuse by every CMC module that inspects a decoded field.
+#[must_use]
+pub fn strip_control_and_space_prefix(s: &str) -> &str {
+    s.trim_start_matches(|c: char| c.is_control() || c == ' ')
+}
+
 /// Returns a window-list over the normalised payload for multi-view matching.
 /// The first element is always the full payload; subsequent elements are the
 /// `&`/`;`/`?`/newline/NUL separated segments (duplicates of the full string
@@ -356,5 +377,22 @@ mod tests {
     #[test]
     fn normalize_str_matches_byte_pipeline() {
         assert_eq!(normalize_str("a%3Db%26c%3Dd"), "a=b&c=d");
+    }
+
+    #[test]
+    fn strip_control_and_space_prefix_removes_only_leading_run() {
+        // Leading tab/CR/LF/space are stripped …
+        assert_eq!(
+            strip_control_and_space_prefix("\t\r\n https://evil.example"),
+            "https://evil.example"
+        );
+        // … but control bytes in the middle (e.g. an injected CRLF) survive so
+        // the CRLF detector still sees them.
+        assert_eq!(
+            strip_control_and_space_prefix("foo\r\nbar"),
+            "foo\r\nbar"
+        );
+        // A clean value is returned unchanged.
+        assert_eq!(strip_control_and_space_prefix("https:"), "https:");
     }
 }

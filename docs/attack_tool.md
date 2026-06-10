@@ -126,8 +126,10 @@ payload bypasses the WAF.
 | SQLi payloads | POST body | 50 |
 | HPP payloads | GET query string | 50 |
 | HPP payloads | POST body | 50 |
+| Open Redirect / RFI payloads | GET query string | 50 |
+| Open Redirect / RFI payloads | POST body | 50 |
 | Scanner `User-Agent` strings | GET | 15 |
-| **Total** | | **315** |
+| **Total** | | **415** |
 
 > The table above lists the headline sweeps; the tool also runs the remaining
 > CMC sweeps (SSTI, SSI, ESI, CRLF, request smuggling, NoSQL, XXE, exposed
@@ -150,6 +152,16 @@ sent verbatim as the query string (GET) and the body (POST) so the encodings
 reach the WAF undecoded — the global normalizer must peel them before the
 duplicate is detectable. All 50 must be blocked over each direction; a `200` is
 a real encoding bypass.
+
+Open Redirect / RFI payloads each carry a `hot_param=value` pair where the value
+is an open-redirect or file-inclusion attempt against the
+[`Open_redirect_n_RFI_detect`](cmc/open_redirect_rfi_detect.md) module. They span
+every documented evasion: scheme-relative `//`, triple-encoded slashes, mixed-case
+schemes, userinfo host confusion, backslash/UNC confusion, control-char prefixes
+(`%09%0d%0a`), PHP/inclusion wrappers (`php://`, `expect://`, `zip://`, `phar:`,
+`gopher:`, `ldap:`, …), and trailing `?`/`%00` truncation markers. The raw string
+is sent verbatim as the query string (GET) and body (POST). All 50 must be blocked
+over each direction; a `200` is a real bypass to fix in the detector or normalizer.
 
 Scanner UAs are drawn from `rules/user_agents/scanners.txt` (subset of 15).
 Note: scanner-UA blocking is now owned by the

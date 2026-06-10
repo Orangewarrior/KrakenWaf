@@ -479,6 +479,17 @@ impl ProxyClient {
             }
         }
 
+        // Open Redirect / RFI check (Open_redirect_n_RFI_detect CMC module):
+        // inspect the raw query string (GET) and request body (POST) for a
+        // hot redirect/inclusion parameter whose value resolves to an external
+        // URL, dangerous scheme, or inclusion wrapper.
+        if let Decision::Block(finding) = state.waf.inspect_open_redirect_rfi(query, &body_text) {
+            let event = build_event(context, &finding, Some(body_bytes));
+            if let Some(response) = self.log_and_enforce(state, event).await {
+                return Some(response);
+            }
+        }
+
         let full_request = format_full_request_bytes(context, Some(&body_for_inspection));
         match state
             .waf

@@ -2229,3 +2229,124 @@ async fn cmc_bad_artifacts_clean_uri_allowed() {
         "clean URI /api/users must not be blocked by Detect_bad_artifacts"
     );
 }
+
+// ── Open Redirect / RFI CMC (Open_redirect_n_RFI_detect) ──────────────────────
+
+/// Open Redirect / RFI payloads sent as the **raw** query string (GET) and
+/// **raw** body (POST). Each is `hot_param=value`, all using English hot
+/// parameters (the shipped config keeps `multiple-languages-params: false`), so
+/// every one must be blocked (HTTP 403) by `Open_redirect_n_RFI_detect`.
+const OPEN_REDIRECT_RFI_PAYLOADS: &[&str] = &[
+    "next=//evil.example",
+    "redirect=///evil.example",
+    "url=%2f%2fevil.example",
+    "next=%252f%252fevil.example",
+    "redirect=%25252f%25252fevil.example",
+    "target=https://evil.example",
+    "dest=https%3a%2f%2fevil.example",
+    "continue=hTtPs://evil.example",
+    "return=https://trusted.example@evil.example",
+    "return=https%3a%2f%2ftrusted.example%40evil.example%2flogin",
+    "next=%09%0d%0ahttps://evil.example/login",
+    "href=%5c%5cevil.example%5clogin",
+    "page=/\\evil.example",
+    "view=\\/evil.example",
+    "load=javascript:alert(1)",
+    "doc=data:text/html;base64,PHM+",
+    "open=vbscript:msgbox(1)",
+    "uri=blob:https://evil.example",
+    "callback=view-source:https://evil.example",
+    "module=intent://evil.example",
+    "u=https://evil.example",
+    "r=//evil.example",
+    "homepage=https://evil.example",
+    "next=ws://evil.example",
+    "url=ftp://evil.example",
+    "include=file:///etc/passwd",
+    "file=php://filter/convert.base64-encode/resource=index.php",
+    "inc=php://input",
+    "document=php://memory",
+    "folder=expect://id",
+    "dir=zip://archive.zip",
+    "path=phar://evil.phar/shell.php",
+    "root=gopher://evil.example",
+    "template=ldap://evil.example/cn",
+    "show=compress.zlib://file",
+    "file=/etc/passwd%00",
+    "include=/var/www/index.php?",
+];
+
+/// Spawn a WAF with the shipped CMC config AND vectorscan enabled, exercising
+/// the Open Redirect / RFI detector alongside the SIMD scanning path.
+fn spawn_waf_with_cmc_vectorscan(waf_port: u16) -> WafGuard {
+    let project_root = env!("CARGO_MANIFEST_DIR");
+    let cmc_config = format!("{project_root}/rules/cmc/config.yaml");
+    spawn_waf(
+        waf_port,
+        &["--cmc-load", &cmc_config, "--enable-vectorscan"],
+    )
+}
+
+/// Every Open Redirect / RFI payload must be blocked both via the GET query
+/// string and via the POST body. Runs with vectorscan enabled.
+#[tokio::test]
+async fn cmc_open_redirect_rfi_payload_sweep_get_and_post() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc_vectorscan(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    for payload in OPEN_REDIRECT_RFI_PAYLOADS {
+        // GET: append the raw query string verbatim so encodings reach the WAF
+        // undecoded (reqwest's `.query()` would re-encode them).
+        let get_url = format!("{}/test_get?{payload}", waf_base(port));
+        let get_resp = client
+            .get(&get_url)
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("GET failed for open-redirect/RFI payload {payload:?}: {e}"));
+        assert_eq!(
+            get_resp.status(),
+            StatusCode::FORBIDDEN,
+            "open-redirect/RFI GET payload not blocked: {payload:?}"
+        );
+
+        // POST: send the raw urlencoded body verbatim.
+        let post_resp = client
+            .post(format!("{}/test_post", waf_base(port)))
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body((*payload).to_string())
+            .send()
+            .await
+            .unwrap_or_else(|e| panic!("POST failed for open-redirect/RFI payload {payload:?}: {e}"));
+        assert_eq!(
+            post_resp.status(),
+            StatusCode::FORBIDDEN,
+            "open-redirect/RFI POST payload not blocked: {payload:?}"
+        );
+    }
+}
+
+/// A clean local path in a hot parameter must NOT be blocked — `homepage`
+/// matches the `page` token, but `/test/local` is a single-slash relative path,
+/// not a scheme-relative or absolute external URL.
+#[tokio::test]
+async fn cmc_open_redirect_rfi_clean_local_path_allowed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf_with_cmc_vectorscan(port);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let resp = client
+        .get(format!("{}/test_get?book=orange_blue&homepage=/test/local", waf_base(port)))
+        .send()
+        .await
+        .expect("request failed");
+    assert_ne!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "clean local redirect target must not be blocked by Open_redirect_n_RFI_detect"
+    );
+}

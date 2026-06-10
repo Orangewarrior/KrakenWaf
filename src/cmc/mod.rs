@@ -17,6 +17,7 @@ mod esi_injection_detect;
 mod hpp_detect;
 mod java_deserialize_detect;
 mod nosql_injection_detect;
+mod open_redirect_rfi_detect;
 mod overflow_detect;
 mod request_smuggling_detect;
 pub mod silent_sql_errors;
@@ -54,6 +55,9 @@ pub use esi_injection_detect::EsiInjectionCmcBuilder;
 pub use hpp_detect::HppDetectorBuilder;
 pub use java_deserialize_detect::JavaDeserializeCmcBuilder;
 pub use nosql_injection_detect::NoSqlInjectionCmcBuilder;
+pub use open_redirect_rfi_detect::{
+    LangParams, OpenRedirectRfiDetectorBuilder,
+};
 pub use overflow_detect::OverflowCmcBuilder;
 pub use request_smuggling_detect::RequestSmugglingCmcBuilder;
 pub use sqli_comments_detect::SqliCommentsCmcBuilder;
@@ -81,6 +85,17 @@ pub struct CmcConfig {
     /// duplicate is reported at `Critical` severity so the existing untrust
     /// scoring blocks the request at the `>= 60` threshold.
     pub hpp_detect: bool,
+    /// Detect Open Redirect and Remote/Local File Inclusion attacks by
+    /// inspecting redirect/inclusion-prone request parameters (query string on
+    /// `GET`, body on `POST`). When a hot parameter's value resolves to an
+    /// external/scheme-relative URL it is reported as Open Redirect; a PHP
+    /// wrapper / inclusion scheme or a trailing `?`/`%00` marker is reported as
+    /// RFI. Both block at High severity.
+    pub open_redirect_n_rfi_detect: bool,
+    /// Optional localized hot-parameter lists used in addition to the English
+    /// base list by `open_redirect_n_rfi_detect`. Driven by the
+    /// `multiple-languages-params` / `custom-languages-params` config block.
+    pub multi_lang_params: LangParams,
     /// Scan upstream response bodies for DB error fingerprints.
     pub detect_db_errors: bool,
     /// Scrub or block upstream responses leaking OWASP CRS DBMS error
@@ -156,6 +171,8 @@ impl Default for CmcConfig {
             anti_passwd_leak_detect: false,
             java_deserialize_detect: false,
             hpp_detect: false,
+            open_redirect_n_rfi_detect: false,
+            multi_lang_params: LangParams::default(),
             detect_db_errors: false,
             silent_sql_errors: false,
             detect_bad_artifacts: false,
@@ -271,6 +288,11 @@ impl CmcManagerBuilder {
                 .config
                 .hpp_detect
                 .then(|| HppDetectorBuilder::new().build()),
+            open_redirect_rfi: self.config.open_redirect_n_rfi_detect.then(|| {
+                OpenRedirectRfiDetectorBuilder::new()
+                    .lang_params(self.config.multi_lang_params)
+                    .build()
+            }),
             detect_db_errors: if self.config.detect_db_errors {
                 if let Some(ref dir) = self.rules_dir {
                     let path = dir.join("error_msgs/sql_errors.txt");
@@ -421,6 +443,7 @@ pub struct CmcManager {
     anti_passwd_leak: Option<anti_passwd_leak::AntiPasswdLeakCmc>,
     java_deserialize: Option<java_deserialize_detect::JavaDeserializeCmc>,
     hpp_detect: Option<hpp_detect::HppDetector>,
+    open_redirect_rfi: Option<open_redirect_rfi_detect::OpenRedirectRfiDetector>,
     detect_db_errors: Option<detect_db_errors::DbErrorDetector>,
     silent_sql_errors: Option<silent_sql_errors::SilentSqlErrorsDetector>,
     detect_bad_artifacts: Option<detect_bad_artifacts::BadArtifactsDetector>,
@@ -444,6 +467,7 @@ impl Default for CmcManager {
             anti_passwd_leak: None,
             java_deserialize: None,
             hpp_detect: None,
+            open_redirect_rfi: None,
             detect_db_errors: None,
             silent_sql_errors: None,
             detect_bad_artifacts: None,
@@ -944,6 +968,10 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
         cmc_rules: Option<BTreeMap<String, BoolOrInt>>,
         #[serde(rename = "global-options")]
         global_options: Option<BTreeMap<String, serde_yaml::Value>>,
+        #[serde(rename = "multiple-languages-params")]
+        multiple_languages_params: Option<BoolOrInt>,
+        #[serde(rename = "custom-languages-params")]
+        custom_languages_params: Option<BTreeMap<String, BoolOrInt>>,
     }
 
     if let Ok(strict) = serde_yaml::from_str::<StrictCfg>(content) {
@@ -977,6 +1005,13 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
                 _ => None,
             });
 
+        let multi_lang_enabled = matches!(strict.multiple_languages_params, Some(BoolOrInt::Bool(true)))
+            || matches!(strict.multiple_languages_params, Some(BoolOrInt::Int(n)) if n == 1);
+        let lang_map: Option<BTreeMap<String, i64>> = strict
+            .custom_languages_params
+            .map(|m| m.into_iter().map(|(k, v)| (k, v.into())).collect());
+        let multi_lang_params = lang_params_from(multi_lang_enabled, lang_map.as_ref());
+
         if let Some(map) = strict.cmc_rules {
             let int_map: BTreeMap<String, i64> =
                 map.into_iter().map(|(k, v)| (k, v.into())).collect();
@@ -984,6 +1019,7 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
             cfg.untrust_level = untrust_level;
             cfg.anomaly_threshold = anomaly_threshold;
             cfg.max_inspection_ms = max_inspection_ms;
+            cfg.multi_lang_params = multi_lang_params;
             return Ok(cfg);
         }
     }
@@ -994,6 +1030,8 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
     let mut untrust_level: u8 = 60;
     let mut anomaly_threshold: Option<u32> = None;
     let mut max_inspection_ms: Option<u64> = None;
+    let mut multi_lang_enabled = false;
+    let mut lang_flags: BTreeMap<String, i64> = BTreeMap::new();
     for line in content.lines() {
         let trimmed = line.trim();
         if trimmed.is_empty()
@@ -1003,6 +1041,8 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
             || trimmed.eq_ignore_ascii_case("CMC-Rules:")
             || trimmed.eq_ignore_ascii_case("global-options")
             || trimmed.eq_ignore_ascii_case("global-options:")
+            || trimmed.eq_ignore_ascii_case("custom-languages-params")
+            || trimmed.eq_ignore_ascii_case("custom-languages-params:")
         {
             continue;
         }
@@ -1030,6 +1070,23 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
                 if let Ok(n) = raw.parse::<u64>() {
                     max_inspection_ms = Some(n);
                 }
+                continue;
+            }
+
+            // Multi-language hot-parameter block for open_redirect_n_rfi_detect.
+            let bool_val = |raw: &str| -> i64 {
+                if raw.eq_ignore_ascii_case("true") {
+                    1
+                } else {
+                    raw.parse::<i64>().unwrap_or(0)
+                }
+            };
+            if key.eq_ignore_ascii_case("multiple-languages-params") {
+                multi_lang_enabled = bool_val(raw) == 1;
+                continue;
+            }
+            if LANG_KEYS.contains(&key.as_str()) {
+                lang_flags.insert(key, bool_val(raw));
                 continue;
             }
 
@@ -1061,7 +1118,50 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
     cfg.untrust_level = untrust_level;
     cfg.anomaly_threshold = anomaly_threshold;
     cfg.max_inspection_ms = max_inspection_ms;
+    cfg.multi_lang_params = lang_params_from(multi_lang_enabled, Some(&lang_flags));
     Ok(cfg)
+}
+
+/// Build a [`LangParams`] from the `multiple-languages-params` master switch and
+/// the `custom-languages-params` flag map (`1`/`true` ⇒ enabled). Both the
+/// `arabic_modern` and `arabic_modern_standard` keys map to the single Arabic
+/// Modern Standard list.
+/// Config keys recognised inside the `custom-languages-params` block.
+const LANG_KEYS: &[&str] = &[
+    "russian",
+    "japanese",
+    "german",
+    "bengali",
+    "indonesian",
+    "french",
+    "arabic_modern",
+    "arabic_modern_standard",
+    "spanish",
+    "chinese_mandarin",
+    "chinese",
+    "hindi",
+];
+
+fn lang_params_from(enabled: bool, map: Option<&BTreeMap<String, i64>>) -> LangParams {
+    let mut lp = LangParams {
+        enabled,
+        ..LangParams::default()
+    };
+    if let Some(m) = map {
+        let on = |k: &str| m.get(k).copied().unwrap_or(0) == 1;
+        lp.russian = on("russian");
+        lp.japanese = on("japanese");
+        lp.german = on("german");
+        lp.bengali = on("bengali");
+        lp.indonesian = on("indonesian");
+        lp.french = on("french");
+        lp.arabic_modern_standard = on("arabic_modern") || on("arabic_modern_standard");
+        lp.spanish = on("spanish");
+        lp.chinese_mandarin = on("chinese_mandarin");
+        lp.chinese = on("chinese");
+        lp.hindi = on("hindi");
+    }
+    lp
 }
 
 fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
@@ -1080,6 +1180,8 @@ fn from_map(map: &BTreeMap<String, i64>) -> CmcConfig {
         anti_passwd_leak_detect: enabled("Anti_passwd_leak"),
         java_deserialize_detect: enabled("Java_deserialize_detect"),
         hpp_detect: enabled("HPP_detect"),
+        open_redirect_n_rfi_detect: enabled("Open_redirect_n_RFI_detect"),
+        multi_lang_params: LangParams::default(), // overwritten by caller from the language block
         detect_db_errors: enabled("Detect_db_errors"),
         silent_sql_errors: enabled("Silent_sql_errors"),
         detect_bad_artifacts: enabled("Detect_bad_artifacts"),
@@ -1395,5 +1497,132 @@ CMC-Rules:
         let cfg = parse_lenient_yaml("CMC-Rules:\n  HPP_detect: true\n").expect("parse");
         let mgr = super::CmcManagerBuilder::new(cfg).build();
         assert!(mgr.inspect_hpp("", "user=a&User=b").is_some());
+    }
+
+    #[test]
+    fn parses_open_redirect_n_rfi_detect_config_key() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: true\n")
+            .expect("parse Open_redirect_n_RFI_detect key");
+        assert!(cfg.open_redirect_n_rfi_detect);
+    }
+
+    #[test]
+    fn open_redirect_n_rfi_detect_disabled_by_default() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  SQLi_comments_detect: true\n").expect("parse");
+        assert!(!cfg.open_redirect_n_rfi_detect);
+    }
+
+    #[test]
+    fn open_redirect_n_rfi_detect_explicit_false() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: false\n")
+            .expect("parse");
+        assert!(!cfg.open_redirect_n_rfi_detect);
+    }
+
+    #[test]
+    fn disabled_open_redirect_manager_is_noop() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: false\n")
+            .expect("parse");
+        let mgr = super::CmcManagerBuilder::new(cfg).build();
+        assert!(mgr
+            .inspect_open_redirect_rfi("next=https://evil.example", "")
+            .is_none());
+    }
+
+    #[test]
+    fn enabled_open_redirect_manager_blocks_query_and_body() {
+        let cfg = parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: true\n")
+            .expect("parse");
+        let mgr = super::CmcManagerBuilder::new(cfg).build();
+        // GET query string.
+        let f = mgr
+            .inspect_open_redirect_rfi("book=x&next=//evil.example", "")
+            .expect("open redirect in query must be detected");
+        assert_eq!(f.severity, super::Severity::High);
+        // POST body.
+        assert!(mgr
+            .inspect_open_redirect_rfi("", "redirect=php://filter/resource=x")
+            .is_some());
+    }
+
+    #[test]
+    fn parses_multiple_languages_params_block() {
+        let cfg = parse_lenient_yaml(
+            r"
+multiple-languages-params: true
+custom-languages-params:
+  spanish: true
+  japanese: true
+  russian: false
+CMC-Rules:
+  Open_redirect_n_RFI_detect: true
+",
+        )
+        .expect("parse language block");
+        assert!(cfg.multi_lang_params.enabled);
+        assert!(cfg.multi_lang_params.spanish);
+        assert!(cfg.multi_lang_params.japanese);
+        assert!(!cfg.multi_lang_params.russian);
+    }
+
+    #[test]
+    fn arabic_modern_alias_maps_to_standard() {
+        let cfg = parse_lenient_yaml(
+            r"
+multiple-languages-params: true
+custom-languages-params:
+  arabic_modern: true
+CMC-Rules:
+  Open_redirect_n_RFI_detect: true
+",
+        )
+        .expect("parse arabic alias");
+        assert!(cfg.multi_lang_params.arabic_modern_standard);
+    }
+
+    #[test]
+    fn multi_language_lists_used_only_when_master_switch_on() {
+        // Localized param `mostrar` (Spanish) is ignored unless the master
+        // switch AND the spanish flag are both on.
+        let off = parse_lenient_yaml(
+            r"
+multiple-languages-params: false
+custom-languages-params:
+  spanish: true
+CMC-Rules:
+  Open_redirect_n_RFI_detect: true
+",
+        )
+        .expect("parse");
+        let mgr_off = super::CmcManagerBuilder::new(off).build();
+        assert!(mgr_off
+            .inspect_open_redirect_rfi("mostrar=//evil.example", "")
+            .is_none());
+
+        let on = parse_lenient_yaml(
+            r"
+multiple-languages-params: true
+custom-languages-params:
+  spanish: true
+CMC-Rules:
+  Open_redirect_n_RFI_detect: true
+",
+        )
+        .expect("parse");
+        let mgr_on = super::CmcManagerBuilder::new(on).build();
+        assert!(mgr_on
+            .inspect_open_redirect_rfi("mostrar=//evil.example", "")
+            .is_some());
+    }
+
+    #[test]
+    fn shipped_config_parses_and_enables_module() {
+        let content = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/rules/cmc/config.yaml"
+        ))
+        .expect("read shipped CMC config");
+        let cfg = parse_lenient_yaml(&content).expect("parse shipped config");
+        assert!(cfg.open_redirect_n_rfi_detect);
     }
 }

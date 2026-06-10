@@ -1,3 +1,91 @@
+## [2.37.0] - 2026-06-10
+
+> **New CMC module: Open Redirect & RFI detection.** A dedicated detector
+> inspects redirect/inclusion-prone request parameters (query string on `GET`,
+> body on `POST`) and blocks values that resolve to scheme-relative/external
+> URLs (Open Redirect, CWE-601) or PHP/inclusion wrappers and path-truncation
+> markers (RFI, CWE-98), at High severity. It is encoding-bypass resistant
+> (percent, double/triple percent, UTF-16 LE/BE, mixed-case scheme, backslash
+> confusion, control-char prefix) via the global normalizer plus a new reusable
+> normalizer mitigation, and supports optional localized hot-parameter lists for
+> 11 languages.
+
+### New CMC module — `Open_redirect_n_RFI_detect` (`src/cmc/open_redirect_rfi_detect.rs`)
+
+- Two-stage decision: a **hot-parameter gate** (the decoded parameter name must
+  match a redirect/inclusion-prone token) followed by a **value
+  classification**. The base `hot_params_english` list is always active; matching
+  is substring containment for multi-character tokens (so `homepage` matches
+  `page`, `redirect_url` matches both `redirect` and `url`) and **exact** for the
+  single-character tokens `u`/`r` to avoid pathological false positives.
+- Value classification, after the value is decoded through the global normalizer
+  and its leading control/whitespace prefix stripped:
+  - starts with an `OPEN_REDIRECT_STARTS_WITH` entry (`//`, `///`, backslash
+    forms, `http:`, `https:`, `ws:`, `wss:`, `ftp:`, `ftps:`, `file:`,
+    `javascript:`, `data:`, `vbscript:`, `blob:`, `about:`, `view-source:`,
+    `intent:`, `android-app:`, `market:`, `itms-services:`) → **Open Redirect**
+    (CWE-601, High);
+  - starts with an `RFI_STARTS_WITH` entry (`php:`/`php://…`, `expect://`,
+    `zip://`, `phar:`, `gopher:`, `dict:`, `ldap:`/`ldaps:`, `glob:`, `zlib:`,
+    `compress.zlib:`/`compress.bzip2:`, `rar:`, `ogg:`) → **RFI** (CWE-98, High);
+  - ends with `?` or `%00` (NUL) → **RFI** (CWE-98, High).
+- A single-slash relative path such as `homepage=/test/local` is **not** flagged.
+- Every detection blocks the attacker (HTTP 403) and is logged to all outputs
+  (raw, JSONL, SQLite).
+
+### Multi-language hot parameters (`src/cmc/mod.rs`, `rules/cmc/config.yaml`)
+
+- New top-level config block: `multiple-languages-params: true|false` (master
+  switch) and `custom-languages-params:` flag map for `russian`, `japanese`,
+  `german`, `bengali`, `indonesian`, `french`, `arabic_modern` /
+  `arabic_modern_standard`, `spanish`, `chinese_mandarin`, `chinese`, `hindi`.
+  Each enabled language adds its localized hot-parameter list **in addition to**
+  English. `chinese_mandarin` (pinyin) and `chinese` (Han characters) are
+  separate lists; `arabic_modern` is an alias of `arabic_modern_standard`. All
+  languages default to disabled — English only.
+- Parsed in both the strict serde path and the lenient line-by-line fallback of
+  `parse_lenient_yaml`.
+
+### Global normalizer mitigation (`src/waf/engine/normalize.rs`)
+
+- Added `strip_control_and_space_prefix`, a reusable helper that strips a leading
+  run of C0 control characters and spaces from a decoded field (mirroring the
+  WHATWG URL parser). This is the global fix for the control-character-prefix
+  evasion (`%09%0d%0ahttps://evil.example`) and is available to every CMC module
+  that inspects a decoded field. Re-exported from `crate::waf`. Control bytes in
+  the middle of a value are preserved so the CRLF detector still sees them.
+
+### Engine + proxy wiring
+
+- `WafEngine::inspect_open_redirect_rfi(query, body)` added and invoked from
+  `inspect_buffered_request_body` in `src/proxy.rs`, alongside the HPP check, so
+  both GET query strings and POST bodies are covered.
+- Config: `Open_redirect_n_RFI_detect` key added under `CMC-Rules:` in
+  `rules/cmc/config.yaml` (set `false` to disable; disabled by default in code).
+
+### Tests
+
+- 23 unit tests in the new module covering every documented evasion case
+  (scheme-relative, percent/double-percent, mixed-case scheme, backslash
+  confusion, userinfo confusion, control-char prefix, PHP wrappers, trailing
+  `?`/`%00`), the hot-parameter substring/exact rules, and the multi-language
+  gating; plus config-parsing tests in `src/cmc/mod.rs`.
+- DAST: 50-payload `OPEN_REDIRECT_RFI_PAYLOADS` sweep added to `src/bin/attack.rs`
+  over both GET query string and POST body.
+- Integration: `cmc_open_redirect_rfi_payload_sweep_get_and_post` (50 payloads ×
+  GET + POST, all blocked) and `cmc_open_redirect_rfi_clean_local_path_allowed`
+  in `tests/server_real_test.rs`, run with `--enable-vectorscan`.
+
+### Documentation
+
+- New page `docs/cmc/open_redirect_rfi_detect.md`; entries added to
+  `docs/cmc/schema.md`, `docs/attack_tool.md`, `docs/normalization.md`, and the
+  CMC sections of `README.md`.
+
+### Version
+
+- Repository version bumped to **2.37.0** (`Cargo.toml`, `Cargo.lock`).
+
 ## [2.36.0] - 2026-06-08
 
 > **Human-readable `occurred_at` + raw forensic payloads.** Vulnerability rows

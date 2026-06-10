@@ -40,6 +40,34 @@ CMC-Rules:
   Detect_bad_artifacts: true
   Detect_bots_n_scanners: true
   HPP_detect: true
+  Open_redirect_n_RFI_detect: true
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Open Redirect / RFI multi-language hot parameters
+#
+# The Open_redirect_n_RFI_detect module always inspects the English hot-parameter
+# list (redirect, url, next, file, include, …). To additionally inspect localized
+# parameter names, set `multiple-languages-params: true` and turn on the specific
+# language lists you need below. By default every language is disabled (0/false);
+# customise this to your application's audience.
+#
+# Both `arabic_modern` and `arabic_modern_standard` map to the same Arabic Modern
+# Standard list.
+# ─────────────────────────────────────────────────────────────────────────────
+multiple-languages-params: false
+custom-languages-params:
+  russian: false
+  japanese: false
+  german: false
+  bengali: false
+  indonesian: false
+  french: false
+  arabic_modern: false
+  arabic_modern_standard: false
+  spanish: false
+  chinese_mandarin: false
+  chinese: false
+  hindi: false
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Memory-pressure limits (2.29.0)
