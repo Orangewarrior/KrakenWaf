@@ -62,6 +62,7 @@ full module catalogue.
 - [Detect bad artifacts](docs/cmc/detect_bad_artifacts.md) — blocks (or silently logs) requests whose URI path contains a sensitive file artifact: dotfiles (`.env`, `.git/`, `.ssh/`), credential files, framework config leaks (`wp-config.`, `composer.json`), `/proc` and `/sys` kernel entries, and 400+ other patterns sourced from the OWASP CRS `restricted-files.data` research; memchr fast path + Vectorscan acceleration (CWE-538, High)
 - [Detect bots & scanners](docs/cmc/detect_bots_n_scanners.md) — blocks (or silently logs) requests whose `User-Agent` matches a known scanner/crawler/offensive tooling substring (Nikto, sqlmap, Nmap, masscan, Nessus, OpenVAS, gobuster, dirbuster, Arachni, Nuclei, wfuzz, commix, Acunetix, …) loaded from `rules/user_agents/scanners.txt` (OWASP CRS `scanners-user-agents.data`); Aho-Corasick fast path + Vectorscan acceleration. Action gated by `Untrust ≥ 60`; logged as a bot/scanner reconnaissance sweep (CWE-200, Low)
 - [HPP detect](docs/cmc/hpp_detect.md) — HTTP Parameter Pollution: normalizes the query string **and** body (percent, double/recursive percent, UTF-16 LE/BE), counts `=` on the normalized form and, when ≥ 2, parses parameter names and flags any duplicated name (case-insensitive) per location. Gated by `Untrust ≥ 60` (Critical). Encoding-bypass resistant via the global normalizer (CWE-235)
+- [Open Redirect & RFI detect](docs/cmc/open_redirect_rfi_detect.md) — inspects redirect/inclusion-prone parameters (query on `GET`, body on `POST`); when a "hot" parameter (`next`, `url`, `redirect`, `file`, `include`, … — substring match, single-char tokens `u`/`r` exact) carries a value resolving to a scheme-relative/external URL or dangerous scheme it blocks as **Open Redirect** (CWE-601), and a PHP/inclusion wrapper or trailing `?`/`%00` marker blocks as **RFI** (CWE-98). Encoding-bypass resistant (percent, double/triple percent, UTF-16 LE/BE, mixed-case scheme, backslash confusion, control-char prefix) via the global normalizer + the new `strip_control_and_space_prefix` mitigation. Optional localized hot-parameter lists for 11 languages via `multiple-languages-params` (High)
 
 ### 🔹 libinjection
 - Detects SQLi and XSS
@@ -678,6 +679,23 @@ CMC-Rules:
   Detect_bad_artifacts: true    # Request URI artifact detection (dotfiles, config, /proc, credentials — OWASP CRS restricted-files.data, CWE-538)
   Detect_bots_n_scanners: true  # Scanner/crawler User-Agent blocking — OWASP CRS scanners-user-agents.data, gated by Untrust ≥ 60, CWE-200 Low
   HPP_detect: true              # HTTP Parameter Pollution — duplicated param name (case-insensitive) in query/body, normalizer-decoded, gated by Untrust ≥ 60, CWE-235 Critical
+  Open_redirect_n_RFI_detect: true # Open Redirect (CWE-601) + RFI (CWE-98) — hot redirect/inclusion params in query/body, normalizer-decoded, High
+
+# Open Redirect / RFI — optional localized hot-parameter lists (default: English only)
+multiple-languages-params: false
+custom-languages-params:
+  russian: false
+  japanese: false
+  german: false
+  bengali: false
+  indonesian: false
+  french: false
+  arabic_modern: false
+  arabic_modern_standard: false
+  spanish: false
+  chinese_mandarin: false
+  chinese: false
+  hindi: false
 ```
 
 Set any key to `false` to disable that detector without recompiling.
@@ -688,7 +706,9 @@ Set any key to `false` to disable that detector without recompiling.
 
 `HPP_detect` blocks HTTP Parameter Pollution: the query string and request body are each normalized first (percent-decoding, double/recursive percent-decoding, UTF-16 LE/BE transcoding — all via the global normalizer so every CMC module benefits), the `=` characters are counted on the **normalized** form, and when there are two or more the parameter names are parsed (split on `&`, key = substring before the first `=`). If any name repeats — compared **case-insensitively**, so `email` and `eMail` collide — the request is flagged `Critical` and blocked at `Untrust ≥ 60`. Example: `name=Antonio&email=a@x&age=39&eMail=<bingo>` is blocked (duplicate `email`), while `name=Antonio&email=a@x&age=39` is allowed.
 
-→ Full details: [docs/cmc/schema.md](docs/cmc/schema.md)
+`Open_redirect_n_RFI_detect` inspects redirect/inclusion-prone parameters (query string on `GET`, body on `POST`). A parameter is a candidate when its decoded name matches a "hot" token — `redirect`, `url`, `next`, `dest`, `file`, `include`, `page`, … (substring match, so `homepage` matches `page`), with single-character tokens `u`/`r` matched exactly. The matched value is decoded through the global normalizer and its leading control/whitespace bytes stripped, then: a value starting with `//`, a backslash form, or a scheme (`https:`, `javascript:`, `data:`, …) is blocked as **Open Redirect** (CWE-601); a value starting with a PHP/inclusion wrapper (`php://`, `expect://`, `zip://`, `phar:`, `gopher:`, …) or ending with `?`/`%00` is blocked as **RFI** (CWE-98). Both at **High** severity. Example: `next=https://evil.com` is blocked, `homepage=/test/local` is allowed. Set `multiple-languages-params: true` and enable specific `custom-languages-params` to additionally match localized parameter names (11 languages).
+
+→ Full details: [docs/cmc/open_redirect_rfi_detect.md](docs/cmc/open_redirect_rfi_detect.md) · [docs/cmc/schema.md](docs/cmc/schema.md)
 
 ---
 

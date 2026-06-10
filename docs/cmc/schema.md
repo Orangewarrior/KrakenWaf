@@ -72,6 +72,23 @@ CMC-Rules:
   Detect_bad_artifacts: true
   Detect_bots_n_scanners: true
   HPP_detect: true
+  Open_redirect_n_RFI_detect: true
+
+# Open Redirect / RFI — optional localized hot-parameter lists (default: English only)
+multiple-languages-params: false
+custom-languages-params:
+  russian: false
+  japanese: false
+  german: false
+  bengali: false
+  indonesian: false
+  french: false
+  arabic_modern: false
+  arabic_modern_standard: false
+  spanish: false
+  chinese_mandarin: false
+  chinese: false
+  hindi: false
 ```
 
 ---
@@ -97,6 +114,7 @@ CMC-Rules:
 | `Detect_bad_artifacts` | [CWE-538](https://cwe.mitre.org/data/definitions/538.html) | High | [detect_bad_artifacts.md](detect_bad_artifacts.md) |
 | `Detect_bots_n_scanners` | [CWE-200](https://cwe.mitre.org/data/definitions/200.html) | Low | [detect_bots_n_scanners.md](detect_bots_n_scanners.md) |
 | `HPP_detect` | [CWE-235](https://cwe.mitre.org/data/definitions/235.html) | Critical | [hpp_detect.md](hpp_detect.md) |
+| `Open_redirect_n_RFI_detect` | [CWE-601](https://cwe.mitre.org/data/definitions/601.html) / [CWE-98](https://cwe.mitre.org/data/definitions/98.html) | High | [open_redirect_rfi_detect.md](open_redirect_rfi_detect.md) |
 
 ---
 

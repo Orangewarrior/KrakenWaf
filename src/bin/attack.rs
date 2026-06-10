@@ -333,6 +333,77 @@ const HPP_PAYLOADS: &[&str] = &[
     "session=1&extra=2&Session%3D3",
 ];
 
+/// Open Redirect & RFI payloads — raw query/body strings, each a
+/// `hot_param=value` pair where the value is an open-redirect or file-inclusion
+/// attempt. Every payload tries a different encoding/obfuscation (plain,
+/// percent, double/triple percent, mixed-case scheme, backslash confusion,
+/// control-char prefix, PHP wrappers, trailing `?`/`%00`). All 50 must be
+/// blocked by `Open_redirect_n_RFI_detect`; any 200 is a bypass to fix. Sent as
+/// the **raw** query string (GET) and **raw** body (POST) so the encodings reach
+/// the WAF undecoded — via `sweep_hpp_get` / `sweep_hpp_post`.
+const OPEN_REDIRECT_RFI_PAYLOADS: &[&str] = &[
+    // ── scheme-relative // (plain / encoded / double / triple) ──
+    "next=//evil.example",
+    "redirect=///evil.example",
+    "url=%2f%2fevil.example",
+    "dest=%2F%2Fevil.example",
+    "next=%252f%252fevil.example",
+    "redirect=%25252f%25252fevil.example",
+    // ── absolute external URL (plain / encoded scheme / mixed case) ──
+    "target=https://evil.example",
+    "dest=https%3a%2f%2fevil.example",
+    "continue=hTtPs://evil.example",
+    // ── userinfo host confusion ──
+    "return=https://trusted.example@evil.example",
+    "return=https%3a%2f%2ftrusted.example%40evil.example%2flogin",
+    // ── control-char prefix before the scheme ──
+    "next=%09%0d%0ahttps://evil.example/login",
+    // ── backslash / UNC confusion (encoded + literal + mixed slashes) ──
+    "href=%5c%5cevil.example%5clogin",
+    "url=\\\\evil.example\\login",
+    "page=/\\evil.example",
+    "view=\\/evil.example",
+    // ── dangerous URL schemes ──
+    "load=javascript:alert(1)",
+    "doc=data:text/html;base64,PHNjcmlwdD4=",
+    "open=vbscript:msgbox(1)",
+    "uri=blob:https://evil.example",
+    "last=about:blank",
+    "callback=view-source:https://evil.example",
+    "module=intent://evil.example",
+    "root=android-app://com.evil",
+    "show=market://details",
+    "template=itms-services://action",
+    // ── single-char hot params (exact match) + substring match ──
+    "u=https://evil.example",
+    "r=//evil.example",
+    "homepage=https://evil.example",
+    // ── ws / ftp family ──
+    "next=ws://evil.example",
+    "dest=wss://evil.example",
+    "url=ftp://evil.example",
+    "redirect=ftps://evil.example",
+    "include=file:///etc/passwd",
+    // ── RFI: PHP wrappers and inclusion schemes ──
+    "file=php://filter/convert.base64-encode/resource=index.php",
+    "inc=php://input",
+    "document=php://memory",
+    "doc=php://temp",
+    "folder=expect://id",
+    "dir=zip://archive.zip",
+    "path=phar://evil.phar/shell.php",
+    "root=gopher://evil.example",
+    "module=dict://evil.example",
+    "template=ldap://evil.example/cn",
+    "view=glob://shells",
+    "load=zlib://payload",
+    "show=compress.zlib://file",
+    "page=rar://archive.rar",
+    // ── RFI: trailing truncation markers ──
+    "file=/etc/passwd%00",
+    "include=/var/www/index.php?",
+];
+
 /// URI paths that end with a known backup/temp/config-leak extension.
 /// All of these should be blocked as GET requests when `Anti_exposed_backup` is enabled.
 const BACKUP_URI_PAYLOADS: &[&str] = &[
@@ -1380,6 +1451,32 @@ async fn main() {
             &cfg.target,
             "/test_post",
             HPP_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "Open Redirect/RFI CMC — GET /test_get ({} payloads)",
+            OPEN_REDIRECT_RFI_PAYLOADS.len()
+        ),
+        sweep_hpp_get(
+            &client,
+            &cfg.target,
+            "/test_get",
+            OPEN_REDIRECT_RFI_PAYLOADS,
+            cfg.concurrency
+        )
+    );
+    run_sweep!(
+        format!(
+            "Open Redirect/RFI CMC — POST /test_post ({} payloads)",
+            OPEN_REDIRECT_RFI_PAYLOADS.len()
+        ),
+        sweep_hpp_post(
+            &client,
+            &cfg.target,
+            "/test_post",
+            OPEN_REDIRECT_RFI_PAYLOADS,
             cfg.concurrency
         )
     );

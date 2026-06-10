@@ -33,6 +33,16 @@ tests in `src/waf/engine/normalize.rs`.
 - **Null-byte dual-form** — views are split on `\0`, so both the full string and
   the null-truncated prefix are inspected. Defeats `foo\0../etc/passwd` tricks
   where a C-layer backend truncates at the first NUL.
+- **Leading control/space strip (field-level)** — the reusable helper
+  `strip_control_and_space_prefix` removes a leading run of C0 control characters
+  and spaces from a decoded field, mirroring the WHATWG URL parser's "remove any
+  leading C0 control or space" rule. This is the global mitigation for the
+  control-character-prefix evasion (e.g. `%09%0d%0ahttps://evil.example`), where
+  an attacker hides a dangerous URL scheme behind invisible bytes that a browser
+  strips before navigating. Only the **leading** prefix is removed — control
+  bytes in the middle of a value (e.g. an injected CRLF) are preserved so other
+  detectors still see them. Used today by the Open Redirect / RFI CMC module and
+  available to any module that inspects a decoded field.
 - **Latin-1 fallback** — when lossy UTF-8 decoding introduces `\u{FFFD}`
   replacement characters, a 1:1 byte→char Latin-1 view is also inspected so
   byte-specific patterns are not masked.

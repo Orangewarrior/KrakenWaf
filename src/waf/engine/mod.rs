@@ -4,7 +4,7 @@ mod matchers;
 pub mod normalize;
 
 pub use finding::Finding;
-pub use normalize::normalize_str;
+pub use normalize::{normalize_str, strip_control_and_space_prefix};
 
 use crate::cmc::CmcManager;
 use crate::proxy::format_request_prefix_bytes;
@@ -333,6 +333,21 @@ impl WafEngine {
     #[must_use]
     pub fn inspect_hpp(&self, query: &str, body: &str) -> Decision {
         match self.cmc_manager.inspect_hpp(query, body) {
+            Some(finding) => Decision::Block(Box::new(finding)),
+            None => Decision::Allow,
+        }
+    }
+
+    /// Inspect a request's query string and body for Open Redirect / RFI in a
+    /// hot redirect/inclusion parameter value (the `Open_redirect_n_RFI_detect`
+    /// CMC module). `query` is the raw query string (without the leading `?`);
+    /// `body` is the raw request body as text. Returns `Decision::Block` with a
+    /// High-severity finding on the first detection, otherwise `Decision::Allow`.
+    /// The module is a no-op (returns `Allow`) when disabled in
+    /// `rules/cmc/config.yaml`.
+    #[must_use]
+    pub fn inspect_open_redirect_rfi(&self, query: &str, body: &str) -> Decision {
+        match self.cmc_manager.inspect_open_redirect_rfi(query, body) {
             Some(finding) => Decision::Block(Box::new(finding)),
             None => Decision::Allow,
         }
