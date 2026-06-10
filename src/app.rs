@@ -11,6 +11,7 @@ use crate::{
     response_headers::ResponseHeaderPolicy,
     storage::SqliteStore,
     waf::WafEngine,
+    websocket::WebSocketControl,
 };
 use bytes::Bytes;
 use dashmap::DashMap;
@@ -71,4 +72,8 @@ pub struct AppState {
     /// Optional `GeoIP` reader backed by `db/geo/GeoLite2-City.mmdb`.
     /// `None` when the database file is absent or fails to open.
     pub geo_reader: Option<Arc<GeoIpReader>>,
+    /// WebSocket control policy resolved from `conf/websocket.yaml`. When
+    /// `enable_ws_control` is false the limits are inert and `ws://` / `wss://`
+    /// upgrades are tunneled transparently.
+    pub ws_control: Arc<WebSocketControl>,
 }

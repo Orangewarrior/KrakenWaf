@@ -1,3 +1,78 @@
+## [Unreleased]
+
+> **WebSocket control policy, postcard snapshot encoder, config/rules
+> sub-commands, and hardened production deploy artifacts.** Four operator-facing
+> additions: a configurable `ws://`/`wss://` control policy
+> (`conf/websocket.yaml`); migration of the local rate-limiter snapshot from the
+> unmaintained `bincode` 1.x to `postcard`; `krakenwaf config validate`,
+> `krakenwaf config dump --redact`, and `krakenwaf rules validate` pre-flight
+> sub-commands; and CIS-aligned systemd / Kubernetes / Docker deployment
+> manifests under `deploy/`.
+
+### Rate-limiter snapshot: bincode → postcard (`src/waf/rate_limit.rs`, `Cargo.toml`, `deny.toml`)
+
+- The local GCRA snapshot is now encoded with the actively-maintained
+  [`postcard`](https://crates.io/crates/postcard) crate. `bincode` 1.x (flagged
+  unmaintained per **RUSTSEC-2025-0141**) was removed as a dependency, and the
+  corresponding `ignore` entry was dropped from `deny.toml` so a re-introduction
+  fails the audit.
+- The snapshot magic was bumped `KWAFRL01` → `KWAFRL02`; a snapshot written by an
+  older build is detected as a format mismatch and ignored (the limiter starts
+  with an empty map — no silent corruption).
+- `--wal-mode postcard` is the new name; `--wal-mode bincode` remains accepted as
+  a deprecated alias so existing invocations keep working.
+
+### WebSocket control policy (`conf/websocket.yaml`, `src/websocket.rs`)
+
+- New `conf/websocket.yaml`, loaded every start (or via `--websocket-conf`),
+  nested under a `web_socket:` mapping. Default ships **enabled**
+  (`enable_ws_control: true`) with conservative limits.
+- Enforced on the handshake, before any upstream tunnel is opened:
+  `allowed_paths` (403 on a non-allowed path; empty list ⇒ any path),
+  `inspect_handshake` (runs the inspection engine over the upgrade URI +
+  headers), and `max_connections_per_ip` (429 + `Retry-After` on the per-IP
+  simultaneous-session cap).
+- Enforced on the established tunnel: `idle_timeout_secs` (closes on inactivity
+  in either direction) and `max_session_secs` (hard session-lifetime cap),
+  implemented by a bounded bidirectional pump that replaces the unbounded
+  `copy_bidirectional`. The per-IP session slot is held by an RAII guard moved
+  into the tunnel task and released exactly when the session ends; the counter
+  map is reaped by the existing IP-map janitor.
+- `enable_ws_control: false` restores fully transparent tunneling.
+
+### Config & rules sub-commands (`src/subcommands.rs`, `src/cli.rs`)
+
+- `krakenwaf config validate` — fail-fast load + validate of every config file
+  (proxy, ratelimit, websocket, banning, update, optional CMC). Exit code 0 only
+  when all are valid; concise error chain (no backtrace) and exit 1 otherwise.
+- `krakenwaf config dump [--redact]` — prints the effective configuration as
+  YAML. `--redact` masks credentialed URL userinfo (`user:pass@` → `***REDACTED***@`)
+  and reports secret **presence** without ever printing the value.
+- `krakenwaf rules validate` — loads the rule set from `--rules-dir` and reports
+  per-category counts; exit 0 on a clean parse.
+- The shared path flags (`--external-proxy-conf`, `--ratelimit-by-file-conf`,
+  `--websocket-conf`, `--rules-dir`, `--cmc-load`) are now `global` so they can
+  follow a sub-command.
+
+### Production deploy artifacts (`deploy/`)
+
+- `deploy/systemd/krakenwaf.service` — sandboxed unit: `NoNewPrivileges=true`,
+  `ProtectSystem=strict`, `ProtectHome=true`, `PrivateTmp=true`,
+  `ReadWritePaths=/var/lib/krakenwaf /var/log/krakenwaf`,
+  `CapabilityBoundingSet`/`AmbientCapabilities=CAP_NET_BIND_SERVICE`, a
+  `@system-service` syscall allow-list, `MemoryDenyWriteExecute=true`,
+  file-first secrets via `LoadCredential=`, and a `config validate` `ExecStartPre`.
+- `deploy/kubernetes/{podsecurity,deployment,networkpolicy}.yaml` — restricted
+  Pod Security Admission namespace; Deployment with `runAsNonRoot`,
+  `readOnlyRootFilesystem`, `allowPrivilegeEscalation: false`,
+  `capabilities.drop: ["ALL"]`, `seccompProfile: RuntimeDefault`, a
+  `config validate` init container, and default-deny NetworkPolicies with
+  explicit ingress/egress allows.
+- `deploy/docker/Containerfile` — multi-stage build to
+  `gcr.io/distroless/cc-debian12:nonroot` (no shell / package manager, uid 65532)
+  with a `config validate` `HEALTHCHECK`.
+- `deploy/README.md`, `docs/websocket.md` — operator documentation.
+
 ## [2.37.0] - 2026-06-10
 
 > **New CMC module: Open Redirect & RFI detection.** A dedicated detector

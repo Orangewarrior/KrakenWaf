@@ -20,10 +20,12 @@ mod rules;
 mod secrets;
 mod server;
 mod storage;
+mod subcommands;
 mod tls;
 #[allow(dead_code)]
 mod update;
 mod waf;
+mod websocket;
 
 use anyhow::{Context, Result};
 use app::AppState;
@@ -68,6 +70,20 @@ async fn main() -> Result<()> {
 
     let mut cli = Cli::parse();
     let root_dir = std::env::current_dir()?;
+
+    // ── Administrative sub-commands (config/rules validate, config dump) ──────
+    // When a sub-command is present we run it and exit without starting any
+    // listener. Used for fail-fast pre-flight checks in CI / Kubernetes init
+    // containers and for redacted effective-config dumps in production support.
+    if let Some(command) = cli.command.clone() {
+        // Print a concise error chain (no Rust backtrace) and exit non-zero so
+        // the sub-commands behave like a well-mannered CLI / CI gate.
+        if let Err(err) = subcommands::run(command, &cli, &root_dir) {
+            eprintln!("{err:#}");
+            std::process::exit(1);
+        }
+        return Ok(());
+    }
 
     // ── Proxy configuration file (--external-proxy-conf) ──────────────────────
     // Overlay conf/proxy.yaml onto the proxy-related CLI flags *before* anything
@@ -219,6 +235,17 @@ async fn main() -> Result<()> {
     let (block_response_body, block_response_content_type) =
         load_block_message(cli.blockmsg.as_deref(), &root_dir)?;
 
+    // ── WebSocket control policy ──────────────────────────────────────────────
+    // Loaded every start from conf/websocket.yaml (or --websocket-conf). Default
+    // ships enabled with conservative limits; enable_ws_control: false makes it
+    // a transparent tunnel.
+    let ws_config = match cli.websocket_conf.as_deref() {
+        Some(path) => websocket::WebSocketConfig::load_from(&PathBuf::from(path))
+            .with_context(|| format!("--websocket-conf: failed to load '{path}'"))?,
+        None => websocket::WebSocketConfig::load(&root_dir)?,
+    };
+    let ws_control = Arc::new(websocket::WebSocketControl::new(ws_config));
+
     let allow_path_config = match cli.allow_paths_file.as_deref() {
         Some(path) => Some(
             allowpaths::load_and_validate(&PathBuf::from(path), &root_dir)
@@ -257,6 +284,7 @@ async fn main() -> Result<()> {
         memory_limits: memory_limits.clone(),
         ban_manager,
         geo_reader,
+        ws_control,
     });
 
     // Build TLS store once; clone it for both the SIGHUP handler and the server.
@@ -333,6 +361,8 @@ async fn main() -> Result<()> {
         connection_timeout_secs = state.connection_timeout_secs,
         tls_handshake_timeout_secs = state.tls_handshake_timeout_secs,
         external_proxy_conf = external_proxy_conf.is_some(),
+        ws_control_enabled = state.ws_control.enabled(),
+        ws_max_connections_per_ip = state.ws_control.config().max_connections_per_ip,
         "KrakenWaf initialized"
     );
 
@@ -413,7 +443,7 @@ async fn build_rate_limiter(
     let snapshot_path = rate_limit_snapshot_path(root_dir, cli.wal_mode);
     let persistence = match cli.wal_mode {
         WalMode::Sqlite => PersistenceMode::Sqlite,
-        WalMode::Bincode => PersistenceMode::Bincode,
+        WalMode::Postcard => PersistenceMode::Postcard,
     };
     RateLimiter::new(effective_limit, std::time::Duration::from_mins(1), &snapshot_path, persistence)
         .context("failed to initialise local GCRA rate-limiter")
@@ -456,7 +486,7 @@ fn rate_limit_snapshot_path(root: &std::path::Path, mode: WalMode) -> PathBuf {
     let dir = root.join("tmp_cache");
     match mode {
         WalMode::Sqlite => dir.join("rate_limit_state.db"),
-        WalMode::Bincode => dir.join("rate_limit_state.bin"),
+        WalMode::Postcard => dir.join("rate_limit_state.bin"),
     }
 }
 

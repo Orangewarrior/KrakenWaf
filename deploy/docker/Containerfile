@@ -1,0 +1,75 @@
+# KrakenWaf — hardened OCI image (CIS Docker Benchmark aligned)
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-stage build:
+#   * builder — compiles the release binary (needs a C toolchain for the
+#     vendored libinjection + bundled SQLite).
+#   * runtime — distroless/cc (glibc + libgcc only, no shell, no package
+#     manager), running as the built-in non-root user.
+#
+# Build:  docker build -f deploy/docker/Containerfile -t krakenwaf:latest .
+# Run:    docker run --rm -p 8443:8443 \
+#           --read-only --cap-drop ALL --security-opt no-new-privileges \
+#           --tmpfs /tmp --tmpfs /var/lib/krakenwaf --tmpfs /var/log/krakenwaf \
+#           krakenwaf:latest
+
+# ── Stage 1: builder ─────────────────────────────────────────────────────────
+FROM docker.io/library/rust:1.90-bookworm AS builder
+
+# A C compiler is required by build.rs (libinjection) and rusqlite (bundled).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Leverage layer caching: copy manifests first, fetch deps, then sources.
+COPY Cargo.toml Cargo.lock ./
+COPY build.rs ./
+COPY ffi ./ffi
+COPY src ./src
+
+# Build a stripped release binary. CARGO_NET_RETRY hardens flaky CI networks.
+ENV CARGO_NET_RETRY=5
+RUN cargo build --release --bin krakenwaf \
+    && strip target/release/krakenwaf
+
+# ── Stage 2: runtime (distroless, non-root) ──────────────────────────────────
+# distroless/cc carries glibc + libgcc (needed by the C-linked deps) and ships
+# the "nonroot" account (uid/gid 65532). No shell, no package manager → minimal
+# attack surface (CIS Docker 4.x).
+FROM gcr.io/distroless/cc-debian12:nonroot
+
+LABEL org.opencontainers.image.title="KrakenWaf" \
+      org.opencontainers.image.description="TLS-aware Rust Web Application Firewall" \
+      org.opencontainers.image.source="https://github.com/Orangewarrior/KrakenWaf" \
+      org.opencontainers.image.licenses="MIT"
+
+WORKDIR /etc/krakenwaf
+
+# Binary.
+COPY --from=builder /build/target/release/krakenwaf /usr/local/bin/krakenwaf
+
+# Default config + rules + block page baked in (override via volumes/ConfigMaps).
+COPY --chown=nonroot:nonroot conf  ./conf
+COPY --chown=nonroot:nonroot rules ./rules
+COPY --chown=nonroot:nonroot alert ./alert
+
+# Writable state + logs. Mount these as tmpfs / emptyDir at runtime so the root
+# filesystem can stay read-only.
+USER nonroot:nonroot
+VOLUME ["/var/lib/krakenwaf", "/var/log/krakenwaf", "/tmp"]
+
+EXPOSE 8443 4343
+
+# Image-level healthcheck hits the liveness probe. (Kubernetes uses its own
+# httpGet probes; this benefits plain `docker run` / compose.)
+HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/krakenwaf", "config", "validate"]
+
+ENTRYPOINT ["/usr/local/bin/krakenwaf"]
+CMD ["--listen=0.0.0.0:8443", \
+     "--metrics-port=4343", \
+     "--external-proxy-conf=/etc/krakenwaf/conf/proxy.yaml", \
+     "--ratelimit-by-file-conf=/etc/krakenwaf/conf/ratelimit.yaml", \
+     "--websocket-conf=/etc/krakenwaf/conf/websocket.yaml", \
+     "--rules-dir=/etc/krakenwaf/rules"]

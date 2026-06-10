@@ -260,7 +260,7 @@ brief process restart does not grant blocked clients a fresh budget.
 | `--wal-mode` | File | Format | Notes |
 |-------------|------|--------|-------|
 | `sqlite` *(default)* | `tmp_cache/rate_limit_state.db` | SQLite WAL | Inspectable with `sqlite3`; incremental upserts. |
-| `bincode` | `tmp_cache/rate_limit_state.bin` | Atomic-rename flat binary | ~10–50× faster; opaque. |
+| `postcard` | `tmp_cache/rate_limit_state.bin` | Atomic-rename flat binary | ~10–50× faster; opaque. `bincode` is accepted as a deprecated alias. |
 
 #### SQLite schema
 
@@ -274,14 +274,18 @@ CREATE TABLE rate_counters (
 );
 ```
 
-#### Bincode layout
+#### Postcard layout
 
 ```
-[8 bytes magic: "KWAFRL01"][bincode Vec<(u64 ip_hash, u64 tat_ns)>]
+[8 bytes magic: "KWAFRL02"][postcard Vec<(u64 ip_hash, u64 tat_ns)>]
 ```
 
 Writes go to `rate_limit_state.bin.tmp`, `fsync`, then atomic `rename(2)` — a
-crash cannot corrupt the live file.
+crash cannot corrupt the live file. The encoder migrated from `bincode` 1.x
+(flagged unmaintained per RUSTSEC-2025-0141) to the actively-maintained
+[`postcard`](https://crates.io/crates/postcard) crate; the magic was bumped from
+`KWAFRL01` to `KWAFRL02` so a snapshot written by an older build is detected as a
+format mismatch and ignored (the limiter simply starts with an empty map).
 
 ---
 
@@ -421,7 +425,7 @@ redis:
 |------|---------|-------------|
 | `--rate-limit-per-minute <N>` | (see below) | Per-IP request budget per 60 s window. Overrides the config file. Default when unset: 240. |
 | `--ratelimit-by-file-conf <path>` | auto-discover | Path to `ratelimit.yaml`. Auto-discovered at `conf/ratelimit.yaml` in the working directory. |
-| `--wal-mode <sqlite\|bincode>` | `sqlite` | Persistence backend for the local GCRA snapshot (ignored when using Redis). |
+| `--wal-mode <sqlite\|postcard>` | `sqlite` | Persistence backend for the local GCRA snapshot (ignored when using Redis). `bincode` accepted as a deprecated alias. |
 
 ### Precedence matrix
 
@@ -459,7 +463,7 @@ These are at the top of `src/waf/rate_limit.rs`.
   [real-ip-header-and-trusted-proxy-cidrs.md](real-ip-header-and-trusted-proxy-cidrs.md).
 - `tmp_cache/` holds only rate-limiter snapshot files. Deleting it while the
   WAF is stopped is safe and simply forfeits in-progress TATs.
-- Switching `--wal-mode` between `sqlite` and `bincode` ignores the other
+- Switching `--wal-mode` between `sqlite` and `postcard` ignores the other
   format's snapshot file and starts fresh — no silent corruption.
 - With the Redis backend, deleting a key in Redis (e.g. `DEL krakenwaf:rl:1.2.3.4`)
   immediately resets that IP's counter.

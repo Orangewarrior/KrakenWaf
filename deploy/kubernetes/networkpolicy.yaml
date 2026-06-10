@@ -1,0 +1,89 @@
+# KrakenWaf — default-deny NetworkPolicy set (CIS Kubernetes Benchmark 5.3.2)
+# ─────────────────────────────────────────────────────────────────────────────
+# Three policies:
+#   1. default-deny for ALL ingress + egress in the namespace.
+#   2. explicit ingress to the WAF (data plane + metrics).
+#   3. explicit egress (DNS, upstream backend, Redis).
+#
+# Adjust the podSelector / namespaceSelector / CIDR blocks to your topology.
+# Requires a CNI that enforces NetworkPolicy (Calico, Cilium, etc.).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: krakenwaf
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: krakenwaf-allow-ingress
+  namespace: krakenwaf
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: krakenwaf
+  policyTypes:
+    - Ingress
+  ingress:
+    # Data-plane HTTPS from the ingress controller namespace only.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8443
+    # Metrics scraping from the monitoring namespace only.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 4343
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: krakenwaf-allow-egress
+  namespace: krakenwaf
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: krakenwaf
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution (kube-dns / CoreDNS).
+    - to:
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Upstream backend service (same namespace). Narrow this selector to the
+    # specific backend the WAF fronts.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: upstream-backend
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Redis (distributed rate-limit / ban list) over TLS, if used.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: redis
+      ports:
+        - protocol: TCP
+          port: 6380

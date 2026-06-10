@@ -1,5 +1,42 @@
-use clap::{ArgAction, Parser, ValueEnum};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 use std::net::SocketAddr;
+
+/// Administrative sub-commands. When present the WAF runs the command and exits
+/// instead of starting the proxy listener.
+#[derive(Debug, Clone, Subcommand)]
+pub enum Commands {
+    /// Inspect and validate `KrakenWaf` configuration files.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+    /// Validate the WAF rule set.
+    Rules {
+        #[command(subcommand)]
+        action: RulesAction,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum ConfigAction {
+    /// Load every configuration file (proxy, rate-limit, websocket, banning,
+    /// update, CMC) and fail fast on the first error. Exit code 0 = all valid.
+    Validate,
+    /// Print the effective configuration. Pass `--redact` to mask secret-bearing
+    /// fields (passwords, credentialed URLs) for safe sharing in tickets / logs.
+    Dump {
+        /// Mask secrets in the output (recommended for production / support).
+        #[arg(long)]
+        redact: bool,
+    },
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub enum RulesAction {
+    /// Load the rule set from `--rules-dir` and report its contents. Exit code
+    /// 0 = the rule set parsed successfully.
+    Validate,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum WafMode {
@@ -18,9 +55,12 @@ pub enum WalMode {
     /// Persist rate-limiter state in `SQLite` (WAL journal). Slower writes
     /// but supports inspection via `sqlite3 cli` and partial updates.
     Sqlite,
-    /// Persist as a flat bincode file (atomic rename). Much faster snapshots
+    /// Persist as a flat `postcard` file (atomic rename). Much faster snapshots
     /// and re-hydration; entire state is rewritten on each persist tick.
-    Bincode,
+    /// `bincode` is accepted as a backward-compatible alias for this mode
+    /// (the on-disk encoder migrated from bincode to postcard).
+    #[value(alias = "bincode")]
+    Postcard,
 }
 
 #[derive(Debug, Clone, Parser)]
@@ -28,6 +68,11 @@ pub enum WalMode {
 #[command(author, version, about = "KrakenWaf - TLS-aware Rust WAF inspired by OctopusWAF")]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
+    /// Optional administrative sub-command (`config`, `rules`). When supplied
+    /// the WAF runs the command and exits instead of starting the listener.
+    #[command(subcommand)]
+    pub command: Option<Commands>,
+
     #[arg(long, default_value = "0.0.0.0:8443")]
     pub listen: SocketAddr,
 
@@ -44,7 +89,7 @@ pub struct Cli {
     #[arg(long, default_value = "http://127.0.0.1:8080")]
     pub upstream: String,
 
-    #[arg(long, default_value = "./rules")]
+    #[arg(long, default_value = "./rules", global = true)]
     pub rules_dir: String,
 
     #[arg(long, default_value = "./rules/tls/sni_map.csv")]
@@ -74,11 +119,19 @@ pub struct Cli {
     #[arg(long)]
     pub rate_limit_per_minute: Option<u32>,
 
+    /// Path to a WebSocket control-policy YAML file. `KrakenWaf` auto-discovers
+    /// `conf/websocket.yaml` in the working directory; use this flag to supply
+    /// an alternative path. The file governs `ws://` / `wss://` upgrade limits
+    /// (allowed paths, per-IP session cap, idle / session timeouts, handshake
+    /// inspection). When `enable_ws_control` is false no limit applies.
+    #[arg(long = "websocket-conf", global = true)]
+    pub websocket_conf: Option<String>,
+
     /// Path to a rate-limit YAML configuration file. `KrakenWaf` auto-discovers
     /// `conf/ratelimit.yaml` in the working directory; use this flag to supply
     /// an alternative path. The file controls the Redis backend, per-IP
     /// concurrency cap, and the default rate limit.
-    #[arg(long = "ratelimit-by-file-conf")]
+    #[arg(long = "ratelimit-by-file-conf", global = true)]
     pub ratelimit_by_file_conf: Option<String>,
 
     /// Load proxy-related settings from a YAML file. Passing the flag bare
@@ -92,7 +145,8 @@ pub struct Cli {
     #[arg(
         long = "external-proxy-conf",
         num_args = 0..=1,
-        default_missing_value = "conf/proxy.yaml"
+        default_missing_value = "conf/proxy.yaml",
+        global = true
     )]
     pub external_proxy_conf: Option<String>,
 
@@ -158,7 +212,7 @@ pub struct Cli {
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,
 
-    #[arg(long = "cmc-load")]
+    #[arg(long = "cmc-load", global = true)]
     pub cmc_load: Option<String>,
 
     #[arg(long = "real-ip-header")]
@@ -186,8 +240,9 @@ pub struct Cli {
     pub no_tls: bool,
 
     /// Persistence backend for the rate-limiter snapshot.
-    /// `sqlite` uses WAL journaling (queryable, slower); `bincode` uses a
+    /// `sqlite` uses WAL journaling (queryable, slower); `postcard` uses a
     /// flat binary file with atomic rename (much faster, opaque format).
+    /// `bincode` is accepted as a deprecated alias for `postcard`.
     #[arg(long = "wal-mode", value_enum, default_value = "sqlite")]
     pub wal_mode: WalMode,
 

@@ -52,7 +52,9 @@
 //! Two back-ends selectable at runtime via [`PersistenceMode`]:
 //!
 //! * `Sqlite` — WAL journal, inspectable via `sqlite3`.
-//! * `Bincode` — atomic-rename flat file, 10-50× faster.
+//! * `Postcard` — atomic-rename flat file, 10-50× faster. Encoded with the
+//!   actively-maintained [`postcard`] crate (migrated from `bincode` 1.x,
+//!   which is flagged unmaintained per RUSTSEC-2025-0141).
 
 use ahash::AHashMap;
 use anyhow::{Context, Result};
@@ -82,7 +84,9 @@ use crate::metrics::WafMetrics;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersistenceMode {
     Sqlite,
-    Bincode,
+    /// Flat binary snapshot encoded with `postcard` (atomic rename). Replaces
+    /// the legacy `bincode` encoder; old `KWAFRL01` snapshots are ignored.
+    Postcard,
 }
 
 /// Rate-limiter backend. Use [`RateLimiter::new`] for the local GCRA limiter or
@@ -305,10 +309,13 @@ fn try_evict_expired(
 
 enum Backend {
     Sqlite(Connection),
-    Bincode(PathBuf),
+    Postcard(PathBuf),
 }
 
-const BINCODE_MAGIC: &[u8; 8] = b"KWAFRL01";
+/// Magic prefix for the postcard snapshot. Bumped from the legacy `KWAFRL01`
+/// (bincode) so a snapshot written by an older build is detected as a format
+/// mismatch and ignored rather than mis-decoded.
+const POSTCARD_MAGIC: &[u8; 8] = b"KWAFRL02";
 
 impl Backend {
     fn open(mode: PersistenceMode, path: &Path) -> Result<Self> {
@@ -316,11 +323,11 @@ impl Backend {
             PersistenceMode::Sqlite => Ok(Backend::Sqlite(
                 open_db(path).context("failed to open rate-limiter SQLite database")?,
             )),
-            PersistenceMode::Bincode => {
+            PersistenceMode::Postcard => {
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent)?;
                 }
-                Ok(Backend::Bincode(path.to_path_buf()))
+                Ok(Backend::Postcard(path.to_path_buf()))
             }
         }
     }
@@ -339,19 +346,20 @@ impl Backend {
                     .collect();
                 Ok(rows)
             }
-            Backend::Bincode(path) => {
+            Backend::Postcard(path) => {
                 if !path.exists() {
                     return Ok(Vec::new());
                 }
                 let mut buf = Vec::new();
                 File::open(path)?.read_to_end(&mut buf)?;
-                if buf.len() < BINCODE_MAGIC.len() || &buf[..BINCODE_MAGIC.len()] != BINCODE_MAGIC {
+                if buf.len() < POSTCARD_MAGIC.len() || &buf[..POSTCARD_MAGIC.len()] != POSTCARD_MAGIC
+                {
                     warn!(target: "krakenwaf", path = %path.display(),
-                        "bincode rate-limiter snapshot magic mismatch; ignoring");
+                        "postcard rate-limiter snapshot magic mismatch; ignoring");
                     return Ok(Vec::new());
                 }
                 let items: Vec<(u64, u64)> =
-                    bincode::deserialize(&buf[BINCODE_MAGIC.len()..]).unwrap_or_default();
+                    postcard::from_bytes(&buf[POSTCARD_MAGIC.len()..]).unwrap_or_default();
                 Ok(items.into_iter().filter(|(_, tat)| *tat >= cutoff).collect())
             }
         }
@@ -375,10 +383,10 @@ impl Backend {
                 )?;
                 Ok(())
             }),
-            Backend::Bincode(path) => {
+            Backend::Postcard(path) => {
                 let live: Vec<(u64, u64)> =
                     items.iter().copied().filter(|(_, tat)| *tat >= cutoff).collect();
-                let payload = bincode::serialize(&live)?;
+                let payload = postcard::to_allocvec(&live)?;
                 let tmp = path.with_extension("tmp");
                 {
                     let mut f = OpenOptions::new()
@@ -386,7 +394,7 @@ impl Backend {
                         .create(true)
                         .truncate(true)
                         .open(&tmp)?;
-                    f.write_all(BINCODE_MAGIC)?;
+                    f.write_all(POSTCARD_MAGIC)?;
                     f.write_all(&payload)?;
                     f.sync_all()?;
                 }
@@ -893,19 +901,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn bincode_round_trip_rehidrata_tats() {
+    async fn postcard_round_trip_rehidrata_tats() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("rl.bin");
         {
-            let rl = RateLimiter::new(5, Duration::from_mins(1), &path, PersistenceMode::Bincode)
-                .expect("create limiter (bincode)");
+            let rl = RateLimiter::new(5, Duration::from_mins(1), &path, PersistenceMode::Postcard)
+                .expect("create limiter (postcard)");
             for _ in 0..4 {
                 assert!(rl.check("203.0.113.7").await);
             }
-            rl.persist().expect("persist bincode");
+            rl.persist().expect("persist postcard");
         }
-        let rl = RateLimiter::new(5, Duration::from_mins(1), &path, PersistenceMode::Bincode)
-            .expect("recreate limiter (bincode)");
+        let rl = RateLimiter::new(5, Duration::from_mins(1), &path, PersistenceMode::Postcard)
+            .expect("recreate limiter (postcard)");
         assert!(rl.check("203.0.113.7").await, "5th request must pass");
         assert!(!rl.check("203.0.113.7").await, "6th request must be blocked");
     }
