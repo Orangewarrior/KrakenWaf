@@ -69,6 +69,11 @@ full module catalogue.
 
 ---
 
+## 📊 User interface
+
+KrakenWAF have a external software for user interface [kraken-ui](https://github.com/Orangewarrior/kraken-ui),hardened web application for operating a KrakenWAF deployment: manage operators, watch blocked attacks in real time, and read live WAF metrics from a single TLS-only console. It is written in Rust with Axum, Askama and SeaORM, ships no CDN assets and runs no inline JavaScript.
+
+
 ## 🛡️ Rate Limiting
 
 KrakenWaf includes two complementary throttling mechanisms. Full reference: **[docs/rate_limit.md](docs/rate_limit.md)**.
