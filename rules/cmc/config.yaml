@@ -68,6 +68,7 @@ custom-languages-params:
   chinese_mandarin: false
   chinese: false
   hindi: false
+  portuguese: false
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Memory-pressure limits (2.29.0)

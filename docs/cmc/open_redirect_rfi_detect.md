@@ -123,6 +123,7 @@ custom-languages-params:
   chinese_mandarin: false   # pinyin list (chongdingxiang, fanhui, …)
   chinese: false            # Han characters list (重定向, 返回, …)
   hindi: false
+  portuguese: false     # adds hot_params_portuguese (redirecionamento, carregar, …)
 ```
 
 Notes:

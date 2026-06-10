@@ -8,7 +8,7 @@
 > (percent, double/triple percent, UTF-16 LE/BE, mixed-case scheme, backslash
 > confusion, control-char prefix) via the global normalizer plus a new reusable
 > normalizer mitigation, and supports optional localized hot-parameter lists for
-> 11 languages.
+> 12 languages.
 
 ### New CMC module — `Open_redirect_n_RFI_detect` (`src/cmc/open_redirect_rfi_detect.rs`)
 
@@ -38,7 +38,8 @@
 - New top-level config block: `multiple-languages-params: true|false` (master
   switch) and `custom-languages-params:` flag map for `russian`, `japanese`,
   `german`, `bengali`, `indonesian`, `french`, `arabic_modern` /
-  `arabic_modern_standard`, `spanish`, `chinese_mandarin`, `chinese`, `hindi`.
+  `arabic_modern_standard`, `spanish`, `chinese_mandarin`, `chinese`, `hindi`,
+  `portuguese`.
   Each enabled language adds its localized hot-parameter list **in addition to**
   English. `chinese_mandarin` (pinyin) and `chinese` (Han characters) are
   separate lists; `arabic_modern` is an alias of `arabic_modern_standard`. All

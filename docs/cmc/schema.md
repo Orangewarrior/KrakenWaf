@@ -89,6 +89,7 @@ custom-languages-params:
   chinese_mandarin: false
   chinese: false
   hindi: false
+  portuguese: false
 ```
 
 ---
