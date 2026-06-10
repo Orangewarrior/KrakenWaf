@@ -171,6 +171,12 @@ pub const HOT_PARAMS_JAPANESE: &[&str] = &[
     "フォルダ", "ルート", "ディレクトリ", "ビュー", "ロード", "表示",
 ];
 
+pub const HOT_PARAMS_PORTUGUESE: &[&str] = &[
+    "redirecionamento", "retorno", "abrir", "proximo", "callback", "ultimo", "destino", "alvo",
+    "continuar", "pagina", "modulo", "caminho", "modelo", "arquivo", "incluir", "documento",
+    "pasta", "raiz", "diretorio", "visualizar", "carregar", "mostrar",
+];
+
 /// Which optional localized hot-parameter lists are active. Mirrors the
 /// `custom-languages-params` map in `rules/cmc/config.yaml`. By default every
 /// language is disabled (English only); a language list is added to the search
@@ -192,6 +198,7 @@ pub struct LangParams {
     pub chinese_mandarin: bool,
     pub chinese: bool,
     pub hindi: bool,
+    pub portuguese: bool,
 }
 
 /// The vulnerability class a value classified into.
@@ -288,6 +295,7 @@ impl OpenRedirectRfiDetectorBuilder {
                 (l.chinese_mandarin, HOT_PARAMS_CHINESE_MANDARIN),
                 (l.chinese, HOT_PARAMS_CHINESE),
                 (l.hindi, HOT_PARAMS_HINDI),
+                (l.portuguese, HOT_PARAMS_PORTUGUESE),
             ];
             for (on, list) in extra {
                 if *on {
@@ -677,6 +685,30 @@ mod tests {
         assert!(detector_with(lang)
             .detect("mostrar=//evil.example")
             .is_none());
+    }
+
+    #[test]
+    fn portuguese_param_used_when_language_enabled() {
+        let lang = LangParams {
+            enabled: true,
+            portuguese: true,
+            ..LangParams::default()
+        };
+        let d = detector_with(lang);
+        // `carregar` (PT "load") and `mostrar` (PT "show") share no substring with
+        // any English token, so they are clean Portuguese-gated cases.
+        assert!(d.detect("carregar=https://evil.example").is_some());
+        assert!(d.detect("mostrar=//evil.example").is_some());
+        assert!(d
+            .detect("arquivo=php://filter/convert.base64-encode/resource=x.php")
+            .is_some());
+    }
+
+    #[test]
+    fn portuguese_param_ignored_when_language_disabled() {
+        // `carregar` is Portuguese-only (no English substring overlap); with
+        // languages off it must be ignored even with a redirect value.
+        assert!(detector().detect("carregar=//evil.example").is_none());
     }
 
     #[test]

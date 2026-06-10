@@ -1140,6 +1140,7 @@ const LANG_KEYS: &[&str] = &[
     "chinese_mandarin",
     "chinese",
     "hindi",
+    "portuguese",
 ];
 
 fn lang_params_from(enabled: bool, map: Option<&BTreeMap<String, i64>>) -> LangParams {
@@ -1160,6 +1161,7 @@ fn lang_params_from(enabled: bool, map: Option<&BTreeMap<String, i64>>) -> LangP
         lp.chinese_mandarin = on("chinese_mandarin");
         lp.chinese = on("chinese");
         lp.hindi = on("hindi");
+        lp.portuguese = on("portuguese");
     }
     lp
 }
@@ -1563,6 +1565,28 @@ CMC-Rules:
         assert!(cfg.multi_lang_params.spanish);
         assert!(cfg.multi_lang_params.japanese);
         assert!(!cfg.multi_lang_params.russian);
+    }
+
+    #[test]
+    fn parses_portuguese_language_flag() {
+        let cfg = parse_lenient_yaml(
+            r"
+multiple-languages-params: true
+custom-languages-params:
+  portuguese: true
+CMC-Rules:
+  Open_redirect_n_RFI_detect: true
+",
+        )
+        .expect("parse portuguese flag");
+        assert!(cfg.multi_lang_params.enabled);
+        assert!(cfg.multi_lang_params.portuguese);
+
+        // End-to-end: a Portuguese-only hot param fires once the flag is on.
+        let mgr = super::CmcManagerBuilder::new(cfg).build();
+        assert!(mgr
+            .inspect_open_redirect_rfi("carregar=https://evil.example", "")
+            .is_some());
     }
 
     #[test]
