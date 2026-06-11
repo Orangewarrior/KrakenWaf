@@ -341,7 +341,10 @@ impl OpenRedirectRfiDetector {
                 if key_norm_lower == tok {
                     return Some(tok);
                 }
-            } else if key_norm_lower.contains(tok) {
+            } else if memchr::memmem::find(key_norm_lower.as_bytes(), tok.as_bytes()).is_some() {
+                // SIMD-accelerated substring search (faster than `str::contains`);
+                // byte-level matching is equivalent here since both operands are
+                // valid UTF-8.
                 return Some(tok);
             }
         }
