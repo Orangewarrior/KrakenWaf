@@ -50,6 +50,12 @@ use waf::rate_limit::{PersistenceMode, RateLimiter};
 /// neither `--metrics-port` nor `conf/proxy.yaml`'s `metrics-port` supplies one.
 const DEFAULT_METRICS_PORT: u16 = 4343;
 
+/// Secret name for the observability bearer token. Resolved file-first
+/// (`KRAKENWAF_METRICS_TOKEN_FILE` → `/run/secrets/krakenwaf/KRAKENWAF_METRICS_TOKEN`
+/// → the `KRAKENWAF_METRICS_TOKEN` env var) so credentials are never hard-coded.
+/// systemd should provision it via `LoadCredential=` (see `deploy/systemd`).
+const METRICS_TOKEN_SECRET: &str = "KRAKENWAF_METRICS_TOKEN";
+
 #[tokio::main]
 #[allow(clippy::too_many_lines)]
 async fn main() -> Result<()> {
@@ -254,9 +260,30 @@ async fn main() -> Result<()> {
         None => None,
     };
 
+    // Resolve the observability bearer token (file-first, env fallback) so the
+    // dedicated metrics/UI port can require `Authorization: Bearer <token>`.
+    // When absent the bearer gate stays disabled (IP allowlist only) — warn so
+    // the operator knows the port is not credential-protected.
+    let metrics_auth_token: Option<Arc<str>> =
+        secrets::load_secret(METRICS_TOKEN_SECRET).map(Arc::from);
+    if metrics_auth_token.is_some() {
+        info!(
+            target: "krakenwaf",
+            "observability bearer-token gate ENABLED (Authorization: Bearer required on the metrics/UI port)"
+        );
+    } else {
+        warn!(
+            target: "krakenwaf",
+            secret = METRICS_TOKEN_SECRET,
+            "observability bearer-token gate DISABLED: no token provisioned; the metrics/UI port \
+             is protected by the IP allowlist only. Set {METRICS_TOKEN_SECRET} (file or env) to enable it"
+        );
+    }
+
     let state = Arc::new(AppState {
         mode: cli.mode,
         allow_path_config,
+        metrics_auth_token,
         cli: cli.clone(),
         waf,
         proxy,

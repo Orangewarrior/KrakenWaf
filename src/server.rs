@@ -144,6 +144,81 @@ fn ip_is_loopback(ip: &str) -> bool {
         .is_ok_and(|addr| addr.is_loopback())
 }
 
+/// Placeholder substituted for the bearer token in every log line so the secret
+/// never reaches disk, a log shipper, or a crash dump.
+const REDACTED_TOKEN: &str = "****";
+
+/// Constant-time byte-slice equality. The comparison time depends only on the
+/// length of `a`, not on where (or whether) the two slices first differ, so an
+/// attacker cannot recover the expected token byte-by-byte by timing the
+/// response. Length mismatch short-circuits — token length is not itself a
+/// secret.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    if a.len() != b.len() {
+        return false;
+    }
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Extract the credential from an `Authorization: Bearer <token>` header.
+/// Returns `None` when the header is absent, non-UTF-8, not a `Bearer` scheme,
+/// or carries an empty token. The scheme name is matched case-insensitively per
+/// RFC 7235; the token itself is returned verbatim.
+fn extract_bearer(headers: &http::HeaderMap) -> Option<&str> {
+    let value = headers.get(http::header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let token = token.trim();
+    if token.is_empty() {
+        None
+    } else {
+        Some(token)
+    }
+}
+
+/// Enforce the `Authorization: Bearer <token>` gate on the dedicated
+/// observability listener. Returns `Some(401)` when the token is missing or
+/// does not match the configured secret, and `None` when the request is
+/// authorised (or when no token is configured, leaving the endpoint open as
+/// before). The presented token is never logged — only [`REDACTED_TOKEN`].
+fn enforce_bearer_auth(
+    req: &Request<Incoming>,
+    state: &Arc<AppState>,
+    effective_ip: &str,
+) -> Option<Response<Full<Bytes>>> {
+    // No token configured ⇒ the bearer gate is disabled (a startup warning is
+    // emitted in this case). This keeps deployments that have not provisioned a
+    // secret working exactly as before.
+    let expected = state.metrics_auth_token.as_deref()?;
+
+    let presented = extract_bearer(req.headers());
+    let authorised = presented.is_some_and(|t| constant_time_eq(t.as_bytes(), expected.as_bytes()));
+    if authorised {
+        return None;
+    }
+
+    warn!(
+        target: "krakenwaf",
+        ip = %effective_ip,
+        token = REDACTED_TOKEN,
+        present = presented.is_some(),
+        "rejected observability request: missing or invalid bearer token"
+    );
+    let mut resp = plain_response(StatusCode::UNAUTHORIZED, "Unauthorized");
+    resp.headers_mut().insert(
+        http::header::WWW_AUTHENTICATE,
+        http::HeaderValue::from_static("Bearer realm=\"krakenwaf-observability\""),
+    );
+    state.response_header_policy.apply(resp.headers_mut(), false);
+    Some(resp)
+}
+
 /// Decide whether `/metrics` may be served to this client.
 ///
 /// The Prometheus endpoint exposes operational intelligence (per-module block
@@ -173,6 +248,7 @@ fn serve_observability(
     state: &Arc<AppState>,
     client_ip: &str,
     include_metrics: bool,
+    listener_port: u16,
 ) -> Option<Response<Full<Bytes>>> {
     let path = req.uri().path();
     let is_health = path == "/__krakenwaf/health"
@@ -192,7 +268,10 @@ fn serve_observability(
     // Check YAML-based only_addrs restriction first (if configured).
     if let Some(config) = &state.allow_path_config {
         use crate::allowpaths::PathDecision;
-        if matches!(config.check(path, path, &effective_ip), PathDecision::Block) {
+        if matches!(
+            config.check(path, path, &effective_ip, listener_port),
+            PathDecision::Block
+        ) {
             let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
             state.response_header_policy.apply(resp.headers_mut(), false);
             return Some(resp);
@@ -204,6 +283,18 @@ fn serve_observability(
         let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
         state.response_header_policy.apply(resp.headers_mut(), false);
         return Some(resp);
+    }
+    // Bearer-token gate. Only the dedicated observability listener
+    // (`include_metrics`) is protected: every endpoint it serves — `/metrics`,
+    // the health probes, and the kraken-ui proxy surface — requires a valid
+    // `Authorization: Bearer <token>` once a token is configured. The IP
+    // allowlist (403, above) is checked first; an authorised IP that omits or
+    // mis-presents the token gets 401 here. Loopback/data-plane probes
+    // (`include_metrics == false`) are unaffected.
+    if include_metrics {
+        if let Some(resp) = enforce_bearer_auth(req, state, &effective_ip) {
+            return Some(resp);
+        }
     }
     if path == "/__krakenwaf/livez" || path == "/livez" {
         let mut response = plain_response(StatusCode::OK, "ok");
@@ -255,8 +346,12 @@ fn serve_observability(
 /// the same connection timeout as the data plane. Shared by the TLS and plain
 /// observability listeners. Serves the full observability surface (health probes
 /// + `/metrics`) and answers any other path with 404 — it is not a reverse proxy.
-async fn serve_observability_conn<I>(io: I, peer: std::net::SocketAddr, state: Arc<AppState>)
-where
+async fn serve_observability_conn<I>(
+    io: I,
+    peer: std::net::SocketAddr,
+    state: Arc<AppState>,
+    listener_port: u16,
+) where
     I: hyper::rt::Read + hyper::rt::Write + Unpin + Send + 'static,
 {
     let timeout_secs = state.connection_timeout_secs;
@@ -267,7 +362,8 @@ where
         let state = Arc::clone(&state_for_service);
         let client_ip = client_ip.clone();
         async move {
-            let resp = serve_observability(&req, &state, &client_ip, true).unwrap_or_else(|| {
+            let resp = serve_observability(&req, &state, &client_ip, true, listener_port)
+                .unwrap_or_else(|| {
                 let mut resp = plain_response(StatusCode::NOT_FOUND, "Not found");
                 state.response_header_policy.apply(resp.headers_mut(), false);
                 resp
@@ -298,6 +394,7 @@ pub async fn run_metrics(
     state: Arc<AppState>,
 ) -> Result<()> {
     let listener = TcpListener::bind(listener_addr).await?;
+    let listener_port = listener_addr.port();
     info!(target: "krakenwaf", addr=%listener_addr, tls=true, "KrakenWaf observability listener started");
 
     let shutdown = wait_for_shutdown_signal();
@@ -329,7 +426,7 @@ pub async fn run_metrics(
                 );
                 return;
             };
-            serve_observability_conn(TokioIo::new(tls_stream), peer, state).await;
+            serve_observability_conn(TokioIo::new(tls_stream), peer, state, listener_port).await;
         });
     }
 
@@ -347,6 +444,7 @@ pub async fn run_metrics_plain(
     state: Arc<AppState>,
 ) -> Result<()> {
     let listener = TcpListener::bind(listener_addr).await?;
+    let listener_port = listener_addr.port();
     info!(target: "krakenwaf", addr=%listener_addr, tls=false, "KrakenWaf observability listener started (plain HTTP)");
 
     let shutdown = wait_for_shutdown_signal();
@@ -360,7 +458,7 @@ pub async fn run_metrics_plain(
 
         let state = state.clone();
         task::spawn(async move {
-            serve_observability_conn(TokioIo::new(stream), peer, state).await;
+            serve_observability_conn(TokioIo::new(stream), peer, state, listener_port).await;
         });
     }
 
@@ -588,7 +686,8 @@ async fn handle(
     // moved to the dedicated observability listener (see `run_metrics`) so the
     // Prometheus surface can be firewalled/routed in isolation — hence
     // `include_metrics = false`.
-    if let Some(resp) = serve_observability(&req, &state, &client_ip, false) {
+    if let Some(resp) = serve_observability(&req, &state, &client_ip, false, state.cli.listen.port())
+    {
         return resp;
     }
 
@@ -695,4 +794,68 @@ async fn handle(
     }
 
     state.proxy.handle(&state, req, client_ip).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{constant_time_eq, extract_bearer};
+    use http::header::{HeaderMap, HeaderValue, AUTHORIZATION};
+
+    fn headers_with_auth(value: &str) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        h.insert(AUTHORIZATION, HeaderValue::from_str(value).expect("header value"));
+        h
+    }
+
+    #[test]
+    fn constant_time_eq_matches_identical() {
+        assert!(constant_time_eq(b"hunter2", b"hunter2"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_content() {
+        assert!(!constant_time_eq(b"hunter2", b"hunter3"));
+    }
+
+    #[test]
+    fn constant_time_eq_rejects_different_length() {
+        assert!(!constant_time_eq(b"short", b"longer-token"));
+        assert!(!constant_time_eq(b"", b"x"));
+    }
+
+    #[test]
+    fn extract_bearer_reads_token() {
+        let h = headers_with_auth("Bearer my-secret-token");
+        assert_eq!(extract_bearer(&h), Some("my-secret-token"));
+    }
+
+    #[test]
+    fn extract_bearer_is_scheme_case_insensitive() {
+        let h = headers_with_auth("bEaReR my-secret-token");
+        assert_eq!(extract_bearer(&h), Some("my-secret-token"));
+    }
+
+    #[test]
+    fn extract_bearer_trims_surrounding_whitespace() {
+        let h = headers_with_auth("Bearer   spaced-token  ");
+        assert_eq!(extract_bearer(&h), Some("spaced-token"));
+    }
+
+    #[test]
+    fn extract_bearer_rejects_other_schemes() {
+        let h = headers_with_auth("Basic dXNlcjpwYXNz");
+        assert_eq!(extract_bearer(&h), None);
+    }
+
+    #[test]
+    fn extract_bearer_rejects_empty_token() {
+        let h = headers_with_auth("Bearer    ");
+        assert_eq!(extract_bearer(&h), None);
+    }
+
+    #[test]
+    fn extract_bearer_absent_header_is_none() {
+        let h = HeaderMap::new();
+        assert_eq!(extract_bearer(&h), None);
+    }
 }

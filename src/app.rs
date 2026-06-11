@@ -34,6 +34,12 @@ pub struct AppState {
     pub response_header_policy: Arc<ResponseHeaderPolicy>,
     pub mode: WafMode,
     pub allow_path_config: Option<AllowPathConfig>,
+    /// Expected bearer token for the dedicated observability listener. Resolved
+    /// once at startup from `KRAKENWAF_METRICS_TOKEN` (file-first, then env; see
+    /// [`crate::secrets::load_secret`]). When `None` the bearer gate is disabled
+    /// and observability is protected by the IP allowlist alone (a startup
+    /// warning is emitted). Never logged — only `"****"` is.
+    pub metrics_auth_token: Option<Arc<str>>,
     /// Tracks the number of in-flight requests per source IP for per-IP
     /// concurrency limiting. Entries are lazily created on first request.
     pub ip_connections: Arc<DashMap<String, Arc<AtomicUsize>>>,
