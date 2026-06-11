@@ -25,7 +25,7 @@ use std::{fs, net::SocketAddr, path::Path};
 /// Parsed view of `conf/proxy.yaml`. Every field is optional: a missing key, or
 /// a key with an empty value, leaves the corresponding entry `None` so the WAF
 /// keeps its default.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct ProxyConfig {
     pub listen: Option<String>,
     pub upstream: Option<String>,

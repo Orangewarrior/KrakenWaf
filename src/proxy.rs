@@ -377,9 +377,71 @@ impl ProxyClient {
         }
 
         if is_websocket_upgrade(req.headers()) {
+            // ── WebSocket control policy (conf/websocket.yaml) ────────────────
+            // When enable_ws_control is true the handshake is subject to the
+            // path allow-list, optional handshake inspection, and the per-IP
+            // simultaneous-session cap *before* any upstream tunnel is opened.
+            // The acquired guard is threaded into the tunnel task so the per-IP
+            // counter is released exactly when the session ends.
+            let ws = &state.ws_control;
+            let ws_guard = if ws.enabled() {
+                if !ws.path_allowed(&path) {
+                    warn!(
+                        target: "krakenwaf",
+                        ip = %effective_ip,
+                        path = %path,
+                        "websocket upgrade rejected: path not in allowed_paths"
+                    );
+                    return block_content_response(
+                        state,
+                        StatusCode::FORBIDDEN,
+                        "WebSocket path not permitted by KrakenWaf",
+                    );
+                }
+                if ws.inspect_handshake() && !skip_inspection {
+                    let handshake = format_request_prefix_bytes(&context);
+                    if let Decision::Block(finding) = state
+                        .waf
+                        .inspect_complete_payload_with_context(&handshake, Some(&context.method))
+                    {
+                        let event = build_event(&context, &finding, None);
+                        if let Some(response) = self.log_and_enforce(state, event).await {
+                            return response;
+                        }
+                    }
+                }
+                let Some(guard) = ws.try_acquire(&effective_ip) else {
+                    warn!(
+                        target: "krakenwaf",
+                        ip = %effective_ip,
+                        limit = ws.config().max_connections_per_ip,
+                        "websocket upgrade rejected: per-IP session cap reached"
+                    );
+                    state.metrics.inc_rate_limit_hits();
+                    let mut resp = plain_response(
+                        StatusCode::TOO_MANY_REQUESTS,
+                        "Too many simultaneous WebSocket sessions from this IP address",
+                    );
+                    resp.headers_mut()
+                        .insert("Retry-After", HeaderValue::from_static("5"));
+                    apply_response_policy(state, &mut resp);
+                    return resp;
+                };
+                Some(guard)
+            } else {
+                None
+            };
+
             let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
             return self
-                .handle_websocket_upgrade(state, req, request_id, traceparent, &forwarded_origin)
+                .handle_websocket_upgrade(
+                    state,
+                    req,
+                    request_id,
+                    traceparent,
+                    &forwarded_origin,
+                    ws_guard,
+                )
                 .await;
         }
 
@@ -510,7 +572,18 @@ impl ProxyClient {
         request_id: &str,
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
+        ws_guard: Option<crate::websocket::WsConnGuard>,
     ) -> Response<Full<Bytes>> {
+        // Resolve the tunnel idle / session bounds from the control policy. When
+        // the policy is disabled the tunnel is unbounded (transparent proxy).
+        let (idle, max_session) = if state.ws_control.enabled() {
+            (
+                state.ws_control.config().idle_timeout(),
+                state.ws_control.config().max_session(),
+            )
+        } else {
+            (None, None)
+        };
         match self
             .open_upstream_websocket(&req, request_id, traceparent, forwarded_origin)
             .await
@@ -521,14 +594,23 @@ impl ProxyClient {
                     match on_upgrade.await {
                         Ok(upgraded) => {
                             let mut downstream = TokioIo::new(upgraded);
-                            let mut upstream = upstream;
+                            let upstream = upstream;
                             if !leftover.is_empty()
                                 && downstream.write_all(&leftover).await.is_err()
                             {
                                 return;
                             }
-                            let _ =
-                                tokio::io::copy_bidirectional(&mut downstream, &mut upstream).await;
+                            // Bounded bidirectional pump: closes on idle timeout
+                            // or session-lifetime cap; `ws_guard` releases the
+                            // per-IP session slot when the tunnel ends.
+                            crate::websocket::tunnel(
+                                downstream,
+                                upstream,
+                                idle,
+                                max_session,
+                                ws_guard,
+                            )
+                            .await;
                         }
                         Err(err) => {
                             warn!(target: "krakenwaf", error=%err, "websocket client upgrade failed");

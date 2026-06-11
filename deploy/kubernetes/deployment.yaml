@@ -1,0 +1,229 @@
+# KrakenWaf — hardened Kubernetes Deployment (CIS Kubernetes Benchmark aligned)
+# ─────────────────────────────────────────────────────────────────────────────
+# Pair with:
+#   * podsecurity.yaml   — namespace Pod Security Admission labels (restricted)
+#   * networkpolicy.yaml — default-deny ingress/egress with explicit allows
+#
+# Secrets are mounted as files under /run/secrets/krakenwaf (KrakenWaf resolves
+# them file-first), never as environment variables.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: krakenwaf
+  namespace: krakenwaf
+automountServiceAccountToken: false
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: krakenwaf
+  namespace: krakenwaf
+  labels:
+    app.kubernetes.io/name: krakenwaf
+    app.kubernetes.io/component: waf
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: krakenwaf
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: krakenwaf
+        app.kubernetes.io/component: waf
+    spec:
+      serviceAccountName: krakenwaf
+      automountServiceAccountToken: false
+      # ── Pod-level security context (CIS 5.2) ───────────────────────────────
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      # Spread across nodes so a single node loss never drops all WAF replicas.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: krakenwaf
+      # ── Pre-flight config validation as a fail-fast init container ──────────
+      initContainers:
+        - name: config-validate
+          image: ghcr.io/orangewarrior/krakenwaf:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - config
+            - validate
+            - --external-proxy-conf=/etc/krakenwaf/conf/proxy.yaml
+            - --ratelimit-by-file-conf=/etc/krakenwaf/conf/ratelimit.yaml
+            - --websocket-conf=/etc/krakenwaf/conf/websocket.yaml
+            - --rules-dir=/etc/krakenwaf/rules
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            privileged: false
+            runAsNonRoot: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
+          volumeMounts:
+            - name: config
+              mountPath: /etc/krakenwaf/conf
+              readOnly: true
+            - name: rules
+              mountPath: /etc/krakenwaf/rules
+              readOnly: true
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "128Mi" }
+      containers:
+        - name: krakenwaf
+          image: ghcr.io/orangewarrior/krakenwaf:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --listen=0.0.0.0:8443
+            - --metrics-port=4343
+            - --external-proxy-conf=/etc/krakenwaf/conf/proxy.yaml
+            - --ratelimit-by-file-conf=/etc/krakenwaf/conf/ratelimit.yaml
+            - --websocket-conf=/etc/krakenwaf/conf/websocket.yaml
+            - --rules-dir=/etc/krakenwaf/rules
+          ports:
+            - name: https
+              containerPort: 8443
+              protocol: TCP
+            - name: metrics
+              containerPort: 4343
+              protocol: TCP
+          # ── Container-level security context (CIS 5.2) ─────────────────────
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            privileged: false
+            capabilities:
+              drop: ["ALL"]
+              # Only needed if binding a privileged port (<1024). With 8443 the
+              # WAF needs no capability at all — leave this commented out.
+              # add: ["NET_BIND_SERVICE"]
+            seccompProfile:
+              type: RuntimeDefault
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 3
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "2"
+              memory: "1Gi"
+          volumeMounts:
+            - name: config
+              mountPath: /etc/krakenwaf/conf
+              readOnly: true
+            - name: rules
+              mountPath: /etc/krakenwaf/rules
+              readOnly: true
+            - name: certs
+              mountPath: /etc/krakenwaf/certs
+              readOnly: true
+            # File-first secrets: KrakenWaf reads /run/secrets/krakenwaf/<NAME>.
+            - name: secrets
+              mountPath: /run/secrets/krakenwaf
+              readOnly: true
+            # Writable scratch for the rate-limiter snapshot + logs. The root
+            # filesystem stays read-only; only these emptyDirs are writable.
+            - name: state
+              mountPath: /var/lib/krakenwaf
+            - name: logs
+              mountPath: /var/log/krakenwaf
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: krakenwaf-config
+        - name: rules
+          configMap:
+            name: krakenwaf-rules
+        - name: certs
+          secret:
+            secretName: krakenwaf-tls
+            defaultMode: 0400
+        - name: secrets
+          secret:
+            secretName: krakenwaf-secrets
+            defaultMode: 0400
+        - name: state
+          emptyDir:
+            sizeLimit: 64Mi
+        - name: logs
+          emptyDir:
+            sizeLimit: 256Mi
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: krakenwaf
+  namespace: krakenwaf
+  labels:
+    app.kubernetes.io/name: krakenwaf
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: krakenwaf
+  ports:
+    - name: https
+      port: 443
+      targetPort: https
+      protocol: TCP
+---
+# Dedicated metrics service so Prometheus scrapes the isolated observability port.
+apiVersion: v1
+kind: Service
+metadata:
+  name: krakenwaf-metrics
+  namespace: krakenwaf
+  labels:
+    app.kubernetes.io/name: krakenwaf
+    app.kubernetes.io/component: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: krakenwaf
+  ports:
+    - name: metrics
+      port: 4343
+      targetPort: metrics
+      protocol: TCP

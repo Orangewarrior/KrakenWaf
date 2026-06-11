@@ -1,0 +1,49 @@
+# KrakenWaf — namespace with Pod Security Admission "restricted" profile.
+# ─────────────────────────────────────────────────────────────────────────────
+# The built-in Pod Security Admission controller enforces the Kubernetes
+# Pod Security Standards. The "restricted" level is the most locked-down policy
+# and is the CIS-aligned baseline for a security-sensitive workload like a WAF.
+#
+# enforce  — reject pods that violate the policy.
+# audit/warn — record/warn on violations (kept at restricted for visibility).
+#
+# Apply this BEFORE the Deployment so the namespace gates admission. The
+# KrakenWaf Deployment in deployment.yaml is written to satisfy "restricted":
+#   * runAsNonRoot + non-zero runAsUser
+#   * allowPrivilegeEscalation: false
+#   * capabilities.drop: ["ALL"]
+#   * seccompProfile.type: RuntimeDefault
+#   * readOnlyRootFilesystem (defence-in-depth; not required by PSS but set)
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: krakenwaf
+  labels:
+    # Pin the version so an admission-controller upgrade cannot silently relax
+    # (or unexpectedly tighten) the policy out from under the workload.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/audit-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/warn-version: latest
+---
+# Optional: a hardened LimitRange so a mis-specified pod cannot request
+# unbounded resources (defence against accidental resource-exhaustion DoS).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: krakenwaf-limits
+  namespace: krakenwaf
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: "512Mi"
+      defaultRequest:
+        cpu: "250m"
+        memory: "256Mi"
+      max:
+        cpu: "2"
+        memory: "1Gi"

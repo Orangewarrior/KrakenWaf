@@ -131,6 +131,9 @@ pub fn spawn_ip_map_janitor(state: Arc<AppState>) {
             state
                 .ip_body_bytes
                 .retain(|_, counter| counter.load(Ordering::Relaxed) > 0);
+            // Reap per-IP WebSocket session counters the same way, so a client
+            // rotating source addresses cannot grow the map without bound.
+            state.ws_control.sweep_idle();
         }
     });
 }

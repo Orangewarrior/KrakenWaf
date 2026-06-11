@@ -1,5 +1,12 @@
 # Deployment notes
 
+> **Hardened, CIS-aligned deploy artifacts** (systemd, Kubernetes, Docker) are
+> documented in [production_hardening.md](production_hardening.md) and shipped
+> under [`deploy/`](../deploy). The admin pre-flight commands
+> (`config validate`, `config dump --redact`, `rules validate`) are documented in
+> [admin_commands.md](admin_commands.md). WebSocket (`ws://`/`wss://`) controls
+> are in [websocket.md](websocket.md).
+
 ## Rate limiting at the edge
 KrakenWAF rate limits by the observed client IP. When deployed directly on the TCP edge this is the socket peer address and requires no header trust chain.
 

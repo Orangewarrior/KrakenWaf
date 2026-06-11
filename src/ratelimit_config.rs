@@ -2,12 +2,12 @@
 //! path via `--ratelimit-by-file-conf`).
 
 use anyhow::{bail, Context, Result};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
 
 // ── Top-level config ─────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RateLimitConfig {
     /// Maximum requests per minute per source IP.
     /// `None` (or 0 in the file) defers to the CLI flag or the built-in default (240).
@@ -245,7 +245,7 @@ impl RateLimitConfig {
 
 // ── Redis section ─────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RedisConfig {
     /// Redis endpoint URL. **Must** use `rediss://` (TLS) per CIS Benchmark.
     /// Credentials are injected at runtime from `REDIS_PASSWORD` /

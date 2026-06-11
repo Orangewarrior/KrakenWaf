@@ -19,8 +19,10 @@ pub mod rules;
 pub mod secrets;
 pub mod server;
 pub mod storage;
+pub mod subcommands;
 pub mod tls;
 pub mod update;
 pub mod waf;
+pub mod websocket;
 
 pub mod cmc;

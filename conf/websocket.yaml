@@ -1,0 +1,44 @@
+# KrakenWaf — WebSocket Control Policy
+# ─────────────────────────────────────────────────────────────────────────────
+# Loaded automatically from conf/websocket.yaml every time the WAF starts.
+# Use --websocket-conf <path> to point at an alternative file.
+#
+# These knobs govern ws:// and wss:// upgrade requests that the WAF tunnels to
+# the upstream. When enable_ws_control is false NONE of the limits below apply
+# and WebSocket upgrades behave exactly as a transparent tunnel. When true the
+# WAF enforces every limit, returning an HTTP error on the handshake (before the
+# tunnel is established) when a request would breach a policy.
+
+web_socket:
+  # Master switch. true  → enforce the policy below (default).
+  #                false → tunnel WebSocket upgrades without any limitation.
+  enable_ws_control: true
+
+  # Request paths permitted to upgrade to a WebSocket. A handshake whose
+  # normalized path is not listed is rejected with HTTP 403 before any upstream
+  # connection is opened. Leave the list empty to allow ANY path to upgrade
+  # (only the remaining numeric limits apply).
+  allowed_paths:
+    - /ws
+    - /wss
+
+  # Idle timeout (seconds). If no frame flows in EITHER direction for this long
+  # the tunnel is closed. Bounds the cost of half-open / abandoned sockets.
+  # 0 disables the idle bound (not recommended).
+  idle_timeout_secs: 60
+
+  # Maximum total lifetime of a single WebSocket session (seconds). The tunnel
+  # is force-closed once it has been open this long, regardless of activity.
+  # Caps long-lived sessions an attacker could use to pin resources.
+  # 0 disables the session-lifetime bound.
+  max_session_secs: 3600
+
+  # Maximum number of simultaneous WebSocket sessions accepted from a single
+  # source IP. A handshake that would exceed this is rejected with HTTP 429 +
+  # Retry-After. 0 disables the per-IP cap.
+  max_connections_per_ip: 8
+
+  # When true the WAF runs its full inspection engine over the upgrade request
+  # (URI + headers) before tunneling. A detection blocks the handshake. When
+  # false the handshake is only subject to the numeric/path limits above.
+  inspect_handshake: true
