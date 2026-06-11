@@ -265,8 +265,7 @@ impl Drop for WsConnGuard {
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
+        .map_or(0, |d| d.as_secs())
 }
 
 /// Copy one direction, stamping `activity` after every forwarded chunk so the
@@ -411,8 +410,7 @@ web_socket:
 
     #[test]
     fn per_ip_cap_blocks_excess_and_releases_on_drop() {
-        let mut cfg = WebSocketConfig::default();
-        cfg.max_connections_per_ip = 2;
+        let cfg = WebSocketConfig { max_connections_per_ip: 2, ..Default::default() };
         let ctrl = WebSocketControl::new(cfg);
         let g1 = ctrl.try_acquire("1.2.3.4");
         let g2 = ctrl.try_acquire("1.2.3.4");
@@ -426,8 +424,7 @@ web_socket:
 
     #[test]
     fn zero_cap_disables_per_ip_limit() {
-        let mut cfg = WebSocketConfig::default();
-        cfg.max_connections_per_ip = 0;
+        let cfg = WebSocketConfig { max_connections_per_ip: 0, ..Default::default() };
         let ctrl = WebSocketControl::new(cfg);
         for _ in 0..1000 {
             assert!(ctrl.try_acquire("9.9.9.9").is_some());
@@ -436,8 +433,10 @@ web_socket:
 
     #[test]
     fn validate_rejects_relative_allowed_path() {
-        let mut cfg = WebSocketConfig::default();
-        cfg.allowed_paths = vec!["ws".to_string()];
+        let cfg = WebSocketConfig {
+            allowed_paths: vec!["ws".to_string()],
+            ..Default::default()
+        };
         assert!(cfg.validate().is_err());
     }
 }
