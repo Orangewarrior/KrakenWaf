@@ -94,8 +94,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # `cargo install` compiles from source and pulls many crates from
+      # crates.io, so a transient network blip (e.g. an HTTP/2 framing error
+      # mid-download) can fail it. Retry with backoff, and fall through
+      # gracefully if every attempt fails — this job is advisory-only, so a
+      # flaky install must not paint the check red.
       - name: Install cargo-audit
-        run: cargo install cargo-audit --locked
+        continue-on-error: true
+        run: |
+          for attempt in 1 2 3; do
+            if cargo install cargo-audit --locked; then
+              exit 0
+            fi
+            echo "::warning::cargo-audit install attempt ${attempt} failed; retrying" >&2
+            sleep $((attempt * 5))
+          done
+          echo "::warning::cargo-audit install failed after 3 attempts; skipping audit" >&2
 
       - name: Audit dependencies
         run: cargo audit
