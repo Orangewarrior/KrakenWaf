@@ -9,6 +9,18 @@
 //!   cargo run --bin attack -- --target <https://waf:8443> --cacert /path/to/ca.pem
 //!   cargo run --bin attack -- --target <https://waf:8443> --insecure-skip-verify
 //!
+//! Observability bearer-token probe
+//! --------------------------------
+//! The WAF's dedicated observability port (default 4343) requires
+//! `Authorization: Bearer <token>` once a token is provisioned. Probe it with:
+//!
+//!   cargo run --bin attack -- --metrics-target <https://waf:4343> \
+//!       --metrics-token "$`KRAKENWAF_METRICS_TOKEN`" --metrics-only --cacert ca.pem
+//!
+//!   --metrics-target <URL>   base URL of the observability port
+//!   --metrics-token <TOKEN>  expected bearer token (printed only as ****)
+//!   --metrics-only           run just the bearer probe and exit
+//!
 //! TLS notes
 //! ---------
 //! When `--target` is `https://`, reqwest validates the server cert against
@@ -570,6 +582,16 @@ struct Config {
     /// Disable TLS certificate validation outright. Only intended for
     /// debugging — never use this against a production target.
     insecure_skip_verify: bool,
+    /// Base URL of the dedicated observability port (e.g.
+    /// `https://127.0.0.1:4343`). When set, the tool probes `/metrics` with and
+    /// without a bearer token to prove the WAF enforces `Authorization: Bearer`.
+    metrics_target: Option<String>,
+    /// Bearer token expected by the observability port. Paired with
+    /// `--metrics-target`. The token is never printed (logs show `****`).
+    metrics_token: Option<String>,
+    /// Run ONLY the observability bearer-token probe and exit, skipping the
+    /// attack-payload sweeps. Requires `--metrics-target`.
+    metrics_only: bool,
 }
 
 fn parse_args() -> Config {
@@ -579,6 +601,9 @@ fn parse_args() -> Config {
     let mut concurrency = 20usize;
     let mut cacert: Option<String> = None;
     let mut insecure_skip_verify = false;
+    let mut metrics_target: Option<String> = None;
+    let mut metrics_token: Option<String> = None;
+    let mut metrics_only = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -606,6 +631,21 @@ fn parse_args() -> Config {
             "--insecure-skip-verify" | "-k" => {
                 insecure_skip_verify = true;
             }
+            "--metrics-target" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    metrics_target = Some(v.clone());
+                }
+            }
+            "--metrics-token" => {
+                i += 1;
+                if let Some(v) = args.get(i) {
+                    metrics_token = Some(v.clone());
+                }
+            }
+            "--metrics-only" => {
+                metrics_only = true;
+            }
             _ => {}
         }
         i += 1;
@@ -616,7 +656,105 @@ fn parse_args() -> Config {
         concurrency,
         cacert,
         insecure_skip_verify,
+        metrics_target,
+        metrics_token,
+        metrics_only,
     }
+}
+
+// ─── Observability bearer-token probe ─────────────────────────────────────────
+
+/// Probe the dedicated observability port to prove the WAF enforces the
+/// `Authorization: Bearer <token>` gate. Returns the number of failed
+/// expectations (0 == the gate behaves correctly). The bearer token is never
+/// printed — only the masked form `****` appears in output.
+async fn run_observability_probe(client: &reqwest::Client, cfg: &Config) -> usize {
+    let Some(base) = cfg.metrics_target.as_deref() else {
+        return 0;
+    };
+    let url = format!("{base}/metrics");
+    let mut failures = 0usize;
+
+    println!("━━━ Observability bearer-token gate — GET {url} ━━━");
+
+    // 1. No Authorization header → must be rejected with 401.
+    match client.get(&url).send().await {
+        Ok(r) if r.status() == StatusCode::UNAUTHORIZED => {
+            println!("  [OK]   no token → 401 Unauthorized");
+        }
+        Ok(r) => {
+            println!(
+                "  [FAIL] no token → expected 401, got {} (metrics leaked without a token!)",
+                r.status()
+            );
+            failures += 1;
+        }
+        Err(e) => {
+            println!("  [FAIL] no token → request error: {e}");
+            failures += 1;
+        }
+    }
+
+    // 2. Wrong token → must also be rejected with 401.
+    match client
+        .get(&url)
+        .header("Authorization", "Bearer not-the-real-token")
+        .send()
+        .await
+    {
+        Ok(r) if r.status() == StatusCode::UNAUTHORIZED => {
+            println!("  [OK]   wrong token (****) → 401 Unauthorized");
+        }
+        Ok(r) => {
+            println!(
+                "  [FAIL] wrong token (****) → expected 401, got {}",
+                r.status()
+            );
+            failures += 1;
+        }
+        Err(e) => {
+            println!("  [FAIL] wrong token (****) → request error: {e}");
+            failures += 1;
+        }
+    }
+
+    // 3. Correct token → must be allowed (200) and return Prometheus metrics.
+    if let Some(token) = cfg.metrics_token.as_deref() {
+        match client
+            .get(&url)
+            .header("Authorization", format!("Bearer {token}"))
+            .send()
+            .await
+        {
+            Ok(r) if r.status() == StatusCode::OK => {
+                let body = r.text().await.unwrap_or_default();
+                if body.contains("krakenwaf_requests_inspected_total") {
+                    println!("  [OK]   valid token (****) → 200 OK with Prometheus metrics");
+                } else {
+                    println!(
+                        "  [FAIL] valid token (****) → 200 OK but body is not Prometheus metrics"
+                    );
+                    failures += 1;
+                }
+            }
+            Ok(r) => {
+                println!(
+                    "  [FAIL] valid token (****) → expected 200, got {}",
+                    r.status()
+                );
+                failures += 1;
+            }
+            Err(e) => {
+                println!("  [FAIL] valid token (****) → request error: {e}");
+                failures += 1;
+            }
+        }
+    } else {
+        println!("  [SKIP] valid-token check (no --metrics-token supplied)");
+    }
+
+    println!("  → {failures} observability expectation failure(s)\n");
+    failures
 }
 
 // ─── Output helpers ───────────────────────────────────────────────────────────
@@ -1102,6 +1240,23 @@ async fn main() {
     let mut total_bypassed = 0usize;
     let mut total_errors = 0usize;
     let mut score_failures = 0usize;
+
+    // Observability bearer-token gate. Runs first (and only when
+    // --metrics-target is supplied) so the dedicated port is validated before
+    // the long CMC sweeps. Failures here are folded into the exit code.
+    let observability_failures = run_observability_probe(&client, &cfg).await;
+    score_failures += observability_failures;
+
+    // --metrics-only: validate just the observability gate and exit. Keeps the
+    // dedicated-port integration test fast (no full attack sweep needed).
+    if cfg.metrics_only {
+        if observability_failures == 0 {
+            println!("Observability gate: ALL CHECKS PASSED ✓");
+            std::process::exit(0);
+        }
+        println!("Observability gate: {observability_failures} FAILURE(S) ✗");
+        std::process::exit(1);
+    }
 
     macro_rules! run_sweep {
         ($label:expr, $fut:expr) => {{

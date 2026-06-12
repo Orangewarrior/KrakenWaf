@@ -337,7 +337,7 @@ impl ProxyClient {
         // Check allow-paths: IP-restricted entries block non-allowed IPs; matched entries
         // without IP restriction skip WAF inspection entirely.
         let (skip_inspection, block_by_ip) = if let Some(config) = &state.allow_path_config {
-            match config.check(&path, &uri.to_string(), &effective_ip) {
+            match config.check(&path, &uri.to_string(), &effective_ip, state.cli.listen.port()) {
                 PathDecision::Allow(entry) => {
                     if entry.log {
                         info!(

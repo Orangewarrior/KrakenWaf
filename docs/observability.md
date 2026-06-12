@@ -63,23 +63,86 @@ rate(krakenwaf_module_blocks_total{engine="cmc",module="java_deserialize_detect"
 rate(krakenwaf_requests_inspected_total[1m])
 ```
 
-## Metrics access control
+## The dedicated observability port (default 4343)
 
-**`/metrics` is fail-closed by default (since 2.32.0):** when no IP allowlist is
-configured it is served **only to loopback** (`127.0.0.0/8`, `::1`), because the
-endpoint reveals operational intelligence (per-module block counts, latency,
-which engines fire). Liveness/readiness endpoints are unaffected. To allow
-**remote** scraping, add the scraper's IP to the allowlist — either
-`rules/addr/allowlist.txt` (honoured directly) or the `only_addrs` field in
-`rules/allowpaths/lists.yaml`:
+`/metrics` and the health probes are served on a **dedicated observability
+listener** (default port `4343`, set via `--metrics-port` or `conf/proxy.yaml`'s
+`metrics-port`). The same port also fronts the
+[kraken-ui](https://github.com/Orangewarrior/kraken-ui). The channel is
+TLS-encrypted (the listener reuses the data-plane certificates; it serves plain
+HTTP only when the whole WAF runs with `--no-tls`).
+
+Two **independent** gates protect everything on this port, in this order:
+
+1. **IP allowlist → HTTP 403.** Only source IPs listed in
+   `rules/addr/allowlist/allow_addrs_metrics_n_ui.txt` may reach the port. Any
+   other source is rejected with `403` *before* the token is examined.
+2. **Bearer token → HTTP 401.** A valid `Authorization: Bearer <token>` is
+   required on **every** endpoint the port serves (`/metrics`, `/livez`,
+   `/readyz`, health, and the kraken-ui surface). A missing or invalid token
+   returns `401` with a `WWW-Authenticate: Bearer` challenge.
+
+### Bearer token
+
+The expected token is read from the **`KRAKENWAF_METRICS_TOKEN`** secret using
+KrakenWaf's file-first resolution chain — never a CLI flag and never hard-coded:
+
+| Order | Source |
+|---|---|
+| 1 | `KRAKENWAF_METRICS_TOKEN_FILE` — path to a file holding the token |
+| 2 | `/run/secrets/krakenwaf/KRAKENWAF_METRICS_TOKEN` — conventional mount |
+| 3 | `KRAKENWAF_METRICS_TOKEN` — plain environment variable (12-factor) |
+
+Generate a strong, **ASCII** token (bearer tokens must be ASCII per RFC 6750),
+e.g. `openssl rand -hex 32`. Properties of the gate:
+
+- **Constant-time comparison** — the check does not leak the token via response
+  timing.
+- **Never logged** — every log line shows the literal `****` in place of the
+  token, so it cannot leak to disk, a log shipper, or a crash dump.
+- **Disabled when unset** — if no token is provisioned the bearer gate is
+  skipped (IP allowlist only) and a startup warning is emitted. Provision the
+  secret to enable it.
+
+systemd should supply the token via `LoadCredential=` (see
+`deploy/systemd/krakenwaf.service`), which places it on a 0400 tmpfs the service
+user can read, with `KRAKENWAF_METRICS_TOKEN_FILE` pointing at it — no plaintext
+in `Environment=`.
+
+Scrape it with, for example:
+
+```bash
+curl --cacert ca.pem \
+  -H "Authorization: Bearer $KRAKENWAF_METRICS_TOKEN" \
+  https://waf.internal:4343/metrics
+```
+
+Prometheus uses an `authorization` stanza in its scrape config:
+
+```yaml
+scrape_configs:
+  - job_name: krakenwaf
+    scheme: https
+    authorization:
+      type: Bearer
+      credentials_file: /etc/prometheus/krakenwaf_metrics_token
+    static_configs:
+      - targets: ["waf.internal:4343"]
+```
+
+### IP allowlist (`allow_addrs_metrics_n_ui.txt`)
+
+The allow-paths entry for the observability port is **scoped to that port** with
+the `port:` field, so it applies only on the observability listener:
 
 ```yaml
 allow:
-  - order: 1
-    title: "Health check endpoint"
-    description: "Load-balancer liveness probe — restricted to allowed IPs"
+  - order: 2
+    title: "Health check and UI endpoint"
+    description: "Observability + kraken-ui — restricted to allowed IPs"
     log: false
-    only_addrs: rules/addr/allowlist/allow_addrs.txt
+    port: 4343         # scope this entry to the dedicated observability port
+    only_addrs: rules/addr/allowlist/allow_addrs_metrics_n_ui.txt
     paths:
       - /metrics
       - /healthz
@@ -87,25 +150,31 @@ allow:
       - /livez
 ```
 
-The companion file `rules/addr/allowlist/allow_addrs.txt` lists the allowed
-source IPs (one per line, CIDR and start–end ranges supported):
+The companion file `rules/addr/allowlist/allow_addrs_metrics_n_ui.txt` lists the
+allowed source IPs (one per line; exact IP, CIDR, or start–end range):
 
 ```
-# Loopback only — metrics visible from localhost exclusively.
+# Loopback only — observability and UI visible from localhost exclusively.
 127.0.0.1
-::1
 ```
 
-Requests from unlisted IPs receive **HTTP 403**. The check works behind a
-load balancer when `--real-ip-header` and `--trusted-proxy-cidrs` are
-configured — KrakenWaf uses the effective client IP for the restriction.
+Requests from unlisted IPs receive **HTTP 403**. The check works behind a load
+balancer when `--real-ip-header` and `--trusted-proxy-cidrs` are configured —
+KrakenWaf uses the effective client IP for the restriction. Add your Prometheus,
+Grafana, and kraken-ui pod/node IPs (or a tight CIDR) here.
 
-Grafana, Prometheus, and similar scraping tools should have their pod/node
-IPs added to `allow_addrs.txt`, or be configured to scrape through a sidecar
-on loopback.
+### Inline `/metrics` fallback
+
+When `/metrics` is reached on the **data-plane** port (no dedicated listener, or
+a request that bypasses it), it stays fail-closed as it has since 2.32.0: with no
+IP allowlist configured it is served **only to loopback** (`127.0.0.0/8`, `::1`),
+because it reveals operational intelligence. Liveness/readiness endpoints are
+unaffected. The bearer-token gate applies to the **dedicated observability port
+only**, not to inline data-plane health probes used by load balancers.
 
 See **[docs/allowpaths.md](allowpaths.md)** for the full IP-restriction
-feature reference.
+feature reference, and **[docs/attack_tool.md](attack_tool.md)** for the
+`attack --metrics-only` probe that validates this gate.
 
 ---
 

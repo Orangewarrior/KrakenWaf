@@ -8,10 +8,11 @@ allow:
       - /wp-json
 
   - order: 2
-    title: "Health check endpoint"
+    title: "Health check and UI endpoint"
     description: "Load-balancer liveness probe — safe to bypass WAF inspection"
     log: false
-    only_addrs: rules/addr/allowlist/allow_addrs.txt
+    port: 4343         # scope this entry to the dedicated observability port
+    only_addrs: rules/addr/allowlist/allow_addrs_metrics_n_ui.txt
     paths:
       - /metrics
       - /healthz

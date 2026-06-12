@@ -190,7 +190,35 @@ USAGE:
     attack [OPTIONS]
 
 OPTIONS:
-    --target <URL>    Base URL of the WAF to attack [default: http://127.0.0.1:8080]
-    --verbose         Print each payload with its outcome
-    -h, --help        Print help
+    --target <URL>            Base URL of the WAF to attack [default: http://127.0.0.1:8080]
+    --verbose                 Print each payload with its outcome
+    --concurrency <N>         Requests in-flight at once [default: 20]
+    --cacert <PEM>            Trust this CA root when --target is HTTPS
+    --insecure-skip-verify    Disable TLS certificate validation (debug only)
+    --metrics-target <URL>    Base URL of the observability port to probe (e.g. https://127.0.0.1:4343)
+    --metrics-token <TOKEN>   Bearer token for the observability port (printed only as ****)
+    --metrics-only            Run just the observability bearer-token probe and exit
+    -h, --help                Print help
 ```
+
+### Observability bearer-token probe
+
+The WAF's dedicated observability port (default `4343`) requires
+`Authorization: Bearer <token>` once a token is provisioned (see
+[docs/observability.md](observability.md)). The attack tool validates the gate:
+it sends `/metrics` with **no token** (expects `401`), a **wrong token**
+(`401`), and the **correct token** (`200` + a Prometheus body). The token is
+never printed — only the mask `****` appears in the output.
+
+```bash
+# Probe only the observability gate (TLS, with the WAF's CA), then exit.
+cargo run --bin attack -- \
+    --metrics-target https://127.0.0.1:4343 \
+    --metrics-token "$KRAKENWAF_METRICS_TOKEN" \
+    --metrics-only \
+    --cacert /tmp/krakenwaf-tls/ca.pem
+```
+
+`--metrics-only` exits `0` when every expectation holds and `1` otherwise, so it
+slots directly into CI. Without `--metrics-only`, the probe runs first and its
+failures are folded into the overall exit code alongside the payload sweeps.

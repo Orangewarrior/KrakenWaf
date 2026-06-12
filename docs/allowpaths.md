@@ -51,6 +51,7 @@ allow:
 | `title`       | string  | yes      | —       | Human-readable label shown in log output. |
 | `description` | string  | no       | `""`    | Free-form notes for operators. |
 | `log`         | boolean | no       | `false` | When `true`, an `info`-level log line is emitted each time a request matches this entry. |
+| `port`        | integer | no       | —       | TCP listener port this entry is scoped to. When set, the entry is consulted **only** for requests arriving on that exact port (e.g. `4343` for the dedicated observability port). When omitted the entry applies on every listener. See [Port scoping](#port-scoping) below. |
 | `only_addrs`  | string  | no       | —       | Path to a file listing allowed client IPs. When set, only those IPs may access the listed paths; all others receive HTTP 403. See [IP restriction](#ip-restriction-only_addrs) below. |
 | `paths`       | list    | yes      | —       | URI prefixes. Matching is prefix-based after URL normalisation (percent-decode + path traversal collapse). |
 
@@ -62,6 +63,38 @@ allow:
 - A path `/wp-admin` matches `/wp-admin`, `/wp-admin/`, and
   `/wp-admin/edit.php` but **not** `/wp-admin-setup`.
 - Matching is **case-sensitive** (standard for URI paths per RFC 3986).
+
+### Port scoping
+
+The optional `port` field binds an entry to a single TCP listener:
+
+- `port` **omitted** → the entry applies on every listener (the historic,
+  port-agnostic behaviour; nothing changes for existing files).
+- `port: <n>` → the entry is **invisible** on every listener except port `n`.
+  On any other port the WAF treats it as if it were not present (`NoMatch`),
+  so the path is inspected normally there.
+
+This is how the shipped configuration scopes the health/metrics/UI entry to the
+dedicated observability port (default `4343`) without affecting the data-plane
+port:
+
+```yaml
+allow:
+  - order: 2
+    title: "Health check and UI endpoint"
+    log: false
+    port: 4343                                            # observability port only
+    only_addrs: rules/addr/allowlist/allow_addrs_metrics_n_ui.txt
+    paths:
+      - /metrics
+      - /healthz
+      - /readyz
+      - /livez
+```
+
+On the observability port this port additionally enforces an
+`Authorization: Bearer <token>` credential — see
+**[docs/observability.md](observability.md)** for the full bearer-token gate.
 
 ---
 

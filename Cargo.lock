@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "krakenwaf"
-version = "2.37.0"
+version = "2.38.0"
 dependencies = [
  "ahash",
  "aho-corasick",

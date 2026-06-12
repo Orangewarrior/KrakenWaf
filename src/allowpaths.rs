@@ -143,6 +143,12 @@ pub struct AllowPathEntry {
     pub description: String,
     #[serde(default)]
     pub log: bool,
+    /// TCP port this entry is scoped to. When set, the entry is only consulted
+    /// for requests that arrive on this exact listener port (e.g. `4343` for the
+    /// dedicated observability port). When omitted the entry applies on every
+    /// listener, preserving the historic port-agnostic behaviour.
+    #[serde(default)]
+    pub port: Option<u16>,
     pub paths: Vec<String>,
     /// Path (relative to WAF root) of a file listing allowed client IPs.
     /// When set, only IPs in that file may reach any of `paths`. All other
@@ -233,17 +239,32 @@ impl AllowPathConfig {
     /// - `full_uri`:  raw request URI including query string; scanned with `memmem`
     ///   to catch endpoint names embedded in query parameters
     /// - `client_ip`: effective client IP string (may include `X-Forwarded-For`)
+    /// - `listener_port`: the local TCP port the request arrived on. Entries that
+    ///   declare a `port` are skipped unless it matches; port-less entries always
+    ///   apply.
     ///
     /// Returns:
     /// - [`PathDecision::Allow`] — WAF inspection can be skipped
     /// - [`PathDecision::Block`] — block immediately (IP restriction violated)
     /// - [`PathDecision::NoMatch`] — no configured path matched; apply normal WAF
     #[must_use]
-    pub fn check<'a>(&'a self, path: &str, full_uri: &str, client_ip: &str) -> PathDecision<'a> {
+    pub fn check<'a>(
+        &'a self,
+        path: &str,
+        full_uri: &str,
+        client_ip: &str,
+        listener_port: u16,
+    ) -> PathDecision<'a> {
         let normalized = crate::rules::normalize_url_path(path);
         let full_uri_bytes = full_uri.as_bytes();
 
         for entry in &self.entries {
+            // Port scoping: an entry bound to a specific port is invisible on
+            // every other listener (e.g. the metrics/ui entry only applies on
+            // the dedicated observability port).
+            if entry.port.is_some_and(|p| p != listener_port) {
+                continue;
+            }
             // Prefix match on the canonicalized path.
             let path_matches = entry.paths.iter().any(|p| {
                 let allowed = crate::rules::normalize_url_path(p);
@@ -391,21 +412,21 @@ mod tests {
     fn check_ip_allowed() {
         let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        expect_allow(&config.check("/healthz", "/healthz", "127.0.0.1"));
+        expect_allow(&config.check("/healthz", "/healthz", "127.0.0.1", 8443));
     }
 
     #[test]
     fn check_ip_blocked() {
         let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        expect_block(&config.check("/healthz", "/healthz", "203.0.113.1"));
+        expect_block(&config.check("/healthz", "/healthz", "203.0.113.1", 8443));
     }
 
     #[test]
     fn check_no_match_returns_nomatch() {
         let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        expect_no_match(&config.check("/api/users", "/api/users", "203.0.113.1"));
+        expect_no_match(&config.check("/api/users", "/api/users", "203.0.113.1", 8443));
     }
 
     #[test]
@@ -413,14 +434,14 @@ mod tests {
         let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
         // The path itself doesn't match, but full URI contains /healthz in query string.
-        expect_block(&config.check("/api", "/api?next=/healthz", "1.2.3.4"));
+        expect_block(&config.check("/api", "/api?next=/healthz", "1.2.3.4", 8443));
     }
 
     #[test]
     fn check_uri_qs_allowed_localhost() {
         let tmpdir = tempfile::tempdir().expect("tmpdir");
         let config = make_config_with_restriction(&tmpdir);
-        expect_allow(&config.check("/api", "/api?next=/healthz", "127.0.0.1"));
+        expect_allow(&config.check("/api", "/api?next=/healthz", "127.0.0.1", 8443));
     }
 
     #[test]
@@ -437,6 +458,53 @@ mod tests {
         std::fs::write(&yaml_file, yaml).expect("write lists.yaml");
         let config = AllowPathConfig::from_file(&yaml_file, tmpdir.path())
             .expect("load allow-paths config");
-        expect_allow(&config.check("/open", "/open", "1.2.3.4"));
+        expect_allow(&config.check("/open", "/open", "1.2.3.4", 8443));
+    }
+
+    /// An entry scoped to `port: 4343` must be invisible on every other
+    /// listener (it returns `NoMatch`) but enforced on the bound port.
+    fn make_port_scoped_config(tmpdir: &tempfile::TempDir) -> AllowPathConfig {
+        let addr_file = tmpdir.path().join("allow_addrs.txt");
+        std::fs::write(&addr_file, "127.0.0.1\n").expect("write allow_addrs.txt");
+
+        let yaml = r#"allow:
+  - order: 1
+    title: "Observability"
+    log: false
+    port: 4343
+    only_addrs: allow_addrs.txt
+    paths:
+      - /metrics
+      - /healthz
+"#;
+        let yaml_file = tmpdir.path().join("lists.yaml");
+        std::fs::write(&yaml_file, yaml).expect("write lists.yaml");
+        AllowPathConfig::from_file(&yaml_file, tmpdir.path()).expect("load allow-paths config")
+    }
+
+    #[test]
+    fn port_field_parses_from_yaml() {
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
+        let config = make_port_scoped_config(&tmpdir);
+        assert_eq!(config.entries[0].port, Some(4343));
+    }
+
+    #[test]
+    fn port_scoped_entry_enforced_on_matching_port() {
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
+        let config = make_port_scoped_config(&tmpdir);
+        // On the bound port the IP restriction is enforced.
+        expect_allow(&config.check("/metrics", "/metrics", "127.0.0.1", 4343));
+        expect_block(&config.check("/metrics", "/metrics", "203.0.113.7", 4343));
+    }
+
+    #[test]
+    fn port_scoped_entry_invisible_on_other_port() {
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
+        let config = make_port_scoped_config(&tmpdir);
+        // On a different listener the entry does not exist → NoMatch, even for
+        // an IP that is not in the allowlist (it is not this listener's concern).
+        expect_no_match(&config.check("/metrics", "/metrics", "203.0.113.7", 8443));
+        expect_no_match(&config.check("/metrics", "/metrics", "127.0.0.1", 8443));
     }
 }

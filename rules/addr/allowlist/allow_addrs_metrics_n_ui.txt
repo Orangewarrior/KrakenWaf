@@ -1,0 +1,16 @@
+# Addresses allowed to reach the dedicated observability port (default 4343):
+# Prometheus /metrics, the /healthz, /readyz, /livez probes, and the
+# kraken-ui (https://github.com/Orangewarrior/kraken-ui).
+#
+# Every line is a single allowed source. Supported forms:
+#   - exact IP:        127.0.0.1
+#   - CIDR network:    10.0.0.0/8
+#   - start-end range: 192.168.1.1-192.168.1.50
+#   - IPv6 loopback:   ::1
+#
+# Requests from any address NOT listed here receive HTTP 403 before the
+# bearer-token check ever runs. Listed clients still must present a valid
+# `Authorization: Bearer <token>` (401 otherwise). Keep this list as tight
+# as possible — it is the network-level gate in front of observability and
+# the UI. The channel is TLS-encrypted.
+127.0.0.1
