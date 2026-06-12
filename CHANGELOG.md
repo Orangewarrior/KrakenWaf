@@ -1,4 +1,46 @@
 
+## [2.40.0] - 2026-06-12
+
+> **Per-rule attribution for custom regex blocks.** Blocks produced by the
+> custom regex rules (`rules/regex/*.json`) — which are not CMC modules — used
+> to surface in the per-module metrics as the blind `engine="unknown",
+> module="regex"`, leaving the operator unable to tell which exact rule fired.
+> The engine label for regex-rule findings now embeds the rule `title` and
+> `id` from the rule JSON.
+
+### Changed
+
+- **Regex-rule engine label now identifies the exact rule
+  (`src/logging.rs`).** `SecurityEvent::from_finding` derives the engine
+  label for findings from `rules/regex/*.json` as
+  `"<title>, ID <id>:Regex rule"` (e.g.
+  `"Shell downloader body, ID 00003:Regex rule"`), built from the `title` and
+  `id` fields of the matching rule. Both values pass through
+  `sanitize_for_log`, so a crafted rule file cannot inject log fields or
+  break the Prometheus exposition format. All other engines (`cmc`,
+  `libinjection`, `vectorscan`, `keyword`) keep their existing short labels.
+- **Per-module Prometheus counter (`src/metrics.rs`, `src/proxy.rs`).**
+  `krakenwaf_module_blocks_total` now reports regex-rule blocks as
+  `engine="<title>, ID <id>",module="Regex rule"` instead of
+  `engine="unknown",module="regex"`. `derive_module_label` forwards the
+  enriched label untouched.
+- **Structured logs and `SQLite` rows.** The `engine` field written to the
+  critical log, the JSON log, and the `vulnerabilities.engine` column now
+  stores `"<title>, ID <id>:Regex rule"` for regex-rule blocks instead of the
+  bare `regex`, so log/DB consumers can identify the blocking rule directly.
+  No schema migration is required — only the stored value changes.
+
+### Tests
+
+- `src/logging.rs`: regex findings produce the enriched engine label
+  (title + ID), non-regex engines keep their short labels, and title/ID
+  sanitization is enforced.
+- `src/proxy.rs`: `derive_module_label` extracts CMC/libinjection modules and
+  passes the enriched regex label through unchanged.
+- `src/metrics.rs`: the Prometheus exposition renders the enriched label as
+  `engine="<title>, ID <id>",module="Regex rule"` and never as
+  `engine="unknown"`.
+
 ## [2.39.1] - 2026-06-12
 
 > **Internal refactor: shared Vectorscan block-database builder for the CMC

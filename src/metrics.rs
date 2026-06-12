@@ -192,3 +192,40 @@ impl WafMetrics {
         out
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::WafMetrics;
+
+    /// The enriched regex-rule label ("<title>, ID <id>:Regex rule") must be
+    /// rendered with the rule identity as the engine and "Regex rule" as the
+    /// module — not the old blind `engine="unknown",module="regex"`.
+    #[test]
+    fn regex_rule_label_renders_title_and_id() {
+        let metrics = WafMetrics::default();
+        metrics.inc_blocked_by_label("Shell downloader body, ID 00003:Regex rule");
+
+        let out = metrics.render_prometheus();
+        assert!(
+            out.contains(
+                "krakenwaf_module_blocks_total{engine=\"Shell downloader body, ID 00003\",module=\"Regex rule\"} 1"
+            ),
+            "unexpected exposition output:\n{out}"
+        );
+        assert!(
+            !out.contains("engine=\"unknown\""),
+            "regex rule blocks must no longer be attributed to unknown:\n{out}"
+        );
+    }
+
+    #[test]
+    fn cmc_label_renders_engine_and_module() {
+        let metrics = WafMetrics::default();
+        metrics.inc_blocked_by_label("cmc:sqli_comments_detect");
+
+        let out = metrics.render_prometheus();
+        assert!(out.contains(
+            "krakenwaf_module_blocks_total{engine=\"cmc\",module=\"sqli_comments_detect\"} 1"
+        ));
+    }
+}
