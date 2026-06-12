@@ -2017,6 +2017,11 @@ fn derive_block_reason(event: &SecurityEvent) -> crate::banning::BlockReason {
 /// Derive an `"engine:module"` label for the per-module Prometheus counter.
 /// For CMC findings the `rule_match` is `"cmc::module_name:..."`, so we extract
 /// the module name. For other engines we use a sensible short label.
+///
+/// Custom regex rules arrive here with an already-enriched engine label of the
+/// form `"<title>, ID <id>:Regex rule"` (see `logging::derive_engine_label`),
+/// which is forwarded as-is so the metrics identify the exact rule that
+/// blocked instead of the old blind `unknown:regex`.
 fn derive_module_label(engine: &str, rule_match: &str) -> String {
     if engine == "cmc" {
         // rule_match format: "cmc::sqli_comments_detect:evidence"
@@ -2034,6 +2039,40 @@ fn derive_module_label(engine: &str, rule_match: &str) -> String {
         format!("libinjection:{variant}")
     } else {
         engine.to_string()
+    }
+}
+
+#[cfg(test)]
+mod module_label_tests {
+    use super::derive_module_label;
+
+    #[test]
+    fn cmc_label_extracts_module_name() {
+        assert_eq!(
+            derive_module_label("cmc", "cmc::sqli_comments_detect:evidence"),
+            "cmc:sqli_comments_detect"
+        );
+    }
+
+    #[test]
+    fn libinjection_label_extracts_variant() {
+        assert_eq!(
+            derive_module_label("libinjection", "libinjection::sqli:s&1c"),
+            "libinjection:sqli"
+        );
+    }
+
+    /// The enriched regex engine label ("<title>, ID <id>:Regex rule") must
+    /// flow through untouched so the metrics name the exact rule that blocked.
+    #[test]
+    fn regex_rule_label_passes_through() {
+        assert_eq!(
+            derive_module_label(
+                "Shell downloader body, ID 00003:Regex rule",
+                r"(?i)wget\s+https?://"
+            ),
+            "Shell downloader body, ID 00003:Regex rule"
+        );
     }
 }
 
