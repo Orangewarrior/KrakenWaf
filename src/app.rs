@@ -35,7 +35,7 @@ pub struct AppState {
     pub mode: WafMode,
     pub allow_path_config: Option<AllowPathConfig>,
     /// Expected bearer token for the dedicated observability listener. Resolved
-    /// once at startup from `KRAKENWAF_METRICS_TOKEN` (file-first, then env; see
+    /// once at startup from `BEARER_PASSWORD` (file-first, then env; see
     /// [`crate::secrets::load_secret`]). When `None` the bearer gate is disabled
     /// and observability is protected by the IP allowlist alone (a startup
     /// warning is emitted). Never logged — only `"****"` is.

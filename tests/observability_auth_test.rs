@@ -11,7 +11,7 @@
 //!   * `--metrics-port <p>` — the dedicated observability listener,
 //!   * `--allow-paths lists.yaml` — an allow-paths file scoped to that port
 //!     (`port: <p>`) whose `only_addrs` permits loopback only,
-//!   * `KRAKENWAF_METRICS_TOKEN=<token>` in the environment — the bearer secret.
+//!   * `BEARER_PASSWORD=<token>` in the environment — the bearer secret.
 //!
 //! The tests assert the full matrix the feature promises:
 //!   * no token            → 401
@@ -143,7 +143,7 @@ fn spawn_protected_waf() -> (WafGuard, u16) {
             "--real-ip-header",
             "X-Forwarded-For",
         ])
-        .env("KRAKENWAF_METRICS_TOKEN", TOKEN)
+        .env("BEARER_PASSWORD", TOKEN)
         .current_dir(tmpdir.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
