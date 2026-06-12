@@ -7,6 +7,9 @@ use std::{
 };
 use tracing::warn;
 
+#[cfg(feature = "vectorscan-engine")]
+mod vectorscan_util;
+
 mod anti_exposed_backup;
 mod anti_passwd_leak;
 mod crlf_injection_detect;

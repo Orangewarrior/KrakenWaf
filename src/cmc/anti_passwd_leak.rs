@@ -2,7 +2,7 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use std::collections::HashSet;
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 /// Tokens that are structurally distinctive of a Unix /etc/passwd file.
 /// Two or more distinct tokens in the same response body trigger a block.
@@ -220,19 +220,9 @@ impl AntiPasswdLeakCmc {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan(patterns: &[&str]) -> Option<BlockDatabase> {
-    let vpatterns = patterns
-        .iter()
-        .enumerate()
-        .map(|(idx, pattern)| {
-            Pattern::new(
-                pattern.as_bytes().to_vec(),
-                Flag::SINGLEMATCH,
-                Some(u32::try_from(idx).expect("pattern index fits in u32")),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    BlockDatabase::new(vpatterns).ok()
+    super::vectorscan_util::build_block_database(patterns, Flag::SINGLEMATCH, |p| {
+        p.as_bytes().to_vec()
+    })
 }
 
 #[cfg(test)]

@@ -1,7 +1,7 @@
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 const LIST_A: &[&str] = &["entity", "xi:include"];
 
@@ -223,19 +223,11 @@ fn decode_utf16_units(bytes: &[u8], endian: Endian) -> Option<String> {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan(patterns: &[&str]) -> Option<BlockDatabase> {
-    let patterns = patterns
-        .iter()
-        .enumerate()
-        .map(|(idx, pattern)| {
-            Pattern::new(
-                pattern.as_bytes().to_vec(),
-                Flag::CASELESS | Flag::SINGLEMATCH,
-                Some(u32::try_from(idx).expect("pattern index fits in u32")),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    BlockDatabase::new(patterns).ok()
+    super::vectorscan_util::build_block_database(
+        patterns,
+        Flag::CASELESS | Flag::SINGLEMATCH,
+        |p| p.as_bytes().to_vec(),
+    )
 }
 
 #[cfg(feature = "vectorscan-engine")]

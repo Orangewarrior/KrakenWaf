@@ -22,7 +22,7 @@ use memchr::memmem::Finder;
 use std::path::Path;
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 /// Result of a successful scan: the literal pattern that matched, used for logs.
 #[derive(Debug, Clone)]
@@ -158,20 +158,9 @@ fn regex_escape(s: &str) -> String {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan(patterns: &[String]) -> Option<BlockDatabase> {
-    let vpatterns: Vec<Pattern> = patterns
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, pattern)| {
-            u32::try_from(idx).ok().map(|id| {
-                Pattern::new(
-                    regex_escape(pattern).into_bytes(),
-                    Flag::SINGLEMATCH,
-                    Some(id),
-                )
-            })
-        })
-        .collect();
-    BlockDatabase::new(vpatterns).ok()
+    super::vectorscan_util::build_block_database(patterns, Flag::SINGLEMATCH, |p| {
+        regex_escape(p).into_bytes()
+    })
 }
 
 #[cfg(feature = "vectorscan-engine")]

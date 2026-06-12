@@ -31,7 +31,7 @@ use anyhow::{Context, Result};
 use std::path::Path;
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 /// Result returned by [`DetectBotsNScannersCmc::detect`] when the request
 /// `User-Agent` value contains one of the known scanner substrings.
@@ -164,20 +164,11 @@ fn regex_escape_literal(s: &str) -> String {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan(patterns: &[String]) -> Option<BlockDatabase> {
-    let vpatterns: Vec<Pattern> = patterns
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, pattern)| {
-            u32::try_from(idx).ok().map(|id| {
-                Pattern::new(
-                    regex_escape_literal(pattern).into_bytes(),
-                    Flag::SINGLEMATCH | Flag::CASELESS,
-                    Some(id),
-                )
-            })
-        })
-        .collect();
-    BlockDatabase::new(vpatterns).ok()
+    super::vectorscan_util::build_block_database(
+        patterns,
+        Flag::SINGLEMATCH | Flag::CASELESS,
+        |p| regex_escape_literal(p).into_bytes(),
+    )
 }
 
 #[cfg(feature = "vectorscan-engine")]

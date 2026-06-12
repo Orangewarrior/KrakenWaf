@@ -1,7 +1,7 @@
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 // ─── Signal pattern tables ────────────────────────────────────────────────────
 
@@ -142,23 +142,12 @@ impl SingleMatcher {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vs_matcher(patterns: &[&str], caseless: bool) -> Option<BlockDatabase> {
-    let vpatterns = patterns
-        .iter()
-        .enumerate()
-        .map(|(idx, p)| {
-            let flags = if caseless {
-                Flag::CASELESS | Flag::SINGLEMATCH
-            } else {
-                Flag::SINGLEMATCH
-            };
-            Pattern::new(
-                p.as_bytes().to_vec(),
-                flags,
-                Some(u32::try_from(idx).expect("pattern index fits in u32")),
-            )
-        })
-        .collect::<Vec<_>>();
-    BlockDatabase::new(vpatterns).ok()
+    let flags = if caseless {
+        Flag::CASELESS | Flag::SINGLEMATCH
+    } else {
+        Flag::SINGLEMATCH
+    };
+    super::vectorscan_util::build_block_database(patterns, flags, |p| p.as_bytes().to_vec())
 }
 
 #[cfg(feature = "vectorscan-engine")]
