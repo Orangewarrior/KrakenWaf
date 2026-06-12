@@ -1571,6 +1571,15 @@ fn build_upstream_websocket_request(
         {
             continue;
         }
+        // Defence-in-depth: this request line is serialised by hand into a raw
+        // byte buffer, so a header value carrying a bare CR/LF would inject
+        // additional headers (or a smuggled request) into the upstream
+        // handshake. hyper's HeaderValue rejects CR/LF on construction, but we
+        // re-check here so the manual serialiser cannot be the weak link if that
+        // invariant ever changes. A value that violates it is dropped.
+        if header_value_has_control_break(value.as_bytes()) {
+            continue;
+        }
         out.extend_from_slice(name.as_str().as_bytes());
         out.extend_from_slice(b": ");
         out.extend_from_slice(value.as_bytes());
@@ -1586,6 +1595,14 @@ fn build_upstream_websocket_request(
     append_header_line(&mut out, "traceparent", traceparent);
     out.extend_from_slice(b"\r\n");
     Ok(out)
+}
+
+/// True when `value` contains a raw CR or LF byte. Such a value must never be
+/// written into a hand-serialised HTTP header block: it would terminate the
+/// current header line early and let the remainder be parsed as a separate
+/// header (CRLF / header injection).
+fn header_value_has_control_break(value: &[u8]) -> bool {
+    value.iter().any(|&b| b == b'\r' || b == b'\n')
 }
 
 fn append_header_line(out: &mut Vec<u8>, name: &str, value: &str) {
@@ -2025,6 +2042,15 @@ mod redirect_tests {
     use super::{combine_request_cookie_headers, rewrite_upstream_location, ForwardedOrigin};
     use http::{header::COOKIE, HeaderMap, HeaderValue};
     use url::Url;
+
+    #[test]
+    fn header_value_control_break_guard_flags_crlf() {
+        assert!(super::header_value_has_control_break(b"value\r\nset-cookie: x"));
+        assert!(super::header_value_has_control_break(b"value\ninjected"));
+        assert!(super::header_value_has_control_break(b"value\rinjected"));
+        assert!(!super::header_value_has_control_break(b"normal-value 123"));
+        assert!(!super::header_value_has_control_break(b""));
+    }
 
     #[test]
     fn rewrites_absolute_upstream_location_to_public_origin() {
