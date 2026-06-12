@@ -1,3 +1,61 @@
+
+## [2.38.0] - 2026-06-11
+
+> **Bearer-token gate and port scoping for the observability listener.** The
+> dedicated observability port (default `4343`, where Prometheus `/metrics`, the
+> health probes, and the [kraken-ui](https://github.com/Orangewarrior/kraken-ui)
+> live) now enforces two independent gates: an IP allowlist (HTTP **403** for any
+> source outside `rules/addr/allowlist/allow_addrs_metrics_n_ui.txt`) and an
+> `Authorization: Bearer <token>` credential (HTTP **401** for a missing/invalid
+> token). The token is read from a secret/env var — never hard-coded — compared
+> in constant time, and never written to logs (only `****`). Allow-paths entries
+> gained a `port:` field so an entry can be scoped to a single listener.
+
+### Observability bearer-token gate (`src/server.rs`, `src/app.rs`, `src/main.rs`, `src/secrets.rs`)
+
+- The dedicated observability listener now requires `Authorization: Bearer
+  <token>` on **every** endpoint it serves (`/metrics`, `/livez`, `/readyz`,
+  health, and the kraken-ui surface). A missing or wrong token returns **401**
+  with a `WWW-Authenticate: Bearer` challenge; the IP allowlist is still checked
+  first, so an unlisted source IP gets **403** before the token is ever
+  examined.
+- The expected token is resolved once at startup from the `KRAKENWAF_METRICS_TOKEN`
+  secret via the existing file-first chain (`KRAKENWAF_METRICS_TOKEN_FILE` →
+  `/run/secrets/krakenwaf/KRAKENWAF_METRICS_TOKEN` → env var) — no CLI flag, no
+  hard-coded credential. When no token is provisioned the gate stays disabled
+  (IP allowlist only) and a startup warning is emitted.
+- The comparison is **constant-time** (`constant_time_eq`) to deny a timing
+  oracle, and the presented token is **never logged** — every log line shows the
+  literal `****` instead. The channel is TLS-encrypted (the listener reuses the
+  data-plane certificates).
+
+### Port-scoped allow-paths entries (`src/allowpaths.rs`, `rules/allowpaths/lists.yaml`)
+
+- `AllowPathEntry` gained an optional `port:` field. An entry that declares a
+  port is consulted **only** for requests arriving on that exact listener port;
+  port-less entries keep applying on every listener (backward compatible).
+- The shipped `rules/allowpaths/lists.yaml` health/UI entry is now scoped to
+  `port: 4343` and points at the new, dedicated
+  `rules/addr/allowlist/allow_addrs_metrics_n_ui.txt` allowlist (seeded with
+  `127.0.0.1`). This restricts observability **and** the kraken-ui to an explicit
+  IP / CIDR set on the observability port alone.
+
+### Attack tool & tests (`src/bin/attack.rs`, `tests/observability_auth_test.rs`)
+
+- `attack` learned `--metrics-target`, `--metrics-token`, and `--metrics-only`:
+  it probes the observability port with no token (expects 401), a wrong token
+  (401), and the correct token (200 + Prometheus body), printing the token only
+  as `****`. `--metrics-only` runs just this probe and sets the exit code.
+- New `tests/observability_auth_test.rs` boots a real, bearer-protected WAF and
+  asserts the full matrix (401 no/wrong token, 200 valid token, 403 foreign IP
+  even with a valid token) plus an end-to-end `attack --metrics-only` run. Unit
+  tests cover `constant_time_eq`, `extract_bearer`, and `port`-scoped matching.
+
+### Deployment (`deploy/systemd/krakenwaf.service`)
+
+- The systemd unit provisions the token via `LoadCredential=` (CIS-aligned, no
+  `Environment=` secret), mirroring the existing `REDIS_PASSWORD` pattern.
+  
 ## [2.37.2] - 2026-06-11
 
 > **WebSocket control policy, postcard snapshot encoder, config/rules
@@ -72,64 +130,7 @@
   `gcr.io/distroless/cc-debian12:nonroot` (no shell / package manager, uid 65532)
   with a `config validate` `HEALTHCHECK`.
 - `deploy/README.md`, `docs/websocket.md` — operator documentation.
-
-## [2.38.0] - 2026-06-11
-
-> **Bearer-token gate and port scoping for the observability listener.** The
-> dedicated observability port (default `4343`, where Prometheus `/metrics`, the
-> health probes, and the [kraken-ui](https://github.com/Orangewarrior/kraken-ui)
-> live) now enforces two independent gates: an IP allowlist (HTTP **403** for any
-> source outside `rules/addr/allowlist/allow_addrs_metrics_n_ui.txt`) and an
-> `Authorization: Bearer <token>` credential (HTTP **401** for a missing/invalid
-> token). The token is read from a secret/env var — never hard-coded — compared
-> in constant time, and never written to logs (only `****`). Allow-paths entries
-> gained a `port:` field so an entry can be scoped to a single listener.
-
-### Observability bearer-token gate (`src/server.rs`, `src/app.rs`, `src/main.rs`, `src/secrets.rs`)
-
-- The dedicated observability listener now requires `Authorization: Bearer
-  <token>` on **every** endpoint it serves (`/metrics`, `/livez`, `/readyz`,
-  health, and the kraken-ui surface). A missing or wrong token returns **401**
-  with a `WWW-Authenticate: Bearer` challenge; the IP allowlist is still checked
-  first, so an unlisted source IP gets **403** before the token is ever
-  examined.
-- The expected token is resolved once at startup from the `KRAKENWAF_METRICS_TOKEN`
-  secret via the existing file-first chain (`KRAKENWAF_METRICS_TOKEN_FILE` →
-  `/run/secrets/krakenwaf/KRAKENWAF_METRICS_TOKEN` → env var) — no CLI flag, no
-  hard-coded credential. When no token is provisioned the gate stays disabled
-  (IP allowlist only) and a startup warning is emitted.
-- The comparison is **constant-time** (`constant_time_eq`) to deny a timing
-  oracle, and the presented token is **never logged** — every log line shows the
-  literal `****` instead. The channel is TLS-encrypted (the listener reuses the
-  data-plane certificates).
-
-### Port-scoped allow-paths entries (`src/allowpaths.rs`, `rules/allowpaths/lists.yaml`)
-
-- `AllowPathEntry` gained an optional `port:` field. An entry that declares a
-  port is consulted **only** for requests arriving on that exact listener port;
-  port-less entries keep applying on every listener (backward compatible).
-- The shipped `rules/allowpaths/lists.yaml` health/UI entry is now scoped to
-  `port: 4343` and points at the new, dedicated
-  `rules/addr/allowlist/allow_addrs_metrics_n_ui.txt` allowlist (seeded with
-  `127.0.0.1`). This restricts observability **and** the kraken-ui to an explicit
-  IP / CIDR set on the observability port alone.
-
-### Attack tool & tests (`src/bin/attack.rs`, `tests/observability_auth_test.rs`)
-
-- `attack` learned `--metrics-target`, `--metrics-token`, and `--metrics-only`:
-  it probes the observability port with no token (expects 401), a wrong token
-  (401), and the correct token (200 + Prometheus body), printing the token only
-  as `****`. `--metrics-only` runs just this probe and sets the exit code.
-- New `tests/observability_auth_test.rs` boots a real, bearer-protected WAF and
-  asserts the full matrix (401 no/wrong token, 200 valid token, 403 foreign IP
-  even with a valid token) plus an end-to-end `attack --metrics-only` run. Unit
-  tests cover `constant_time_eq`, `extract_bearer`, and `port`-scoped matching.
-
-### Deployment (`deploy/systemd/krakenwaf.service`)
-
-- The systemd unit provisions the token via `LoadCredential=` (CIS-aligned, no
-  `Environment=` secret), mirroring the existing `REDIS_PASSWORD` pattern.
-
+- 
 ## [2.37.0] - 2026-06-10
 
 > **New CMC module: Open Redirect & RFI detection.** A dedicated detector
