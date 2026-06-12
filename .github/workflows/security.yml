@@ -203,10 +203,13 @@ jobs:
           category: codeql-rust
 
   # ──────────────────────────────────────────────────────────────────────────
-  # 7. Integration — attack sweep (demo_server + WAF + attack --concurrency 25)
+  # 7. Integration — attack sweep (demo_server + WAF + attack --concurrency 50)
+  #    The WAF is built and run with the Vectorscan engine enabled so the sweep
+  #    exercises the full matcher stack (keyword/regex + libinjection + CMC +
+  #    Vectorscan) end-to-end against a live backend.
   # ──────────────────────────────────────────────────────────────────────────
   attack-sweep:
-    name: Integration · attack sweep (concurrency=25)
+    name: Integration · attack sweep (concurrency=50, vectorscan)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -219,10 +222,18 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-attack-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-attack-vs-${{ hashFiles('Cargo.lock') }}
 
-      - name: Build all binaries
-        run: cargo build --bin krakenwaf --bin demo_server --bin attack
+      # vectorscan-rs-sys builds the Hyperscan/Vectorscan C library via CMake,
+      # which requires Boost headers and ragel. cmake + a C/C++ toolchain are
+      # already present on ubuntu-latest runners.
+      - name: Install Vectorscan build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libboost-all-dev ragel
+
+      - name: Build all binaries (vectorscan-engine)
+        run: cargo build --features vectorscan-engine --bin krakenwaf --bin demo_server --bin attack
 
       - name: Start demo_server
         run: |
@@ -234,7 +245,7 @@ jobs:
           echo "::error::demo_server failed to start within 10s" >&2
           exit 1
 
-      - name: Start KrakenWAF
+      - name: Start KrakenWAF (vectorscan enabled)
         run: |
           mkdir -p /tmp/waf_ci
           cd /tmp/waf_ci && $GITHUB_WORKSPACE/target/debug/krakenwaf \
@@ -244,18 +255,21 @@ jobs:
             --upstream http://127.0.0.1:9077 \
             --rules-dir $GITHUB_WORKSPACE/rules \
             --cmc-load $GITHUB_WORKSPACE/rules/cmc/config.yaml \
+            --enable-vectorscan \
+            --enable-libinjection-sqli \
+            --enable-libinjection-xss \
             --rate-limit-per-minute 100000 &
 
       - name: Wait for WAF to be ready
         run: |
-          for i in $(seq 1 40); do
+          for i in $(seq 1 60); do
             curl -sf http://127.0.0.1:8080/__krakenwaf/health && echo "" && break
             sleep 0.5
           done
 
-      - name: Run attack sweep — concurrency 25
+      - name: Run attack sweep — concurrency 50
         run: |
           ./target/debug/attack \
             --target http://127.0.0.1:8080 \
-            --concurrency 25 \
+            --concurrency 50 \
             --verbose
