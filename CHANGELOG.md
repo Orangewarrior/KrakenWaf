@@ -1,4 +1,4 @@
-## [Unreleased]
+## [2.37.2] - 2026-06-11
 
 > **WebSocket control policy, postcard snapshot encoder, config/rules
 > sub-commands, and hardened production deploy artifacts.** Four operator-facing
