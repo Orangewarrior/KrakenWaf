@@ -22,7 +22,7 @@
 //!   giving a performance boost on long URIs with many segments.
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 /// The canonical list of backup / temporary / leak-prone file extensions.
 /// Every entry is matched case-insensitively at the **end** of the URI path.
@@ -166,20 +166,11 @@ fn suffix_find_plain(path: &str) -> Option<AntiExposedBackupMatch> {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan() -> Option<BlockDatabase> {
-    let patterns = HIGH_CONFIDENCE_BACKUP_SUFFIXES
-        .iter()
-        .enumerate()
-        .map(|(idx, suffix)| {
-            let literal = regex_escape_literal(suffix);
-            Pattern::new(
-                literal.into_bytes(),
-                Flag::CASELESS | Flag::SINGLEMATCH,
-                Some(u32::try_from(idx).expect("pattern index fits in u32")),
-            )
-        })
-        .collect::<Vec<_>>();
-
-    BlockDatabase::new(patterns).ok()
+    super::vectorscan_util::build_block_database(
+        HIGH_CONFIDENCE_BACKUP_SUFFIXES,
+        Flag::CASELESS | Flag::SINGLEMATCH,
+        |s| regex_escape_literal(s).into_bytes(),
+    )
 }
 
 #[cfg(feature = "vectorscan-engine")]

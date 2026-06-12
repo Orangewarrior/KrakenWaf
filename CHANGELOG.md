@@ -1,4 +1,30 @@
 
+## [2.39.1] - 2026-06-12
+
+> **Internal refactor: shared Vectorscan block-database builder for the CMC
+> detectors.** No behaviour change, no configuration change — a maintainability
+> cleanup of the `#[cfg(feature = "vectorscan-engine")]` plumbing.
+
+### Refactor (`src/cmc/`)
+
+- Added `cmc::vectorscan_util::build_block_database(patterns, flags, to_expr)`,
+  the single shared builder that compiles a pattern slice into a Vectorscan
+  `BlockDatabase`. Nine detectors (`anti_exposed_backup`, `anti_passwd_leak`,
+  `detect_bad_artifacts`, `detect_db_errors`, `detect_bots_n_scanners`,
+  `nosql_injection_detect`, `xxe_attack_detect`, `silent_sql_errors`,
+  `java_deserialize_detect`) previously each carried a near-identical
+  `build_vectorscan` helper that differed only in the `Flag` set, the
+  per-pattern byte transform (raw / `regex_escape` / `regex_escape_literal`),
+  and the index-cast style.
+- The `idx -> u32` cast now lives in one place and uses `filter_map`, so an
+  out-of-range pattern index is skipped instead of panicking via the previous
+  `expect("pattern index fits in u32")` (which was duplicated across the
+  modules). The now-orphaned `Pattern` import is dropped from each module.
+- The scan side is intentionally left per-detector: scan semantics genuinely
+  differ (`Scan::Terminate` first-match vs. `Scan::Continue` collect-all, and
+  the distinct-count detectors), so a shared scan helper would have to
+  re-encode those differences anyway.
+
 ## [2.39.0] - 2026-06-12
 
 > **Security hardening of the request/ban/update paths and a hot-path

@@ -29,7 +29,7 @@ use memchr::memmem::Finder;
 use std::path::Path;
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 /// Result of a successful scan: byte offsets of the matched fingerprint within
 /// the inspected body, plus the literal pattern that matched (used for logs).
@@ -191,20 +191,11 @@ fn regex_escape(s: &str) -> String {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan(patterns: &[String]) -> Option<BlockDatabase> {
-    let vpatterns: Vec<Pattern> = patterns
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, pattern)| {
-            u32::try_from(idx).ok().map(|id| {
-                Pattern::new(
-                    regex_escape(pattern).into_bytes(),
-                    Flag::SOM_LEFTMOST | Flag::SINGLEMATCH,
-                    Some(id),
-                )
-            })
-        })
-        .collect();
-    BlockDatabase::new(vpatterns).ok()
+    super::vectorscan_util::build_block_database(
+        patterns,
+        Flag::SOM_LEFTMOST | Flag::SINGLEMATCH,
+        |p| regex_escape(p).into_bytes(),
+    )
 }
 
 #[cfg(feature = "vectorscan-engine")]

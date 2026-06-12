@@ -34,7 +34,7 @@ use regex::RegexSet;
 use std::path::Path;
 
 #[cfg(feature = "vectorscan-engine")]
-use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
+use vectorscan::{BlockDatabase, Flag, Scan};
 
 // ─── Match result ─────────────────────────────────────────────────────────────
 
@@ -168,21 +168,11 @@ impl DbErrorDetector {
 
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan(patterns: &[String]) -> Option<BlockDatabase> {
-    let vpatterns: Vec<Pattern> = patterns
-        .iter()
-        .enumerate()
-        .filter_map(|(idx, pattern)| {
-            u32::try_from(idx).ok().map(|id| {
-                Pattern::new(
-                    pattern.as_bytes().to_vec(),
-                    Flag::SINGLEMATCH | Flag::MULTILINE,
-                    Some(id),
-                )
-            })
-        })
-        .collect();
-
-    BlockDatabase::new(vpatterns).ok()
+    super::vectorscan_util::build_block_database(
+        patterns,
+        Flag::SINGLEMATCH | Flag::MULTILINE,
+        |p| p.as_bytes().to_vec(),
+    )
 }
 
 #[cfg(feature = "vectorscan-engine")]
