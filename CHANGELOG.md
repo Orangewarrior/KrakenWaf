@@ -19,9 +19,9 @@
   with a `WWW-Authenticate: Bearer` challenge; the IP allowlist is still checked
   first, so an unlisted source IP gets **403** before the token is ever
   examined.
-- The expected token is resolved once at startup from the `KRAKENWAF_METRICS_TOKEN`
-  secret via the existing file-first chain (`KRAKENWAF_METRICS_TOKEN_FILE` →
-  `/run/secrets/krakenwaf/KRAKENWAF_METRICS_TOKEN` → env var) — no CLI flag, no
+- The expected token is resolved once at startup from the `BEARER_PASSWORD`
+  secret via the existing file-first chain (`BEARER_PASSWORD_FILE` →
+  `/run/secrets/krakenwaf/BEARER_PASSWORD` → env var) — no CLI flag, no
   hard-coded credential. When no token is provisioned the gate stays disabled
   (IP allowlist only) and a startup warning is emitted.
 - The comparison is **constant-time** (`constant_time_eq`) to deny a timing

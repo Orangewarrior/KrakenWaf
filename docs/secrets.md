@@ -33,6 +33,7 @@ next source.
 | `SPAMHAUS_DQS_KEY` | Spamhaus DQS zone queries | `/run/secrets/krakenwaf/SPAMHAUS_DQS_KEY` | `SPAMHAUS_DQS_KEY` |
 | `REDIS_PASSWORD` | Redis AUTH (rate-limiter / ban list) | `/run/secrets/krakenwaf/REDIS_PASSWORD` | `REDIS_PASSWORD` |
 | `REDIS_USERNAME` | Redis ACL username (Redis 6+) | `/run/secrets/krakenwaf/REDIS_USERNAME` | `REDIS_USERNAME` |
+| `BEARER_PASSWORD` | `Authorization: Bearer` token for the dedicated observability port (`/metrics`, health probes, kraken-ui) | `/run/secrets/krakenwaf/BEARER_PASSWORD` | `BEARER_PASSWORD` |
 
 Every place in the docs and config that mentions one of these variables also
 notes the file option.

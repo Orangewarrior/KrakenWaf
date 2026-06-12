@@ -15,7 +15,7 @@
 //! `Authorization: Bearer <token>` once a token is provisioned. Probe it with:
 //!
 //!   cargo run --bin attack -- --metrics-target <https://waf:4343> \
-//!       --metrics-token "$`KRAKENWAF_METRICS_TOKEN`" --metrics-only --cacert ca.pem
+//!       --metrics-token "$`BEARER_PASSWORD`" --metrics-only --cacert ca.pem
 //!
 //!   --metrics-target <URL>   base URL of the observability port
 //!   --metrics-token <TOKEN>  expected bearer token (printed only as ****)

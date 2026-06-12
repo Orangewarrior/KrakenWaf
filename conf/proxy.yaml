@@ -41,6 +41,6 @@ blockmsg: ./alert/blockalert.html # if left empty, no page is used
 # (rules/addr/allowlist/allow_addrs_metrics_n_ui.txt, scoped via the `port:`
 # field in rules/allowpaths/lists.yaml) and an `Authorization: Bearer <token>`
 # credential. The token is NOT configured here — it is read from the
-# KRAKENWAF_METRICS_TOKEN secret/env var (never hard-coded). See
+# BEARER_PASSWORD secret/env var (never hard-coded). See
 # docs/observability.md.
 metrics-port: 4343

@@ -214,7 +214,7 @@ never printed — only the mask `****` appears in the output.
 # Probe only the observability gate (TLS, with the WAF's CA), then exit.
 cargo run --bin attack -- \
     --metrics-target https://127.0.0.1:4343 \
-    --metrics-token "$KRAKENWAF_METRICS_TOKEN" \
+    --metrics-token "$BEARER_PASSWORD" \
     --metrics-only \
     --cacert /tmp/krakenwaf-tls/ca.pem
 ```

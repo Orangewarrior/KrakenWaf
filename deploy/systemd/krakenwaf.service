@@ -43,12 +43,12 @@ TimeoutStopSec=35s
 LoadCredential=REDIS_PASSWORD:/etc/krakenwaf/secrets/REDIS_PASSWORD
 Environment=REDIS_PASSWORD_FILE=%d/REDIS_PASSWORD
 # Bearer token for the dedicated observability port (/metrics, health probes,
-# kraken-ui). Resolved file-first via KRAKENWAF_METRICS_TOKEN_FILE, so it is
+# kraken-ui). Resolved file-first via BEARER_PASSWORD_FILE, so it is
 # never passed in plaintext via Environment= and never hard-coded. Generate the
-# source file once (e.g. `openssl rand -hex 32 > .../KRAKENWAF_METRICS_TOKEN`),
+# source file once (e.g. `openssl rand -hex 32 > .../BEARER_PASSWORD`),
 # owned by root, mode 0400. Omit both lines to leave the port IP-allowlist-only.
-LoadCredential=KRAKENWAF_METRICS_TOKEN:/etc/krakenwaf/secrets/KRAKENWAF_METRICS_TOKEN
-Environment=KRAKENWAF_METRICS_TOKEN_FILE=%d/KRAKENWAF_METRICS_TOKEN
+LoadCredential=BEARER_PASSWORD:/etc/krakenwaf/secrets/BEARER_PASSWORD
+Environment=BEARER_PASSWORD_FILE=%d/BEARER_PASSWORD
 
 # ── Hardening (CIS / systemd security sandbox) ───────────────────────────────
 # Privilege & capability containment. The WAF needs CAP_NET_BIND_SERVICE only

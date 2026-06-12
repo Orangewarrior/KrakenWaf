@@ -84,14 +84,14 @@ Two **independent** gates protect everything on this port, in this order:
 
 ### Bearer token
 
-The expected token is read from the **`KRAKENWAF_METRICS_TOKEN`** secret using
+The expected token is read from the **`BEARER_PASSWORD`** secret using
 KrakenWaf's file-first resolution chain — never a CLI flag and never hard-coded:
 
 | Order | Source |
 |---|---|
-| 1 | `KRAKENWAF_METRICS_TOKEN_FILE` — path to a file holding the token |
-| 2 | `/run/secrets/krakenwaf/KRAKENWAF_METRICS_TOKEN` — conventional mount |
-| 3 | `KRAKENWAF_METRICS_TOKEN` — plain environment variable (12-factor) |
+| 1 | `BEARER_PASSWORD_FILE` — path to a file holding the token |
+| 2 | `/run/secrets/krakenwaf/BEARER_PASSWORD` — conventional mount |
+| 3 | `BEARER_PASSWORD` — plain environment variable (12-factor) |
 
 Generate a strong, **ASCII** token (bearer tokens must be ASCII per RFC 6750),
 e.g. `openssl rand -hex 32`. Properties of the gate:
@@ -106,14 +106,14 @@ e.g. `openssl rand -hex 32`. Properties of the gate:
 
 systemd should supply the token via `LoadCredential=` (see
 `deploy/systemd/krakenwaf.service`), which places it on a 0400 tmpfs the service
-user can read, with `KRAKENWAF_METRICS_TOKEN_FILE` pointing at it — no plaintext
+user can read, with `BEARER_PASSWORD_FILE` pointing at it — no plaintext
 in `Environment=`.
 
 Scrape it with, for example:
 
 ```bash
 curl --cacert ca.pem \
-  -H "Authorization: Bearer $KRAKENWAF_METRICS_TOKEN" \
+  -H "Authorization: Bearer $BEARER_PASSWORD" \
   https://waf.internal:4343/metrics
 ```
 
@@ -125,7 +125,7 @@ scrape_configs:
     scheme: https
     authorization:
       type: Bearer
-      credentials_file: /etc/prometheus/krakenwaf_metrics_token
+      credentials_file: /etc/prometheus/krakenwaf_bearer_password
     static_configs:
       - targets: ["waf.internal:4343"]
 ```
