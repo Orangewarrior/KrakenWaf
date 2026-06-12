@@ -4,6 +4,7 @@
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::Path};
+use tracing::warn;
 
 // ── Top-level config ─────────────────────────────────────────────────────────
 
@@ -239,6 +240,25 @@ impl RateLimitConfig {
                  every client connection immediately"
             );
         }
+
+        // `0` is a legitimate "disable" sentinel for the slowloris guards, but
+        // disabling them silently removes anti-DoS protection. Surface it loudly
+        // so an operator cannot turn off a security control by accident.
+        if self.tls_handshake_timeout_secs == Some(0) {
+            warn!(
+                target: "krakenwaf",
+                "tls_handshake_timeout_secs is 0 — the TLS-handshake slowloris guard is DISABLED; \
+                 a slow client can hold a connection open indefinitely during the handshake"
+            );
+        }
+        if self.body_frame_timeout_secs == Some(0) {
+            warn!(
+                target: "krakenwaf",
+                "body_frame_timeout_secs is 0 — the request-body slowloris guard is DISABLED; \
+                 a slow client can trickle a body indefinitely"
+            );
+        }
+
         Ok(())
     }
 }

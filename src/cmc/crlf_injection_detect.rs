@@ -1,7 +1,16 @@
+use aho_corasick::AhoCorasick;
+
 #[derive(Debug, Clone, Default)]
 pub struct CrlfInjectionCmcBuilder;
+
 #[derive(Debug, Clone)]
-pub struct CrlfInjectionCmc;
+pub struct CrlfInjectionCmc {
+    /// Single-pass multi-pattern finders for the escaped and decoded-unicode
+    /// line-break token sets. Built once here instead of scanning the input
+    /// once per token (the previous `O(input × tokens)` nested-`find` loop).
+    escaped_breaks: AhoCorasick,
+    unicode_breaks: AhoCorasick,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct CrlfMatch {
@@ -20,10 +29,22 @@ impl CrlfInjectionCmcBuilder {
         Self
     }
 
+    /// Build the detector, compiling the static line-break pattern sets into
+    /// their Aho-Corasick automata.
+    ///
+    /// # Panics
+    /// Panics only if the compile-time-constant `ESCAPED_BREAKS` /
+    /// `DECODED_UNICODE_BREAKS` pattern lists fail to compile, which cannot
+    /// happen for the fixed inputs in this module.
     #[must_use]
     #[allow(clippy::unused_self)]
     pub fn build(self) -> CrlfInjectionCmc {
-        CrlfInjectionCmc
+        CrlfInjectionCmc {
+            escaped_breaks: AhoCorasick::new(ESCAPED_BREAKS)
+                .expect("static CRLF escaped-break patterns must compile"),
+            unicode_breaks: AhoCorasick::new(DECODED_UNICODE_BREAKS)
+                .expect("static CRLF unicode-break patterns must compile"),
+        }
     }
 }
 
@@ -125,7 +146,6 @@ const MULTIPART_PART_HEADER_NAMES: &[&str] = &[
 ];
 
 impl CrlfInjectionCmc {
-    #[allow(clippy::unused_self)]
     pub fn detect(&self, input: &str) -> Option<CrlfMatch> {
         if has_control_line_injection(input) {
             return Some(CrlfMatch {
@@ -133,13 +153,13 @@ impl CrlfInjectionCmc {
             });
         }
 
-        if has_escaped_line_injection(input) {
+        if has_token_line_injection(&self.escaped_breaks, input) {
             return Some(CrlfMatch {
                 pattern: "escaped-line-header",
             });
         }
 
-        if has_unicode_line_injection(input) {
+        if has_token_line_injection(&self.unicode_breaks, input) {
             return Some(CrlfMatch {
                 pattern: "unicode-line-header",
             });
@@ -174,32 +194,15 @@ fn has_control_line_injection(input: &str) -> bool {
     false
 }
 
-fn has_escaped_line_injection(input: &str) -> bool {
-    for token in ESCAPED_BREAKS {
-        let mut start = 0usize;
-        while let Some(relative) = input[start..].find(token) {
-            let idx = start + relative + token.len();
-            if line_after_break_is_injected(input, idx) {
-                return true;
-            }
-            start += relative + token.len();
-        }
-    }
-    false
-}
-
-fn has_unicode_line_injection(input: &str) -> bool {
-    for token in DECODED_UNICODE_BREAKS {
-        let mut start = 0usize;
-        while let Some(relative) = input[start..].find(token) {
-            let idx = start + relative + token.len();
-            if line_after_break_is_injected(input, idx) {
-                return true;
-            }
-            start += relative + token.len();
-        }
-    }
-    false
+/// Scan `input` once with the multi-pattern `finder` (escaped or decoded
+/// line-break tokens) and report whether any match is immediately followed by
+/// an injected header/status/markup line. Overlapping iteration preserves the
+/// original semantics where shorter break tokens nested inside longer ones were
+/// each checked independently.
+fn has_token_line_injection(finder: &AhoCorasick, input: &str) -> bool {
+    finder
+        .find_overlapping_iter(input)
+        .any(|m| line_after_break_is_injected(input, m.end()))
 }
 
 fn line_after_break_is_injected(input: &str, idx: usize) -> bool {

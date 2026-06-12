@@ -1076,6 +1076,20 @@ async fn download_and_extract_mmdb(
     Ok(())
 }
 
+/// Reject tar entry paths that could escape the intended output directory:
+/// any `..` component, an absolute root (`/`), or a Windows drive/UNC prefix.
+/// Plain relative paths (including nested subdirectories) are considered safe.
+fn tar_entry_path_is_safe(path: &Path) -> bool {
+    !path.components().any(|c| {
+        matches!(
+            c,
+            std::path::Component::ParentDir
+                | std::path::Component::RootDir
+                | std::path::Component::Prefix(_)
+        )
+    })
+}
+
 fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<PathBuf> {
     use flate2::read::GzDecoder;
     use tar::Archive;
@@ -1091,6 +1105,18 @@ fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<PathBuf> {
     {
         let mut entry = entry.context("failed to read tar entry")?;
         let path = entry.path().context("failed to get tar entry path")?;
+
+        // Defence-in-depth against tar path traversal (zip-slip): a malicious
+        // archive could ship an entry named `GeoLite2-City.mmdb` whose path
+        // contains `..` or an absolute prefix to escape `out_dir`. We only ever
+        // unpack to a fixed temp file we control, but reject suspicious paths
+        // outright so the intent is explicit and audit-friendly.
+        if !tar_entry_path_is_safe(&path) {
+            anyhow::bail!(
+                "refusing tar entry with traversal/absolute path: {}",
+                path.display()
+            );
+        }
 
         if path.file_name() == Some(OsStr::new(GEO_DB_FILE)) {
             // Write to a temporary file first, then rename atomically so the
@@ -1389,4 +1415,31 @@ fn run_soldier_args(repo_root: &Path, args: &[&str]) -> Result<()> {
         );
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod traversal_tests {
+    use super::tar_entry_path_is_safe;
+    use std::path::Path;
+
+    #[test]
+    fn accepts_plain_and_nested_relative_paths() {
+        assert!(tar_entry_path_is_safe(Path::new("GeoLite2-City.mmdb")));
+        assert!(tar_entry_path_is_safe(Path::new(
+            "GeoLite2-City_20260101/GeoLite2-City.mmdb"
+        )));
+    }
+
+    #[test]
+    fn rejects_parent_dir_traversal() {
+        assert!(!tar_entry_path_is_safe(Path::new("../GeoLite2-City.mmdb")));
+        assert!(!tar_entry_path_is_safe(Path::new(
+            "a/../../etc/GeoLite2-City.mmdb"
+        )));
+    }
+
+    #[test]
+    fn rejects_absolute_paths() {
+        assert!(!tar_entry_path_is_safe(Path::new("/etc/GeoLite2-City.mmdb")));
+    }
 }

@@ -1,4 +1,68 @@
 
+## [2.39.0] - 2026-06-12
+
+> **Security hardening of the request/ban/update paths and a hot-path
+> refactor of the CRLF detector.** This release tightens defence-in-depth on
+> the WebSocket handshake serialiser, the GeoIP tarball extractor, the SQLite
+> ban store under async load, and the slowloris-timeout configuration, and
+> replaces the CRLF detector's `O(input × tokens)` nested-scan with a single
+> Aho-Corasick pass. The vendored libinjection C is now compiled with stack
+> protection and (in optimised builds) `_FORTIFY_SOURCE`. No configuration
+> changes are required; all behaviour changes are additive guards.
+
+### Security
+
+- **WebSocket handshake CRLF/header-injection guard (`src/proxy.rs`).** The
+  upstream WebSocket request is serialised by hand into a raw byte buffer.
+  Forwarded header values are now re-checked for bare `CR`/`LF` bytes before
+  being written (`header_value_has_control_break`) and dropped if present, so
+  the manual serialiser can never become the weak link even if hyper's
+  `HeaderValue` CR/LF invariant changes upstream.
+- **GeoIP tarball path-traversal (zip-slip) guard (`src/update.rs`).**
+  `extract_mmdb_from_targz` now rejects any tar entry whose path contains a
+  `..` component, an absolute root, or a drive/UNC prefix
+  (`tar_entry_path_is_safe`) before unpacking, making the directory-escape
+  intent explicit and audit-friendly.
+- **SQLite ban store no longer blocks the async runtime (`src/banning/mod.rs`).**
+  `BanManager::check` / `record_block` wrap the blocking `rusqlite`
+  transaction (held behind a `parking_lot::Mutex`) in
+  `tokio::task::block_in_place`, so a contended ban lookup on the request path
+  can no longer stall other tasks on the worker thread.
+- **Slowloris-timeout disable is now surfaced (`src/ratelimit_config.rs`).**
+  `RateLimitConfig::validate` emits a loud `warn!` when
+  `tls_handshake_timeout_secs` or `body_frame_timeout_secs` is set to `0`
+  (the "disable" sentinel), so an operator cannot silently turn off an
+  anti-DoS guard.
+- **Hardened native build of vendored libinjection (`build.rs`).** The C
+  translation units are compiled with `-fstack-protector-strong` and
+  `-fvisibility=hidden`, plus `_FORTIFY_SOURCE=2` on optimised builds (gated
+  on `OPT_LEVEL` so debug builds stay warning-free).
+
+### Refactor & quality
+
+- **CRLF detector single-pass scan (`src/cmc/crlf_injection_detect.rs`).** The
+  two near-identical `has_escaped_line_injection` / `has_unicode_line_injection`
+  functions are unified into one `has_token_line_injection` helper backed by
+  per-token-set Aho-Corasick automata built once at construction. This removes
+  the duplicated nested `find` loop and its `O(input × tokens)` worst case,
+  scanning the input once per token set instead.
+- **`error.rs` cleanup.** Removed the dead commented-out `BodyTooLarge`
+  variant and documented why `KrakenError` is intentionally narrow (the
+  codebase propagates `anyhow::Error` everywhere except the few conditions a
+  caller matches on).
+- **New unit tests.** Added direct FFI tests for `detect_sqli` / `detect_xss`
+  (including empty-input and NUL-termination edge cases), tar
+  path-traversal-rejection tests, and a WebSocket CRLF-guard test.
+
+> **Review note.** Several findings raised by an automated scan were verified
+> against the code and confirmed to be already correct, so no change was made:
+> `X-Forwarded-For` spoofing is already prevented (`effective_client_ip`
+> returns the peer IP when the peer is not in `trusted_proxy_cidrs`); the
+> libinjection FFI length arguments are `usize`/`size_t`, not `c_int`, so there
+> is no truncation; and the `Connection`-listed hop-by-hop filter's `UPGRADE`
+> exemption correctly forwards only the `Upgrade` header while still stripping
+> other listed headers.
+
 ## [2.38.0] - 2026-06-11
 
 > **Bearer-token gate and port scoping for the observability listener.** The

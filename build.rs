@@ -15,7 +15,8 @@ fn main() {
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR not set"));
 
-    cc::Build::new()
+    let mut build = cc::Build::new();
+    build
         .file("ffi/libinjection/vendor/kwaf_libinjection.c")
         .file("ffi/libinjection/vendor/libinjection-4.0.0/src/libinjection_sqli.c")
         .file("ffi/libinjection/vendor/libinjection-4.0.0/src/libinjection_xss.c")
@@ -23,9 +24,26 @@ fn main() {
         .include("ffi/libinjection/vendor")
         .include("ffi/libinjection/vendor/libinjection-4.0.0/src")
         .flag_if_supported("-Wno-enum-int-mismatch")
-        .flag("-fvisibility=default")
-        .warnings(true)
-        .compile("kwaf_libinjection");
+        // Defence-in-depth hardening for the vendored C (libinjection is a
+        // legacy third-party component). Stack canaries give a runtime backstop
+        // against buffer overflows; hidden visibility keeps the C symbols out of
+        // the dynamic table (only the kwaf_* shims are referenced from Rust).
+        // flag_if_supported so the build still works on toolchains that lack
+        // them (e.g. MSVC).
+        .flag_if_supported("-fstack-protector-strong")
+        .flag_if_supported("-fvisibility=hidden")
+        .warnings(true);
+
+    // _FORTIFY_SOURCE fortifies string/memory functions at runtime, but glibc
+    // only honours it when the translation unit is compiled with optimisation;
+    // enabling it in an unoptimised (debug) build just emits a #warning. Gate it
+    // on optimised builds so release binaries get the hardening without noise.
+    let opt_level = env::var("OPT_LEVEL").unwrap_or_default();
+    if opt_level != "0" {
+        build.define("_FORTIFY_SOURCE", "2");
+    }
+
+    build.compile("kwaf_libinjection");
 
     // cc::Build::compile() emits cargo:rustc-link-lib and cargo:rustc-link-search
     // automatically, but on packages that have both a lib and a bin target the

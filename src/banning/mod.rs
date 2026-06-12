@@ -139,7 +139,12 @@ impl BanManager {
         }
         let now = Utc::now().timestamp();
         match &self.store {
-            BanStore::Sqlite(s) => s.lookup(ip, now),
+            // rusqlite is blocking and the connection sits behind a
+            // parking_lot::Mutex; running it inline on the async worker would
+            // stall every other task scheduled on that thread under lock
+            // contention. block_in_place hands the work to the blocking pool
+            // without forcing the store to be 'static.
+            BanStore::Sqlite(s) => tokio::task::block_in_place(|| s.lookup(ip, now)),
             BanStore::Redis(r) => r.lookup(ip, now).await,
         }
     }
@@ -161,13 +166,16 @@ impl BanManager {
         let ban_wait_secs = i64::try_from(self.cfg.ban_wait_time.as_secs()).unwrap_or(i64::MAX);
 
         let outcome = match &self.store {
-            BanStore::Sqlite(s) => s
-                .record_block(ip, now, self.cfg.tolerance_block_count, ban_wait_secs, force)
-                .map_err(|err| {
-                    warn!(target: "krakenwaf", error = %err, ip, "sqlite ban record failed");
-                    err
-                })
-                .ok()?,
+            // See `check`: the blocking rusqlite transaction is offloaded with
+            // block_in_place so it cannot starve the async worker thread.
+            BanStore::Sqlite(s) => tokio::task::block_in_place(|| {
+                s.record_block(ip, now, self.cfg.tolerance_block_count, ban_wait_secs, force)
+            })
+            .map_err(|err| {
+                warn!(target: "krakenwaf", error = %err, ip, "sqlite ban record failed");
+                err
+            })
+            .ok()?,
             BanStore::Redis(r) => r
                 .record_block(ip, now, self.cfg.tolerance_block_count, ban_wait_secs, force)
                 .await
