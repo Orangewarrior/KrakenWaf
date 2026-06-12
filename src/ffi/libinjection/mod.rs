@@ -88,8 +88,8 @@ mod tests {
         // Guards the contract that collect_fingerprint never reads past the NUL
         // terminator the C library writes, even if later bytes hold garbage.
         let mut buf = vec![0 as core::ffi::c_char; 8];
-        buf[0] = b's' as core::ffi::c_char;
-        buf[1] = b'1' as core::ffi::c_char;
+        buf[0] = b's'.cast_signed();
+        buf[1] = b'1'.cast_signed();
         // buf[2] stays NUL; trailing bytes are deliberately non-zero garbage.
         buf[3] = 0x7f;
         buf[4] = 0x41;
