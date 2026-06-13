@@ -260,7 +260,7 @@ brief process restart does not grant blocked clients a fresh budget.
 | `--wal-mode` | File | Format | Notes |
 |-------------|------|--------|-------|
 | `sqlite` *(default)* | `tmp_cache/rate_limit_state.db` | SQLite WAL | Inspectable with `sqlite3`; incremental upserts. |
-| `postcard` | `tmp_cache/rate_limit_state.bin` | Atomic-rename flat binary | ~10–50× faster; opaque. `bincode` is accepted as a deprecated alias. |
+| `postcard` | `tmp_cache/rate_limit_state.bin` | Atomic-rename flat binary | ~10–50× faster; opaque. |
 
 #### SQLite schema
 
@@ -281,11 +281,10 @@ CREATE TABLE rate_counters (
 ```
 
 Writes go to `rate_limit_state.bin.tmp`, `fsync`, then atomic `rename(2)` — a
-crash cannot corrupt the live file. The encoder migrated from `bincode` 1.x
-(flagged unmaintained per RUSTSEC-2025-0141) to the actively-maintained
-[`postcard`](https://crates.io/crates/postcard) crate; the magic was bumped from
-`KWAFRL01` to `KWAFRL02` so a snapshot written by an older build is detected as a
-format mismatch and ignored (the limiter simply starts with an empty map).
+crash cannot corrupt the live file. The payload is encoded with
+[`postcard`](https://crates.io/crates/postcard). The `KWAFRL02` magic ensures an
+unknown snapshot format is detected and ignored instead of being decoded with
+the wrong schema.
 
 ---
 
@@ -425,7 +424,7 @@ redis:
 |------|---------|-------------|
 | `--rate-limit-per-minute <N>` | (see below) | Per-IP request budget per 60 s window. Overrides the config file. Default when unset: 240. |
 | `--ratelimit-by-file-conf <path>` | auto-discover | Path to `ratelimit.yaml`. Auto-discovered at `conf/ratelimit.yaml` in the working directory. |
-| `--wal-mode <sqlite\|postcard>` | `sqlite` | Persistence backend for the local GCRA snapshot (ignored when using Redis). `bincode` accepted as a deprecated alias. |
+| `--wal-mode <sqlite\|postcard>` | `sqlite` | Persistence backend for the local GCRA snapshot (ignored when using Redis). |
 
 ### Precedence matrix
 

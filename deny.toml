@@ -1,11 +1,6 @@
 [advisories]
 version = 2
 ignore = [
-    # RUSTSEC-2025-0141 (bincode 1.x unmaintained) resolved: the rate-limiter
-    # snapshot encoder was migrated to the actively-maintained `postcard` crate
-    # and the `bincode` dependency removed. The advisory entry is intentionally
-    # left out of `ignore` so a re-introduction of bincode fails the audit.
-
     # hickory-proto 0.25.x DNSSEC DoS pair. Both are only reachable through the
     # `soldier_update` Quad9 DNS-over-TLS resolver (download + Spamhaus DQS
     # hostname resolution) — never on the request-serving data plane — and only

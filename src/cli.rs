@@ -57,9 +57,6 @@ pub enum WalMode {
     Sqlite,
     /// Persist as a flat `postcard` file (atomic rename). Much faster snapshots
     /// and re-hydration; entire state is rewritten on each persist tick.
-    /// `bincode` is accepted as a backward-compatible alias for this mode
-    /// (the on-disk encoder migrated from bincode to postcard).
-    #[value(alias = "bincode")]
     Postcard,
 }
 
@@ -242,7 +239,6 @@ pub struct Cli {
     /// Persistence backend for the rate-limiter snapshot.
     /// `sqlite` uses WAL journaling (queryable, slower); `postcard` uses a
     /// flat binary file with atomic rename (much faster, opaque format).
-    /// `bincode` is accepted as a deprecated alias for `postcard`.
     #[arg(long = "wal-mode", value_enum, default_value = "sqlite")]
     pub wal_mode: WalMode,
 
@@ -297,5 +293,24 @@ impl Cli {
     #[must_use] 
     pub fn libinjection_xss_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_xss
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::{Cli, WalMode};
+
+    #[test]
+    fn wal_mode_accepts_postcard() {
+        let cli = Cli::try_parse_from(["krakenwaf", "--wal-mode", "postcard"])
+            .expect("postcard must be a valid persistence mode");
+        assert_eq!(cli.wal_mode, WalMode::Postcard);
+    }
+
+    #[test]
+    fn wal_mode_rejects_unknown_encoders() {
+        assert!(Cli::try_parse_from(["krakenwaf", "--wal-mode", "legacy"]).is_err());
     }
 }

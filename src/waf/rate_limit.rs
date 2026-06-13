@@ -53,8 +53,7 @@
 //!
 //! * `Sqlite` — WAL journal, inspectable via `sqlite3`.
 //! * `Postcard` — atomic-rename flat file, 10-50× faster. Encoded with the
-//!   actively-maintained [`postcard`] crate (migrated from `bincode` 1.x,
-//!   which is flagged unmaintained per RUSTSEC-2025-0141).
+//!   [`postcard`] crate.
 
 use ahash::AHashMap;
 use anyhow::{Context, Result};
@@ -84,8 +83,7 @@ use crate::metrics::WafMetrics;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PersistenceMode {
     Sqlite,
-    /// Flat binary snapshot encoded with `postcard` (atomic rename). Replaces
-    /// the legacy `bincode` encoder; old `KWAFRL01` snapshots are ignored.
+    /// Flat binary snapshot encoded with `postcard` using atomic rename.
     Postcard,
 }
 
@@ -312,9 +310,8 @@ enum Backend {
     Postcard(PathBuf),
 }
 
-/// Magic prefix for the postcard snapshot. Bumped from the legacy `KWAFRL01`
-/// (bincode) so a snapshot written by an older build is detected as a format
-/// mismatch and ignored rather than mis-decoded.
+/// Magic prefix for the postcard snapshot. Unknown formats are ignored rather
+/// than decoded with the wrong schema.
 const POSTCARD_MAGIC: &[u8; 8] = b"KWAFRL02";
 
 impl Backend {

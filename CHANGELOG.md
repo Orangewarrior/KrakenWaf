@@ -193,24 +193,19 @@
 > **WebSocket control policy, postcard snapshot encoder, config/rules
 > sub-commands, and hardened production deploy artifacts.** Four operator-facing
 > additions: a configurable `ws://`/`wss://` control policy
-> (`conf/websocket.yaml`); migration of the local rate-limiter snapshot from the
-> unmaintained `bincode` 1.x to `postcard`; `krakenwaf config validate`,
+> (`conf/websocket.yaml`); postcard encoding for the local rate-limiter snapshot;
+> `krakenwaf config validate`,
 > `krakenwaf config dump --redact`, and `krakenwaf rules validate` pre-flight
 > sub-commands; and CIS-aligned systemd / Kubernetes / Docker deployment
 > manifests under `deploy/`.
 
-### Rate-limiter snapshot: bincode → postcard (`src/waf/rate_limit.rs`, `Cargo.toml`, `deny.toml`)
+### Postcard rate-limiter snapshot (`src/waf/rate_limit.rs`, `Cargo.toml`)
 
 - The local GCRA snapshot is now encoded with the actively-maintained
-  [`postcard`](https://crates.io/crates/postcard) crate. `bincode` 1.x (flagged
-  unmaintained per **RUSTSEC-2025-0141**) was removed as a dependency, and the
-  corresponding `ignore` entry was dropped from `deny.toml` so a re-introduction
-  fails the audit.
-- The snapshot magic was bumped `KWAFRL01` → `KWAFRL02`; a snapshot written by an
-  older build is detected as a format mismatch and ignored (the limiter starts
-  with an empty map — no silent corruption).
-- `--wal-mode postcard` is the new name; `--wal-mode bincode` remains accepted as
-  a deprecated alias so existing invocations keep working.
+  [`postcard`](https://crates.io/crates/postcard) crate.
+- The `KWAFRL02` snapshot magic detects unknown formats, which are ignored
+  safely so the limiter starts with an empty map.
+- `--wal-mode postcard` selects the atomic-rename binary snapshot backend.
 
 ### WebSocket control policy (`conf/websocket.yaml`, `src/websocket.rs`)
 
@@ -1562,7 +1557,7 @@ CLI flag (highest)  >  rules/cmc/config.yaml global-options  >  built-in default
 #### WAL persistence mode (`--wal-mode`)
 
 - New `--wal-mode` CLI flag selects between `sqlite` (WAL journal, queryable)
-  and `bincode` (flat binary, atomic rename, much faster) persistence backends
+  and `postcard` (flat binary, atomic rename, much faster) persistence backends
   for the rate-limiter state snapshot. Default: `sqlite`.
 
 ### Changed
@@ -2079,10 +2074,10 @@ on both incoming requests and upstream responses.
 ### Added
 
 #### `--wal-mode` flag selecting the rate-limiter persistence backend
-- New CLI option `--wal-mode {sqlite|bincode}` (default `sqlite`).
+- New CLI option `--wal-mode {sqlite|postcard}` (default `sqlite`).
 - `sqlite` uses SQLite + WAL (`PRAGMA journal_mode=WAL`, `synchronous=NORMAL`); state lives in `tmp_cache/rate_limit_state.db` and is inspectable via `sqlite3 cli`.
-- `bincode` serialises the entire `Vec<(u64, u64)>` snapshot with an 8-byte `KWAFRL01` magic, writes to `rate_limit_state.bin.tmp`, `fsync`s, and atomically renames into place. Roughly 10–50× faster snapshot/re-hydrate than SQLite for this workload.
-- New `PersistenceMode` enum exposed from `waf::rate_limit`; internal `Backend` enum (`Sqlite(Connection)` / `Bincode(PathBuf)`) replaces the bare `Connection` field on `RateLimiter`.
+- `postcard` serialises the entire `Vec<(u64, u64)>` snapshot with an 8-byte `KWAFRL02` magic, writes to `rate_limit_state.bin.tmp`, `fsync`s, and atomically renames into place. Roughly 10–50× faster snapshot/re-hydrate than SQLite for this workload.
+- New `PersistenceMode` enum exposed from `waf::rate_limit`; internal `Backend` enum (`Sqlite(Connection)` / `Postcard(PathBuf)`) replaces the bare `Connection` field on `RateLimiter`.
 - `WafEngine::new` gains a `rate_limit_persistence: PersistenceMode` parameter; integration tests updated.
 - Snapshot directory is `tmp_cache/` at the process working directory.
 - New documentation: [`docs/rate_limit.md`](docs/rate_limit.md).
@@ -2092,7 +2087,7 @@ on both incoming requests and upstream responses.
 - **Vectorscan: scanner-agent compilation failure.** Patterns from `rules/user_agents/scanners.txt` are plain string literals (e.g. `Mozilla/5.0 (compatible; Panoptic`), but were passed to Vectorscan as PCRE — unbalanced `(` triggered "Missing close parenthesis" at engine boot. New `build_vectorscan_literal_matcher` in `engine.rs` runs every UA pattern through `regex_escape_literal` (escapes `. ^ $ * + ? ( ) [ ] { } | \`) before compilation. The original unescaped UA strings remain on `VectorscanMatcher::keywords` so findings still report the raw substring.
 
 ### Dependencies
-- Added `ahash = "0.8"`, `bincode = "1.3"`, `rusqlite = "0.32"` (with `bundled` feature) — used by the new rate-limiter implementation and persistence backends.
+- Added `ahash = "0.8"`, `postcard = "1.1"`, and `rusqlite = "0.32"` (with `bundled` feature) for the rate-limiter implementation and persistence backends.
 
 ## [2.12.5] - 2026-05-07
 
