@@ -3,6 +3,17 @@
 
 ### Changed
 
+- **HTTP/1 header-read timeout (`src/server.rs`).** Every data-plane and
+  observability connection now configures Hyper's HTTP/1
+  `header_read_timeout` with a Tokio timer. The 10-second default closes
+  clients that trickle an incomplete request line/header block before
+  request-level rate limiting can run, while preserving automatic HTTP/2 and
+  WebSocket support.
+- **Slowloris timeout configuration.** Added
+  `http_header_read_timeout_secs` to `conf/ratelimit.yaml` and
+  `--http-header-read-timeout-secs` with CLI → YAML → 10-second-default
+  precedence. Setting it to `0` explicitly disables the guard and emits a
+  startup warning.
 - **Bounded upstream response modes (`src/proxy.rs`).** Upstream bodies are no
   longer universally accumulated before forwarding. Text, JSON, XML, and other
   structured text use `InspectBuffered` with the existing 8 MiB inspection
@@ -18,6 +29,10 @@
 
 ### Tests
 
+- `tests/ratelimit_real_test.rs`: opens a real TCP connection, sends an
+  incomplete HTTP/1 header block, and verifies the WAF closes it using a
+  one-second header timeout rather than waiting for the 30-second connection
+  timeout.
 - `src/proxy.rs`: MIME classification covers buffered text, direct-streamed
   binary media, generic prefix inspection, and prefix clamping.
 - `tests/server_real_test.rs`: a real 10 MiB image crosses the WAF successfully

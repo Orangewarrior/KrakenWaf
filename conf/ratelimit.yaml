@@ -36,6 +36,14 @@ body_frame_timeout_secs: 30
 # Default: 10 (a safe, conservative anti-DoS value)
 tls_handshake_timeout_secs: 10
 
+# Anti-Slowloris (HTTP/1 header phase): maximum time (seconds) to receive the
+# complete request line and headers. This runs before request-level rate limits,
+# so incomplete headers cannot pin a connection slot indefinitely.
+# HTTP/2 is unaffected. Set to 0 to disable (NOT recommended).
+# Overridden by --http-header-read-timeout-secs.
+# Default: 10
+http_header_read_timeout_secs: 10
+
 # Global memory-backpressure cap (bytes) on in-flight request body data
 # summed across all clients. When exceeded, new requests receive HTTP 503
 # with Retry-After: 5.

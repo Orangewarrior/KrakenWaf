@@ -118,6 +118,7 @@ fn spawn_waf_from_files(workdir: &Path, waf_port: u16, backend_port: u16) -> Waf
     let ratelimit_yaml = format!(
         "rate_limit_per_minute: 100000\n\
          connection_timeout_secs: 25\n\
+         http_header_read_timeout_secs: 8\n\
          max_connections: 256\n\
          max_body_bytes: {MAX_BODY_BYTES}\n\
          max_upstream_response_bytes: 4194304\n"

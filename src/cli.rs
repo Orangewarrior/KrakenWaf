@@ -206,6 +206,14 @@ pub struct Cli {
     #[arg(long = "tls-handshake-timeout-secs")]
     pub tls_handshake_timeout_secs: Option<u64>,
 
+    /// Anti-Slowloris: maximum time to receive a complete HTTP/1 request
+    /// header block after the connection (and TLS handshake, when enabled) is
+    /// established. 0 disables the bound (not recommended). HTTP/2 is
+    /// unaffected because its framing and timeout model are different.
+    /// Overrides `http_header_read_timeout_secs` in the rate-limit config.
+    #[arg(long = "http-header-read-timeout-secs")]
+    pub http_header_read_timeout_secs: Option<u64>,
+
     #[arg(long = "header-protection-injection")]
     pub header_protection_injection: Option<String>,
 
@@ -312,5 +320,16 @@ mod tests {
     #[test]
     fn wal_mode_rejects_unknown_encoders() {
         assert!(Cli::try_parse_from(["krakenwaf", "--wal-mode", "legacy"]).is_err());
+    }
+
+    #[test]
+    fn parses_http_header_read_timeout() {
+        let cli = Cli::try_parse_from([
+            "krakenwaf",
+            "--http-header-read-timeout-secs",
+            "7",
+        ])
+        .expect("header timeout must parse");
+        assert_eq!(cli.http_header_read_timeout_secs, Some(7));
     }
 }

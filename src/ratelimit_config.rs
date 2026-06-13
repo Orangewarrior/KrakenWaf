@@ -37,6 +37,13 @@ pub struct RateLimitConfig {
     #[serde(default)]
     pub tls_handshake_timeout_secs: Option<u64>,
 
+    /// Anti-Slowloris HTTP/1 request-header timeout (seconds). Starts while
+    /// Hyper is reading the request line and headers, before request-level
+    /// rate limiting can run. 0 disables the bound (not recommended).
+    /// `None` defers to the CLI flag or the built-in default (10 s).
+    #[serde(default)]
+    pub http_header_read_timeout_secs: Option<u64>,
+
     /// Global memory-backpressure cap on in-flight request body bytes
     /// across all clients. When exceeded the WAF returns HTTP 503 +
     /// `Retry-After: 5`. 0 disables the cap.
@@ -92,6 +99,7 @@ impl Default for RateLimitConfig {
             max_coroutines_per_ip: default_max_coroutines(),
             body_frame_timeout_secs: None,
             tls_handshake_timeout_secs: None,
+            http_header_read_timeout_secs: None,
             max_inflight_body_bytes: None,
             max_per_ip_body_bytes: None,
             max_connections: None,
@@ -157,6 +165,15 @@ impl RateLimitConfig {
     #[must_use]
     pub fn effective_tls_handshake_timeout_secs(&self, cli: Option<u64>) -> u64 {
         cli.or(self.tls_handshake_timeout_secs).unwrap_or(10)
+    }
+
+    /// Resolve the effective HTTP/1 request-header read timeout (seconds):
+    ///   1. Explicit `--http-header-read-timeout-secs` CLI argument
+    ///   2. `http_header_read_timeout_secs` from this config file
+    ///   3. Built-in default: 10 s (anti-Slowloris guard)
+    #[must_use]
+    pub fn effective_http_header_read_timeout_secs(&self, cli: Option<u64>) -> u64 {
+        cli.or(self.http_header_read_timeout_secs).unwrap_or(10)
     }
 
     /// Resolve the effective global in-flight body cap (bytes):
@@ -258,6 +275,13 @@ impl RateLimitConfig {
                  a slow client can trickle a body indefinitely"
             );
         }
+        if self.http_header_read_timeout_secs == Some(0) {
+            warn!(
+                target: "krakenwaf",
+                "http_header_read_timeout_secs is 0 — the HTTP/1 header slowloris guard is \
+                 DISABLED; incomplete headers can hold connection slots indefinitely"
+            );
+        }
 
         Ok(())
     }
@@ -342,6 +366,7 @@ mod tests {
         assert_eq!(cfg.effective_rate_limit(None), 240);
         assert_eq!(cfg.effective_body_frame_timeout_secs(None), 30);
         assert_eq!(cfg.effective_tls_handshake_timeout_secs(None), 10);
+        assert_eq!(cfg.effective_http_header_read_timeout_secs(None), 10);
         assert_eq!(
             cfg.effective_max_inflight_body_bytes(None),
             1024 * 1024 * 1024
@@ -358,6 +383,7 @@ mod tests {
 rate_limit_per_minute: 500
 body_frame_timeout_secs: 10
 tls_handshake_timeout_secs: 7
+http_header_read_timeout_secs: 8
 max_inflight_body_bytes: 2147483648
 max_per_ip_body_bytes: 104857600
 ";
@@ -365,6 +391,7 @@ max_per_ip_body_bytes: 104857600
         assert_eq!(cfg.effective_rate_limit(None), 500);
         assert_eq!(cfg.effective_body_frame_timeout_secs(None), 10);
         assert_eq!(cfg.effective_tls_handshake_timeout_secs(None), 7);
+        assert_eq!(cfg.effective_http_header_read_timeout_secs(None), 8);
         assert_eq!(cfg.effective_max_inflight_body_bytes(None), 2_147_483_648);
         assert_eq!(cfg.effective_max_per_ip_body_bytes(None), 104_857_600);
     }
@@ -375,6 +402,7 @@ max_per_ip_body_bytes: 104857600
 rate_limit_per_minute: 500
 body_frame_timeout_secs: 10
 tls_handshake_timeout_secs: 7
+http_header_read_timeout_secs: 8
 max_inflight_body_bytes: 2147483648
 max_per_ip_body_bytes: 104857600
 ";
@@ -383,6 +411,7 @@ max_per_ip_body_bytes: 104857600
         assert_eq!(cfg.effective_rate_limit(Some(99)), 99);
         assert_eq!(cfg.effective_body_frame_timeout_secs(Some(7)), 7);
         assert_eq!(cfg.effective_tls_handshake_timeout_secs(Some(20)), 20);
+        assert_eq!(cfg.effective_http_header_read_timeout_secs(Some(6)), 6);
         assert_eq!(cfg.effective_max_inflight_body_bytes(Some(1024)), 1024);
         assert_eq!(cfg.effective_max_per_ip_body_bytes(Some(512)), 512);
     }
@@ -481,5 +510,20 @@ max_upstream_response_bytes: 2097152
         let disabled: RateLimitConfig =
             serde_yaml::from_str("tls_handshake_timeout_secs: 0").expect("yaml parses");
         assert_eq!(disabled.effective_tls_handshake_timeout_secs(None), 0);
+    }
+
+    #[test]
+    fn http_header_timeout_falls_back_to_yaml_then_default() {
+        let empty = RateLimitConfig::default();
+        assert_eq!(empty.effective_http_header_read_timeout_secs(None), 10);
+
+        let yaml: RateLimitConfig =
+            serde_yaml::from_str("http_header_read_timeout_secs: 25").expect("yaml parses");
+        assert_eq!(yaml.effective_http_header_read_timeout_secs(None), 25);
+        assert_eq!(yaml.effective_http_header_read_timeout_secs(Some(3)), 3);
+
+        let disabled: RateLimitConfig =
+            serde_yaml::from_str("http_header_read_timeout_secs: 0").expect("yaml parses");
+        assert_eq!(disabled.effective_http_header_read_timeout_secs(None), 0);
     }
 }

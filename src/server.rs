@@ -11,7 +11,7 @@ use chrono::Utc;
 use http::{Request, Response, StatusCode};
 use hyper::{body::Incoming, service::service_fn};
 use hyper_util::{
-    rt::{TokioExecutor, TokioIo},
+    rt::{TokioExecutor, TokioIo, TokioTimer},
     server::conn::auto::Builder,
 };
 use std::sync::{
@@ -106,6 +106,18 @@ enum TlsAcceptOutcome {
 /// Interval at which idle per-IP counter entries are reaped from the
 /// concurrency and body-byte maps.
 const IP_MAP_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+fn connection_builder(header_read_timeout_secs: u64) -> Builder<TokioExecutor> {
+    let mut builder = Builder::new(TokioExecutor::new());
+    let mut http1 = builder.http1();
+    http1.timer(TokioTimer::default());
+    if header_read_timeout_secs == 0 {
+        http1.header_read_timeout(None);
+    } else {
+        http1.header_read_timeout(Duration::from_secs(header_read_timeout_secs));
+    }
+    builder
+}
 
 /// Periodically evict zero-valued entries from the per-IP concurrency
 /// (`ip_connections`) and per-IP body-byte (`ip_body_bytes`) maps.
@@ -356,7 +368,7 @@ async fn serve_observability_conn<I>(
     let timeout_secs = state.connection_timeout_secs;
     let client_ip = peer.ip().to_string();
     let state_for_service = Arc::clone(&state);
-    let builder = Builder::new(TokioExecutor::new());
+    let builder = connection_builder(state.http_header_read_timeout_secs);
     let service = service_fn(move |req: Request<Incoming>| {
         let state = Arc::clone(&state_for_service);
         let client_ip = client_ip.clone();
@@ -572,7 +584,7 @@ pub async fn run(
                     let timeout_secs = state.connection_timeout_secs;
                     let state_for_service = Arc::clone(&state);
                     let client_ip = peer.ip().to_string();
-                    let builder = Builder::new(TokioExecutor::new());
+                    let builder = connection_builder(state.http_header_read_timeout_secs);
                     let service = service_fn(move |req: Request<Incoming>| {
                         let state = Arc::clone(&state_for_service);
                         let client_ip = client_ip.clone();
@@ -648,7 +660,7 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
             let timeout_secs = state.connection_timeout_secs;
             let state_for_service = Arc::clone(&state);
             let client_ip = peer.ip().to_string();
-            let builder = Builder::new(TokioExecutor::new());
+            let builder = connection_builder(state.http_header_read_timeout_secs);
             let service = service_fn(move |req: Request<Incoming>| {
                 let state = Arc::clone(&state_for_service);
                 let client_ip = client_ip.clone();

@@ -25,7 +25,7 @@ use std::{
     time::Duration,
 };
 use tempfile::NamedTempFile;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 // ── Port allocation ───────────────────────────────────────────────────────────
 
@@ -410,18 +410,20 @@ async fn attack_concurrent_flood_is_throttled() {
     );
 }
 
-/// Slow-connection simulation: a slow HTTP connection holds a slot, and
-/// additional fast connections from the same IP should be rate-limited or
-/// rejected when the concurrency cap is tight.
+/// An incomplete header block never reaches the request handler, so it must not
+/// consume the per-request IP concurrency budget. The independent header timer
+/// owns this pre-request phase.
 #[tokio::test]
-async fn attack_slowloris_concurrent_blocked() {
+async fn incomplete_headers_do_not_consume_request_concurrency_budget() {
     let bp = ensure_backend();
     let port = alloc_waf_port();
 
     let conf = NamedTempFile::new().expect("tempfile");
     std::fs::write(
         conf.path(),
-        "rate_limit_per_minute: 10000\nmax_coroutines_per_ip: 1\n",
+        "rate_limit_per_minute: 10000\n\
+         max_coroutines_per_ip: 1\n\
+         http_header_read_timeout_secs: 1\n",
     )
     .expect("write conf");
 
@@ -431,8 +433,7 @@ async fn attack_slowloris_concurrent_blocked() {
 
     let waf_addr = format!("127.0.0.1:{port}");
 
-    // Open a raw TCP connection and send an incomplete HTTP/1.1 request
-    // to occupy the sole connection slot for this IP.
+    // Open a raw TCP connection and stop before the terminating CRLF.
     let mut slow_conn = tokio::net::TcpStream::connect(&waf_addr).await.expect("tcp connect");
     slow_conn
         .write_all(b"GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\n")
@@ -440,19 +441,62 @@ async fn attack_slowloris_concurrent_blocked() {
         .expect("write partial request");
     // Do NOT send the final \r\n — this keeps the connection open.
 
-    // Give the WAF a moment to register the connection.
+    // Give Hyper a moment to enter its HTTP/1 header-read phase.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
-    // A fast request from the same IP should hit the concurrency cap.
+    // The complete request still reaches the handler because the partial
+    // connection has not consumed the request-level concurrency budget.
     let url = format!("{}/ping", waf_base(port));
-    let status = client.get(&url).send().await.map(|r| r.status());
-
-    // The slow connection occupies the 1-slot cap; subsequent request gets 429.
-    // This is a best-effort assertion — timing-dependent.
-    if let Ok(s) = status {
-        // Either 429 (cap hit) or 200 (slow conn not yet registered) — both are
-        // valid outcomes depending on timing. Log for visibility.
-        let _ = s;
-    }
+    let status = client
+        .get(&url)
+        .send()
+        .await
+        .expect("complete request")
+        .status();
+    assert_eq!(status, StatusCode::OK);
     drop(slow_conn);
+}
+
+/// An incomplete HTTP/1 header block must be closed by Hyper's header timer,
+/// before request-level rate limiting or the 30-second connection timeout.
+#[tokio::test]
+async fn incomplete_http1_headers_are_closed_by_header_timeout() {
+    let bp = ensure_backend();
+    let port = alloc_waf_port();
+
+    let conf = NamedTempFile::new().expect("tempfile");
+    std::fs::write(
+        conf.path(),
+        "rate_limit_per_minute: 10000\n\
+         max_coroutines_per_ip: 64\n\
+         connection_timeout_secs: 30\n\
+         http_header_read_timeout_secs: 1\n",
+    )
+    .expect("write conf");
+
+    let _waf = spawn_waf(
+        port,
+        bp,
+        &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()],
+    );
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let mut stream = tokio::net::TcpStream::connect(format!("127.0.0.1:{port}"))
+        .await
+        .expect("tcp connect");
+    stream
+        .write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\nX-Slow: ")
+        .await
+        .expect("write incomplete headers");
+
+    let mut byte = [0u8; 1];
+    let read = tokio::time::timeout(Duration::from_secs(4), stream.read(&mut byte))
+        .await
+        .expect("header timeout must close the connection within four seconds");
+
+    match read {
+        Ok(0) | Err(_) => {}
+        Ok(n) => panic!("unexpected response bytes before close: {n}"),
+    }
 }

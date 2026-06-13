@@ -308,6 +308,8 @@ async fn main() -> Result<()> {
             .effective_connection_timeout_secs(cli.connection_timeout_secs),
         tls_handshake_timeout_secs: rl_config
             .effective_tls_handshake_timeout_secs(cli.tls_handshake_timeout_secs),
+        http_header_read_timeout_secs: rl_config
+            .effective_http_header_read_timeout_secs(cli.http_header_read_timeout_secs),
         memory_limits: memory_limits.clone(),
         ban_manager,
         geo_reader,
@@ -387,6 +389,7 @@ async fn main() -> Result<()> {
         max_decompress_ratio = memory_limits.max_decompress_ratio,
         connection_timeout_secs = state.connection_timeout_secs,
         tls_handshake_timeout_secs = state.tls_handshake_timeout_secs,
+        http_header_read_timeout_secs = state.http_header_read_timeout_secs,
         external_proxy_conf = external_proxy_conf.is_some(),
         ws_control_enabled = state.ws_control.enabled(),
         ws_max_connections_per_ip = state.ws_control.config().max_connections_per_ip,

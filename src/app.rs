@@ -65,6 +65,10 @@ pub struct AppState {
     /// accept path. 0 disables the bound. Resolved from CLI flag, then YAML,
     /// then 10 s. Only consulted in TLS mode.
     pub tls_handshake_timeout_secs: u64,
+    /// Resolved HTTP/1 request-header read timeout. Anti-Slowloris guard after
+    /// TCP accept/TLS handshake and before request-level rate limiting.
+    /// 0 disables the bound. Resolved from CLI, then YAML, then 10 s.
+    pub http_header_read_timeout_secs: u64,
     /// Memory-pressure limits resolved at startup (YAML > CLI > defaults).
     /// Read-only at runtime; reloading requires a process restart. Carries
     /// the 2.29.0 knobs (`max_decompress_ratio`, RAM-derived

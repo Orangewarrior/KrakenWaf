@@ -101,6 +101,7 @@ max_coroutines_per_ip: 64      # simultaneous connections per IP (0 = disabled)
 # 0 = defer to the CLI flag / rules/cmc/config.yaml memory-limits / built-in.
 max_connections: 0                 # 0 = derive from system RAM
 connection_timeout_secs: 30        # client connection timeout (>= 1)
+http_header_read_timeout_secs: 10  # HTTP/1 incomplete-header timeout
 max_body_bytes: 0                  # 0 = 8 MiB default
 max_upstream_response_bytes: 0     # 0 = 8 MiB buffered text default
 
@@ -522,6 +523,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--websocket-conf` | auto-discover | Path to a YAML WebSocket control-policy file. Auto-discovered at `conf/websocket.yaml`. Governs `ws://`/`wss://` upgrade limits (allowed paths, per-IP session cap, idle/session timeouts, handshake inspection). See [docs/websocket.md](docs/websocket.md) |
 | `--upstream-timeout-secs` | `15` | Timeout in seconds for upstream requests |
 | `--connection-timeout-secs` | `30` | Timeout in seconds for a client connection accepted by the WAF. Also configurable via `connection_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
+| `--http-header-read-timeout-secs` | `10` | HTTP/1 request-line/header read timeout. Closes incomplete-header Slowloris connections before request-level rate limiting runs. `0` disables (not recommended). Also configurable via `http_header_read_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--max-connections` | RAM-derived | Maximum simultaneous TCP connections accepted by the WAF. When unset, a conservative cap is derived from system RAM (clamped to 64–4096). Also configurable via `max_connections` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
 | `--max-body-bytes` | `8388608` (8 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request. Also configurable via `max_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
 | `--max-upstream-response-bytes` | `8388608` (8 MiB) | Ceiling for fully buffered textual upstream responses. Binary media streams without full accumulation; its total-byte cap and optional inspection prefix are configured by `max_streamed_response_bytes` and `response_inspect_prefix_bytes` in `rules/cmc/config.yaml`. Also configurable via `max_upstream_response_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |

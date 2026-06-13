@@ -71,6 +71,12 @@ body_frame_timeout_secs: 30
 # --tls-handshake-timeout-secs.
 tls_handshake_timeout_secs: 10
 
+# Anti-Slowloris HTTP/1 request-header timeout. This runs before a complete
+# request exists, so it protects the phase before request rate limiting.
+# 0 disables (not recommended). Overridden by
+# --http-header-read-timeout-secs.
+http_header_read_timeout_secs: 10
+
 # Global cap (bytes) on in-flight request body data across all clients.
 # Excess requests receive HTTP 503 + Retry-After: 5. 0 disables.
 max_inflight_body_bytes: 1073741824   # 1 GiB
@@ -120,6 +126,7 @@ Every CLI flag in the rate-limit family follows the same resolution order:
 CLI flag                          (--rate-limit-per-minute,
                                    --body-frame-timeout-secs,
                                    --tls-handshake-timeout-secs,
+                                   --http-header-read-timeout-secs,
                                    --max-inflight-body-bytes,
                                    --max-per-ip-body-bytes — highest)
         ↓
@@ -136,6 +143,7 @@ built-in default
 | `max_coroutines_per_ip` | usize | 64 | Maximum in-flight connections per IP. `0` disables. |
 | `body_frame_timeout_secs` | u64 | 30 | Per-frame timeout (s) when streaming the request body — anti-Slowloris. `0` disables. Overridden by `--body-frame-timeout-secs`. |
 | `tls_handshake_timeout_secs` | u64 | 10 | Max time (s) to wait for a client to finish the TLS handshake before dropping the connection — anti-Slowloris on the accept path. TLS mode only. `0` disables (not recommended). Overridden by `--tls-handshake-timeout-secs`. |
+| `http_header_read_timeout_secs` | u64 | 10 | Max time (s) to receive a complete HTTP/1 request line and header block. Runs before request-level limiting. `0` disables (not recommended). Overridden by `--http-header-read-timeout-secs`. |
 | `max_inflight_body_bytes` | usize | 1073741824 (1 GiB) | Global in-flight body byte cap across all clients. `0` disables. Overridden by `--max-inflight-body-bytes`. |
 | `max_per_ip_body_bytes` | usize | 209715200 (200 MiB) | Per-IP in-flight body byte cap. `0` disables. Overridden by `--max-per-ip-body-bytes`. |
 | `redis.url` | string | — | Redis endpoint. **Must** use `rediss://` (TLS). |
@@ -146,6 +154,23 @@ built-in default
 | `redis.fail_open` | bool | `true` | Behaviour on Redis unavailability: `true` = allow the request (fail-open), `false` = deny with HTTP 429 (fail-closed). Both emit a warning + Prometheus counter. |
 
 ---
+
+## Slowloris protection phases
+
+KrakenWaf applies independent bounds because request rate limiting cannot act
+until Hyper has parsed a complete request:
+
+1. The global connection semaphore bounds accepted TCP connections.
+2. `tls_handshake_timeout_secs` bounds the TLS handshake in TLS mode.
+3. `http_header_read_timeout_secs` bounds HTTP/1 request-line and header reads.
+4. `body_frame_timeout_secs` bounds inactivity between request-body frames.
+5. `connection_timeout_secs` bounds total connection lifetime.
+6. The upstream timeout and response streaming limits bound backend work.
+
+The HTTP/1 header timer is configured on Hyper's automatic HTTP/1/HTTP/2
+builder with `TokioTimer`; HTTP/2 support remains enabled and is unaffected by
+this HTTP/1-specific setting. The timeout applies again when a keep-alive
+connection starts reading the next HTTP/1 request.
 
 ## Per-IP concurrency limiter
 
