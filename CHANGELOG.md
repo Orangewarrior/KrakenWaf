@@ -1,4 +1,28 @@
 
+## [Unreleased]
+
+### Changed
+
+- **Bounded upstream response modes (`src/proxy.rs`).** Upstream bodies are no
+  longer universally accumulated before forwarding. Text, JSON, XML, and other
+  structured text use `InspectBuffered` with the existing 8 MiB inspection
+  limit; known binary media use `StreamOnly`; generic or unknown formats use
+  `TeePrefix`, inspecting a 64 KiB prefix before streaming the remainder.
+  Streamed bodies are counted against a separate 1 GiB default ceiling, and an
+  oversized advertised `Content-Length` is rejected before forwarding.
+- **Response streaming limits (`src/limits.rs`, `rules/cmc/config.yaml`).**
+  Added `max_streamed_response_bytes` and
+  `response_inspect_prefix_bytes`. This prevents large downloads, images,
+  videos, PDFs, archives, and malicious upstreams from forcing full-response
+  heap allocation while retaining bounded inspection for ambiguous formats.
+
+### Tests
+
+- `src/proxy.rs`: MIME classification covers buffered text, direct-streamed
+  binary media, generic prefix inspection, and prefix clamping.
+- `tests/server_real_test.rs`: a real 10 MiB image crosses the WAF successfully
+  above the 8 MiB buffering cap, while a 10 MiB textual response is rejected.
+
 ## [2.40.0] - 2026-06-12
 
 > **Per-rule attribution for custom regex blocks.** Blocks produced by the

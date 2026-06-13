@@ -17,7 +17,7 @@ the network perimeter.
 
 | Step | Detail |
 |------|--------|
-| **Response hook** | Runs in `inspect_response_body()`, called after the full response body is buffered in `inspect_response()` — never on the request side. |
+| **Response hook** | Runs in `inspect_response_body()` with the complete buffered textual body or the configured prefix of a generic binary response — never on the request side. |
 | **Two-list structure** | `PASSWD_TOKENS` and `SHADOW_TOKENS` are independent pattern lists.  Each list is checked independently; a match on either list is sufficient to block. |
 | **Conjunction threshold** | A single token present in the response (e.g. `/bin/bash` alone) is not enough to block — **two or more distinct tokens** from the same list must appear. |
 | **Priority** | `PASSWD_TOKENS` is checked first; if it fires, `SHADOW_TOKENS` is not evaluated. |
@@ -190,8 +190,8 @@ bodies:
 
 ## Performance notes
 
-* The check runs **once per buffered response**, after all response bytes have been
-  received — never during streaming.
+* The check runs once on the complete buffered textual response or once on the
+  retained prefix before a generic binary response continues streaming.
 * Aho-Corasick uses a single `find_iter` pass over the body; the iteration stops
   collecting after the second distinct pattern is found (early exit from counting).
 * Vectorscan scans the body in one SIMD pass with `SINGLEMATCH`; the callback

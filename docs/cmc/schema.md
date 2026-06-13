@@ -444,8 +444,9 @@ following entry points called from the WAF engine:
   assembly (used by `Anti_exposed_backup`).
 * `inspect(&str)` — full-payload check on a lowercased, URL-decoded string, called
   once the complete request string is available (used by all injection detectors).
-* `inspect_response_body(&str)` — response-body check, called from `inspect_response()`
-  after the full upstream response body is buffered (used by `Anti_passwd_leak`).
+* `inspect_response_body(&str)` — response-body check, called from
+  `inspect_response()` with the complete buffered textual body or the retained
+  prefix of a generic binary response (used by `Anti_passwd_leak`).
 * `inspect_java_deser(&str, &[u8])` — score-based check on the original
   (non-lowercased) text plus raw body bytes; called from both the request and response
   pipelines.  Accepts a combined headers+body string so that Signal B (header check)

@@ -17,7 +17,8 @@
 
 use axum::{
     extract::{Form, Query},
-    response::Html,
+    http::header::CONTENT_TYPE,
+    response::{Html, IntoResponse},
     routing::{get, post},
     Router,
 };
@@ -91,6 +92,22 @@ async fn test_two() -> Html<&'static str> {
 
 async fn test_post(Form(p): Form<Payload>) -> Html<String> {
     Html(format!("<h1>{}</h1>", p.payload_test))
+}
+
+const LARGE_RESPONSE_BYTES: usize = 10 * 1024 * 1024;
+
+async fn large_image_response() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "image/png")],
+        vec![0xA5; LARGE_RESPONSE_BYTES],
+    )
+}
+
+async fn large_text_response() -> impl IntoResponse {
+    (
+        [(CONTENT_TYPE, "text/plain; charset=utf-8")],
+        "x".repeat(LARGE_RESPONSE_BYTES),
+    )
 }
 
 /// Returns a realistic /etc/passwd dump — blocked by `Anti_passwd_leak`.
@@ -232,6 +249,8 @@ fn ensure_backend() {
                         .route("/test_get", get(test_get))
                         .route("/test_two", get(test_two))
                         .route("/test_post", post(test_post))
+                        .route("/large/image", get(large_image_response))
+                        .route("/large/text", get(large_text_response))
                         .route("/leak/passwd", get(leak_passwd))
                         .route("/leak/shadow", get(leak_shadow))
                         .route("/leak/db-error/mysql", get(leak_db_error_mysql))
@@ -654,6 +673,50 @@ const BACKUP_URI_PATHS: &[&str] = &[
 ];
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn binary_response_larger_than_buffer_cap_is_streamed() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let response = client
+        .get(format!("{}/large/image", waf_base(port)))
+        .send()
+        .await
+        .expect("large binary response");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok()),
+        Some("image/png")
+    );
+    let body = response.bytes().await.expect("streamed image body");
+    assert_eq!(body.len(), LARGE_RESPONSE_BYTES);
+    assert!(body.iter().all(|byte| *byte == 0xA5));
+}
+
+#[tokio::test]
+async fn textual_response_larger_than_inspection_cap_is_rejected() {
+    ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(port, &[]);
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let response = client
+        .get(format!("{}/large/text", waf_base(port)))
+        .send()
+        .await
+        .expect("oversized textual response");
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+}
 
 /// Sweep 50 XSS payloads via POST body — every one must be blocked (HTTP 403).
 #[tokio::test]

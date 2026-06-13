@@ -26,6 +26,13 @@ pub const DEFAULT_MAX_REQUEST_BODY_BUFFERED_BYTES: usize = 8 * 1024 * 1024;
 /// Default lowered from 100 MiB → **8 MiB** in 2.24.0.
 pub const DEFAULT_MAX_RESPONSE_BODY_BUFFERED_BYTES: usize = 8 * 1024 * 1024;
 
+/// Maximum total size of an upstream response forwarded without buffering.
+pub const DEFAULT_MAX_STREAMED_RESPONSE_BYTES: usize = 1024 * 1024 * 1024;
+
+/// Prefix retained for inspection when a response cannot safely be classified
+/// as text or as a known opaque media type.
+pub const DEFAULT_RESPONSE_INSPECT_PREFIX_BYTES: usize = 64 * 1024;
+
 /// Maximum window of streaming data the WAF will keep in RAM for a single
 /// in-flight inspection (bytes). Streaming inspection rolls a window of this
 /// size across the body so signatures cannot be split across chunks.
@@ -54,6 +61,10 @@ pub struct MemoryLimits {
     pub max_request_body_buffered_bytes: usize,
     /// Maximum upstream response body the WAF will buffer (bytes).
     pub max_response_body_buffered_bytes: usize,
+    /// Maximum total size of an upstream response forwarded as a stream.
+    pub max_streamed_response_bytes: usize,
+    /// Maximum response prefix retained and inspected in tee-prefix mode.
+    pub response_inspect_prefix_bytes: usize,
     /// Streaming inspection window size (bytes).
     pub max_streaming_inspection_window_bytes: usize,
     /// Global in-flight body buffering ceiling (bytes).
@@ -72,8 +83,9 @@ impl Default for MemoryLimits {
         Self {
             max_request_body_buffered_bytes: DEFAULT_MAX_REQUEST_BODY_BUFFERED_BYTES,
             max_response_body_buffered_bytes: DEFAULT_MAX_RESPONSE_BODY_BUFFERED_BYTES,
-            max_streaming_inspection_window_bytes:
-                DEFAULT_MAX_STREAMING_INSPECTION_WINDOW_BYTES,
+            max_streamed_response_bytes: DEFAULT_MAX_STREAMED_RESPONSE_BYTES,
+            response_inspect_prefix_bytes: DEFAULT_RESPONSE_INSPECT_PREFIX_BYTES,
+            max_streaming_inspection_window_bytes: DEFAULT_MAX_STREAMING_INSPECTION_WINDOW_BYTES,
             max_inflight_body_bytes_global: DEFAULT_MAX_INFLIGHT_BODY_BYTES_GLOBAL,
             max_inflight_body_bytes_per_ip: DEFAULT_MAX_INFLIGHT_BODY_BYTES_PER_IP,
             max_decompress_ratio: DEFAULT_MAX_DECOMPRESS_RATIO,
@@ -201,6 +213,8 @@ mod tests {
         let m = MemoryLimits::default();
         assert!(m.max_request_body_buffered_bytes <= 16 * 1024 * 1024);
         assert!(m.max_response_body_buffered_bytes <= 16 * 1024 * 1024);
+        assert!(m.response_inspect_prefix_bytes <= m.max_response_body_buffered_bytes);
+        assert!(m.max_streamed_response_bytes > m.max_response_body_buffered_bytes);
         assert!(m.max_streaming_inspection_window_bytes <= 1024 * 1024);
     }
 

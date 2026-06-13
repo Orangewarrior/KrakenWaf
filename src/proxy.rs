@@ -15,8 +15,11 @@ use http::{
     header::{CONNECTION, COOKIE, HOST, LOCATION, UPGRADE},
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
 };
-use http_body_util::{BodyExt, Full};
-use hyper::{body::Incoming, upgrade};
+use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full};
+use hyper::{
+    body::{Body, Frame, Incoming, SizeHint},
+    upgrade,
+};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
@@ -24,9 +27,15 @@ use hyper_util::{
 };
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::{pem::PemObject, CertificateDer};
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
+use std::{
+    collections::VecDeque,
+    convert::Infallible,
+    pin::Pin,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    task::{Context as TaskContext, Poll},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info, warn};
@@ -90,6 +99,120 @@ const BODY_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 
 type UpstreamConnector = hyper_rustls::HttpsConnector<HttpConnector>;
 type UpstreamClient = Client<UpstreamConnector, Full<Bytes>>;
+type BoxError = Box<dyn std::error::Error + Send + Sync>;
+pub type WafBody = UnsyncBoxBody<Bytes, BoxError>;
+pub type WafResponse = Response<WafBody>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResponseMode {
+    InspectBuffered {
+        max_bytes: usize,
+    },
+    StreamOnly {
+        max_bytes: usize,
+    },
+    TeePrefix {
+        inspect_prefix_bytes: usize,
+        max_bytes: usize,
+    },
+}
+
+struct LimitedResponseBody {
+    initial: VecDeque<Frame<Bytes>>,
+    inner: Pin<Box<Incoming>>,
+    seen: usize,
+    max_bytes: usize,
+    done: bool,
+}
+
+impl LimitedResponseBody {
+    fn new(
+        initial: VecDeque<Frame<Bytes>>,
+        inner: Incoming,
+        seen: usize,
+        max_bytes: usize,
+    ) -> Self {
+        Self {
+            initial,
+            inner: Box::pin(inner),
+            seen,
+            max_bytes,
+            done: false,
+        }
+    }
+}
+
+impl Body for LimitedResponseBody {
+    type Data = Bytes;
+    type Error = BoxError;
+
+    fn poll_frame(
+        self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        if this.done {
+            return Poll::Ready(None);
+        }
+        if let Some(frame) = this.initial.pop_front() {
+            return Poll::Ready(Some(Ok(frame)));
+        }
+        match this.inner.as_mut().poll_frame(cx) {
+            Poll::Ready(Some(Ok(frame))) => {
+                if let Some(data) = frame.data_ref() {
+                    let Some(total) = this.seen.checked_add(data.len()) else {
+                        this.done = true;
+                        return Poll::Ready(Some(Err(response_limit_error(this.max_bytes))));
+                    };
+                    if total > this.max_bytes {
+                        this.done = true;
+                        return Poll::Ready(Some(Err(response_limit_error(this.max_bytes))));
+                    }
+                    this.seen = total;
+                }
+                Poll::Ready(Some(Ok(frame)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                this.done = true;
+                Poll::Ready(Some(Err(Box::new(error))))
+            }
+            Poll::Ready(None) => {
+                this.done = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.done || (self.initial.is_empty() && self.inner.is_end_stream())
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
+    }
+}
+
+fn response_limit_error(max_bytes: usize) -> BoxError {
+    Box::new(std::io::Error::other(format!(
+        "upstream response exceeded streaming limit of {max_bytes} bytes"
+    )))
+}
+
+pub(crate) fn full_body(bytes: Bytes) -> WafBody {
+    Full::new(bytes)
+        .map_err(|never: Infallible| match never {})
+        .boxed_unsync()
+}
+
+fn limited_body(
+    initial: VecDeque<Frame<Bytes>>,
+    inner: Incoming,
+    seen: usize,
+    max_bytes: usize,
+) -> WafBody {
+    LimitedResponseBody::new(initial, inner, seen, max_bytes).boxed_unsync()
+}
 
 pub struct ProxyClient {
     client: UpstreamClient,
@@ -251,7 +374,7 @@ impl ProxyClient {
         state: &AppState,
         req: Request<Incoming>,
         client_ip: String,
-    ) -> Response<Full<Bytes>> {
+    ) -> WafResponse {
         // Generate a compact UUID v4 (32 lowercase hex chars, no hyphens) once per
         // request. Threaded through all log events, SQLite rows, and the upstream
         // X-Request-Id header so a WAF alert can be correlated with upstream access logs.
@@ -295,7 +418,7 @@ impl ProxyClient {
         client_ip: String,
         request_id: &str,
         traceparent: &str,
-    ) -> Response<Full<Bytes>> {
+    ) -> WafResponse {
         let method = req.method().clone();
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
         let uri = req.uri().clone();
@@ -337,7 +460,12 @@ impl ProxyClient {
         // Check allow-paths: IP-restricted entries block non-allowed IPs; matched entries
         // without IP restriction skip WAF inspection entirely.
         let (skip_inspection, block_by_ip) = if let Some(config) = &state.allow_path_config {
-            match config.check(&path, &uri.to_string(), &effective_ip, state.cli.listen.port()) {
+            match config.check(
+                &path,
+                &uri.to_string(),
+                &effective_ip,
+                state.cli.listen.port(),
+            ) {
                 PathDecision::Allow(entry) => {
                     if entry.log {
                         info!(
@@ -526,7 +654,7 @@ impl ProxyClient {
         state: &AppState,
         context: &InspectionContext,
         body_bytes: &Bytes,
-    ) -> Option<Response<Full<Bytes>>> {
+    ) -> Option<WafResponse> {
         let body_for_inspection = request_body_for_text_inspection(context, body_bytes);
 
         // HTTP Parameter Pollution check (HPP_detect CMC module): inspect the
@@ -573,7 +701,7 @@ impl ProxyClient {
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
         ws_guard: Option<crate::websocket::WsConnGuard>,
-    ) -> Response<Full<Bytes>> {
+    ) -> WafResponse {
         // Resolve the tunnel idle / session bounds from the control policy. When
         // the policy is disabled the tunnel is unbounded (transparent proxy).
         let (idle, max_session) = if state.ws_control.enabled() {
@@ -640,7 +768,7 @@ impl ProxyClient {
         request_id: &str,
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
-    ) -> Result<(tokio::net::TcpStream, Response<Full<Bytes>>, Bytes)> {
+    ) -> Result<(tokio::net::TcpStream, WafResponse, Bytes)> {
         anyhow::ensure!(
             self.upstream.scheme() == "http",
             "websocket tunneling currently supports http:// upstreams"
@@ -672,11 +800,7 @@ impl ProxyClient {
     /// Log the detection event and, in `Block` mode, return a 403 response.
     /// Returns `None` in `Silent` or `DetectOnly` mode so the caller continues forwarding.
     #[allow(clippy::unused_async)]
-    async fn log_and_enforce(
-        &self,
-        state: &AppState,
-        event: SecurityEvent,
-    ) -> Option<Response<Full<Bytes>>> {
+    async fn log_and_enforce(&self, state: &AppState, event: SecurityEvent) -> Option<WafResponse> {
         state.metrics.inc_blocked();
         // Per-engine:module counter derived from the security event label.
         let module_label = derive_module_label(&event.engine, &event.rule_match);
@@ -744,7 +868,7 @@ impl ProxyClient {
         request_id: &str,
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
-    ) -> Result<Response<Full<Bytes>>> {
+    ) -> Result<WafResponse> {
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
         // request URI (RFC 7230 §5.3.2) such as `http://attacker.tld/x` would otherwise
@@ -831,90 +955,160 @@ impl ProxyClient {
                 }
             }
         }
-        // Stream the upstream body in chunks so an oversized response cannot
-        // exhaust WAF heap. The cap is operator-configurable (8 MiB default
-        // in 2.24.0, down from 100 MiB).
-        let max_response = state.cli.max_upstream_response_bytes;
-
-        // 2.24.0: when the upstream advertises a binary content-type the
-        // body bytes are useless to the keyword / regex / libinjection
-        // engines, so we inspect headers only and stream the body without
-        // any further allocation pressure. This protects WAF latency on
-        // file downloads (PDF, mp4, large JPEGs, …) while still scanning
-        // text/html, application/json, and friends.
         let resp_headers_map = response_builder.headers_ref().cloned().unwrap_or_default();
-        let inspect_body = response_body_should_be_inspected(&resp_headers_map);
+        let mode = response_mode(
+            &resp_headers_map,
+            state.cli.max_upstream_response_bytes,
+            state.memory_limits.max_streamed_response_bytes,
+            state.memory_limits.response_inspect_prefix_bytes,
+        );
+        let advertised_length = content_length(&resp_headers_map);
+        let response_body = response.into_body();
 
-        let mut body_buf = BytesMut::new();
-        let mut response_body = response.into_body();
-        while let Some(frame) = response_body
-            .frame()
-            .await
-            .transpose()
-            .map_err(|err| KrakenError::Upstream(err.to_string()))?
-        {
-            if let Some(chunk) = frame.data_ref() {
-                body_buf.extend_from_slice(chunk);
-                if body_buf.len() > max_response {
-                    anyhow::bail!(
-                        "upstream response body exceeds limit of {max_response} bytes; \
-                         increase --max-upstream-response-bytes if the upstream legitimately returns large responses"
-                    );
+        match mode {
+            ResponseMode::InspectBuffered { max_bytes } => {
+                ensure_advertised_length_within_limit(advertised_length, max_bytes)?;
+                let mut body_buf = BytesMut::new();
+                let mut response_body = response_body;
+                while let Some(frame) = response_body
+                    .frame()
+                    .await
+                    .transpose()
+                    .map_err(|err| KrakenError::Upstream(err.to_string()))?
+                {
+                    if let Some(chunk) = frame.data_ref() {
+                        body_buf.extend_from_slice(chunk);
+                        if body_buf.len() > max_bytes {
+                            anyhow::bail!(
+                                "buffered upstream response exceeds limit of {max_bytes} bytes"
+                            );
+                        }
+                    }
                 }
+                let mut bytes = body_buf.freeze();
+                if let Some(response) = self
+                    .inspect_upstream_response(
+                        state,
+                        status,
+                        &resp_headers_map,
+                        &mut response_builder,
+                        &mut bytes,
+                        true,
+                        &method_str,
+                        &uri,
+                        request_id,
+                    )
+                    .await
+                {
+                    return Ok(response);
+                }
+                let mut built = response_builder.body(full_body(bytes)).map_err(|err| {
+                    anyhow::anyhow!("failed to assemble upstream response: {err}")
+                })?;
+                apply_response_policy(state, &mut built);
+                Ok(built)
+            }
+            ResponseMode::StreamOnly { max_bytes } => {
+                ensure_advertised_length_within_limit(advertised_length, max_bytes)?;
+                let mut empty = Bytes::new();
+                if let Some(response) = self
+                    .inspect_upstream_response(
+                        state,
+                        status,
+                        &resp_headers_map,
+                        &mut response_builder,
+                        &mut empty,
+                        false,
+                        &method_str,
+                        &uri,
+                        request_id,
+                    )
+                    .await
+                {
+                    return Ok(response);
+                }
+                let mut built = response_builder
+                    .body(limited_body(VecDeque::new(), response_body, 0, max_bytes))
+                    .map_err(|err| {
+                        anyhow::anyhow!("failed to assemble upstream response: {err}")
+                    })?;
+                apply_response_policy(state, &mut built);
+                Ok(built)
+            }
+            ResponseMode::TeePrefix {
+                inspect_prefix_bytes,
+                max_bytes,
+            } => {
+                ensure_advertised_length_within_limit(advertised_length, max_bytes)?;
+                let (mut prefix, remainder, response_body, seen) =
+                    read_response_prefix(response_body, inspect_prefix_bytes, max_bytes).await?;
+                let original_prefix_len = prefix.len();
+                if let Some(response) = self
+                    .inspect_upstream_response(
+                        state,
+                        status,
+                        &resp_headers_map,
+                        &mut response_builder,
+                        &mut prefix,
+                        false,
+                        &method_str,
+                        &uri,
+                        request_id,
+                    )
+                    .await
+                {
+                    return Ok(response);
+                }
+                adjust_streaming_content_length(
+                    &mut response_builder,
+                    advertised_length,
+                    original_prefix_len,
+                    prefix.len(),
+                );
+                let mut initial = VecDeque::with_capacity(remainder.len() + 1);
+                if !prefix.is_empty() {
+                    initial.push_back(Frame::data(prefix));
+                }
+                initial.extend(remainder);
+                let mut built = response_builder
+                    .body(limited_body(initial, response_body, seen, max_bytes))
+                    .map_err(|err| {
+                        anyhow::anyhow!("failed to assemble upstream response: {err}")
+                    })?;
+                apply_response_policy(state, &mut built);
+                Ok(built)
             }
         }
-        let mut bytes = body_buf.freeze();
+    }
 
-        // Inspect the upstream response (rules with http_action: Response).
-        let resp_headers = flatten_headers(&resp_headers_map);
+    #[allow(clippy::too_many_arguments)]
+    async fn inspect_upstream_response(
+        &self,
+        state: &AppState,
+        status: StatusCode,
+        response_headers: &HeaderMap,
+        response_builder: &mut http::response::Builder,
+        bytes: &mut Bytes,
+        complete_body: bool,
+        method: &str,
+        uri: &Uri,
+        request_id: &str,
+    ) -> Option<WafResponse> {
         let resp_ctx = ResponseContext {
             status: status.as_u16(),
-            headers: resp_headers,
-            body: if inspect_body {
-                bytes.clone()
-            } else {
-                Bytes::new()
-            },
+            headers: flatten_headers(response_headers),
+            body: bytes.clone(),
         };
-        let resp_decision = state.waf.inspect_response(&resp_ctx);
-        match resp_decision {
+        match state.waf.inspect_response(&resp_ctx) {
             Decision::Block(finding) => {
-                let event = crate::logging::SecurityEvent::from_finding(
-                    &finding,
-                    &InspectionContext {
-                        client_ip: String::new(),
-                        method: method_str.clone(),
-                        uri: uri.to_string(),
-                        path: uri.path().to_string(),
-                        headers: String::new(),
-                        body_limit: 0,
-                        request_id: request_id.to_string(),
-                        country: String::new(),
-                        continent_name: String::new(),
-                    },
-                    finding.request_payload.clone(),
-                );
+                let event = build_response_event(&finding, method, uri, request_id);
                 if let Some(response) = self.log_and_enforce(state, event).await {
-                    return Ok(response);
+                    return Some(response);
                 }
             }
             Decision::Monitor(finding) => {
                 // Log to all security outputs but forward the upstream response.
-                let event = crate::logging::SecurityEvent::from_finding(
-                    &finding,
-                    &InspectionContext {
-                        client_ip: String::new(),
-                        method: method_str.clone(),
-                        uri: uri.to_string(),
-                        path: uri.path().to_string(),
-                        headers: String::new(),
-                        body_limit: 0,
-                        request_id: request_id.to_string(),
-                        country: String::new(),
-                        continent_name: String::new(),
-                    },
-                    finding.request_payload.clone(),
-                );
+                let event = build_response_event(&finding, method, uri, request_id);
                 info!(
                     target: "krakenwaf",
                     request_id=%event.request_id,
@@ -938,21 +1132,7 @@ impl ProxyClient {
                 body: modified,
             } => {
                 // Log finding (low severity by construction) to ALL outputs.
-                let event = crate::logging::SecurityEvent::from_finding(
-                    &finding,
-                    &InspectionContext {
-                        client_ip: String::new(),
-                        method: method_str.clone(),
-                        uri: uri.to_string(),
-                        path: uri.path().to_string(),
-                        headers: String::new(),
-                        body_limit: 0,
-                        request_id: request_id.to_string(),
-                        country: String::new(),
-                        continent_name: String::new(),
-                    },
-                    finding.request_payload.clone(),
-                );
+                let event = build_response_event(&finding, method, uri, request_id);
                 info!(
                     target: "krakenwaf",
                     request_id=%event.request_id,
@@ -971,24 +1151,18 @@ impl ProxyClient {
                 );
                 write_critical(&state.logging, &event);
                 state.store.enqueue(event);
-                // Replace the body the client will receive with the scrubbed copy.
-                bytes = modified;
-                // Update Content-Length so the client does not see a truncated
-                // payload (or wait for bytes that will never arrive).
-                if let Some(headers) = response_builder.headers_mut() {
-                    if let Ok(val) = http::HeaderValue::from_str(&bytes.len().to_string()) {
-                        headers.insert(http::header::CONTENT_LENGTH, val);
+                *bytes = modified;
+                if complete_body {
+                    if let Some(headers) = response_builder.headers_mut() {
+                        if let Ok(value) = HeaderValue::from_str(&bytes.len().to_string()) {
+                            headers.insert(http::header::CONTENT_LENGTH, value);
+                        }
                     }
                 }
             }
             Decision::Allow => {}
         }
-
-        let mut built = response_builder
-            .body(Full::new(bytes))
-            .map_err(|err| anyhow::anyhow!("failed to assemble upstream response: {err}"))?;
-        apply_response_policy(state, &mut built);
-        Ok(built)
+        None
     }
 }
 
@@ -1288,6 +1462,26 @@ fn looks_like_text(bytes: &[u8]) -> bool {
 fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>) -> SecurityEvent {
     let request_payload = format_full_request(ctx, body, &finding.request_payload);
     SecurityEvent::from_finding(finding, ctx, request_payload)
+}
+
+fn build_response_event(
+    finding: &Finding,
+    method: &str,
+    uri: &Uri,
+    request_id: &str,
+) -> SecurityEvent {
+    let ctx = InspectionContext {
+        client_ip: String::new(),
+        method: method.to_string(),
+        uri: uri.to_string(),
+        path: uri.path().to_string(),
+        headers: String::new(),
+        body_limit: 0,
+        request_id: request_id.to_string(),
+        country: String::new(),
+        continent_name: String::new(),
+    };
+    SecurityEvent::from_finding(finding, &ctx, finding.request_payload.clone())
 }
 
 pub(crate) fn format_request_prefix_bytes(ctx: &InspectionContext) -> Vec<u8> {
@@ -1614,7 +1808,7 @@ fn append_header_line(out: &mut Vec<u8>, name: &str, value: &str) {
 
 async fn read_upstream_websocket_response(
     stream: &mut tokio::net::TcpStream,
-) -> Result<(Response<Full<Bytes>>, Bytes)> {
+) -> Result<(WafResponse, Bytes)> {
     const MAX_WS_HANDSHAKE_BYTES: usize = 32 * 1024;
 
     let mut buf = Vec::with_capacity(1024);
@@ -1656,7 +1850,7 @@ async fn read_upstream_websocket_response(
     }
 
     let response = builder
-        .body(Full::new(Bytes::new()))
+        .body(full_body(Bytes::new()))
         .map_err(|err| anyhow::anyhow!("failed to build websocket response: {err}"))?;
     Ok((response, leftover))
 }
@@ -1675,34 +1869,258 @@ fn parse_http_status(status_line: &str) -> Result<StatusCode> {
         .map_err(|err| anyhow::anyhow!("bad upstream websocket status code {code}: {err}"))
 }
 
-/// Decide whether the upstream response body should be fed to the
-/// detection engines. Binary types (images, video, audio, generic
-/// `application/octet-stream`) contain no text the WAF can reason about,
-/// so we skip body inspection — headers and status are still scanned.
-fn response_body_should_be_inspected(headers: &http::HeaderMap) -> bool {
-    let Some(value) = headers.get("content-type") else {
-        return true;
-    };
-    let Ok(text) = value.to_str() else {
-        return true;
-    };
-    let normalised = text
-        .split(';')
-        .next()
-        .unwrap_or(text)
-        .trim()
-        .to_ascii_lowercase();
-    // Allow-list of "text-ish" prefixes — everything else is treated as binary.
+fn response_mode(
+    headers: &HeaderMap,
+    buffered_max_bytes: usize,
+    streamed_max_bytes: usize,
+    inspect_prefix_bytes: usize,
+) -> ResponseMode {
+    let inspect_prefix_bytes = inspect_prefix_bytes.min(streamed_max_bytes);
+    let content_type = headers
+        .get(http::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            value
+                .split(';')
+                .next()
+                .unwrap_or(value)
+                .trim()
+                .to_ascii_lowercase()
+        });
 
-    normalised.starts_with("text/")
-        || normalised.starts_with("application/json")
-        || normalised.starts_with("application/xml")
-        || normalised.starts_with("application/xhtml")
-        || normalised.starts_with("application/javascript")
-        || normalised.starts_with("application/x-www-form-urlencoded")
-        || normalised.starts_with("application/yaml")
-        || normalised.starts_with("application/graphql")
-        || normalised.starts_with("application/vnd.api+json")
+    let Some(content_type) = content_type else {
+        return ResponseMode::TeePrefix {
+            inspect_prefix_bytes,
+            max_bytes: streamed_max_bytes,
+        };
+    };
+
+    if content_type.starts_with("text/")
+        || content_type == "application/json"
+        || content_type.ends_with("+json")
+        || content_type == "application/xml"
+        || content_type.ends_with("+xml")
+        || content_type == "application/xhtml+xml"
+        || content_type == "application/javascript"
+        || content_type == "application/x-www-form-urlencoded"
+        || content_type == "application/yaml"
+        || content_type == "application/graphql"
+    {
+        return ResponseMode::InspectBuffered {
+            max_bytes: buffered_max_bytes,
+        };
+    }
+
+    if content_type.starts_with("image/")
+        || content_type.starts_with("video/")
+        || content_type.starts_with("audio/")
+        || content_type.starts_with("font/")
+        || matches!(
+            content_type.as_str(),
+            "application/pdf"
+                | "application/zip"
+                | "application/x-zip-compressed"
+                | "application/gzip"
+                | "application/x-gzip"
+                | "application/x-7z-compressed"
+                | "application/vnd.rar"
+                | "application/x-rar-compressed"
+                | "application/wasm"
+        )
+    {
+        return ResponseMode::StreamOnly {
+            max_bytes: streamed_max_bytes,
+        };
+    }
+
+    ResponseMode::TeePrefix {
+        inspect_prefix_bytes,
+        max_bytes: streamed_max_bytes,
+    }
+}
+
+#[cfg(test)]
+mod response_mode_tests {
+    use super::{response_mode, ResponseMode};
+    use http::{header::CONTENT_TYPE, HeaderMap, HeaderValue};
+
+    const BUFFERED_MAX: usize = 8 * 1024 * 1024;
+    const STREAMED_MAX: usize = 1024 * 1024 * 1024;
+    const PREFIX: usize = 64 * 1024;
+
+    fn headers(content_type: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            CONTENT_TYPE,
+            HeaderValue::from_str(content_type).expect("valid content type"),
+        );
+        headers
+    }
+
+    #[test]
+    fn text_and_structured_text_are_buffered_for_complete_inspection() {
+        for content_type in [
+            "text/html; charset=utf-8",
+            "application/json",
+            "application/problem+json",
+            "application/xml",
+        ] {
+            assert_eq!(
+                response_mode(&headers(content_type), BUFFERED_MAX, STREAMED_MAX, PREFIX),
+                ResponseMode::InspectBuffered {
+                    max_bytes: BUFFERED_MAX
+                },
+                "{content_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn known_binary_media_are_streamed_without_buffering() {
+        for content_type in [
+            "image/png",
+            "video/mp4",
+            "application/pdf",
+            "application/zip",
+        ] {
+            assert_eq!(
+                response_mode(&headers(content_type), BUFFERED_MAX, STREAMED_MAX, PREFIX),
+                ResponseMode::StreamOnly {
+                    max_bytes: STREAMED_MAX
+                },
+                "{content_type}"
+            );
+        }
+    }
+
+    #[test]
+    fn generic_binary_and_missing_content_type_use_prefix_inspection() {
+        let expected = ResponseMode::TeePrefix {
+            inspect_prefix_bytes: PREFIX,
+            max_bytes: STREAMED_MAX,
+        };
+        assert_eq!(
+            response_mode(
+                &headers("application/octet-stream"),
+                BUFFERED_MAX,
+                STREAMED_MAX,
+                PREFIX
+            ),
+            expected
+        );
+        assert_eq!(
+            response_mode(&HeaderMap::new(), BUFFERED_MAX, STREAMED_MAX, PREFIX),
+            expected
+        );
+    }
+
+    #[test]
+    fn prefix_never_exceeds_the_total_stream_limit() {
+        assert_eq!(
+            response_mode(
+                &headers("application/octet-stream"),
+                BUFFERED_MAX,
+                1024,
+                PREFIX
+            ),
+            ResponseMode::TeePrefix {
+                inspect_prefix_bytes: 1024,
+                max_bytes: 1024
+            }
+        );
+    }
+}
+
+fn content_length(headers: &HeaderMap) -> Option<usize> {
+    headers
+        .get(http::header::CONTENT_LENGTH)?
+        .to_str()
+        .ok()?
+        .parse()
+        .ok()
+}
+
+fn ensure_advertised_length_within_limit(
+    advertised_length: Option<usize>,
+    max_bytes: usize,
+) -> Result<()> {
+    if advertised_length.is_some_and(|length| length > max_bytes) {
+        anyhow::bail!("upstream response Content-Length exceeds limit of {max_bytes} bytes");
+    }
+    Ok(())
+}
+
+async fn read_response_prefix(
+    mut body: Incoming,
+    prefix_limit: usize,
+    max_bytes: usize,
+) -> Result<(Bytes, VecDeque<Frame<Bytes>>, Incoming, usize)> {
+    let mut prefix = BytesMut::with_capacity(prefix_limit.min(64 * 1024));
+    let mut remainder = VecDeque::new();
+    let mut seen = 0usize;
+
+    while prefix.len() < prefix_limit {
+        let Some(frame) = body
+            .frame()
+            .await
+            .transpose()
+            .map_err(|error| KrakenError::Upstream(error.to_string()))?
+        else {
+            break;
+        };
+        match frame.into_data() {
+            Ok(mut chunk) => {
+                seen = seen
+                    .checked_add(chunk.len())
+                    .ok_or_else(|| anyhow::anyhow!("upstream response byte counter overflow"))?;
+                if seen > max_bytes {
+                    return Err(anyhow::anyhow!(
+                        "upstream response exceeded streaming limit of {max_bytes} bytes"
+                    ));
+                }
+                let needed = prefix_limit - prefix.len();
+                if chunk.len() <= needed {
+                    prefix.extend_from_slice(&chunk);
+                } else {
+                    let inspected = chunk.split_to(needed);
+                    prefix.extend_from_slice(&inspected);
+                    remainder.push_back(Frame::data(chunk));
+                }
+            }
+            Err(frame) => {
+                remainder.push_back(frame);
+                break;
+            }
+        }
+    }
+
+    Ok((prefix.freeze(), remainder, body, seen))
+}
+
+fn adjust_streaming_content_length(
+    response_builder: &mut http::response::Builder,
+    advertised_length: Option<usize>,
+    original_prefix_len: usize,
+    forwarded_prefix_len: usize,
+) {
+    if original_prefix_len == forwarded_prefix_len {
+        return;
+    }
+    let Some(headers) = response_builder.headers_mut() else {
+        return;
+    };
+    let Some(original_length) = advertised_length else {
+        headers.remove(http::header::CONTENT_LENGTH);
+        return;
+    };
+    let adjusted = original_length
+        .saturating_sub(original_prefix_len)
+        .saturating_add(forwarded_prefix_len);
+    if let Ok(value) = HeaderValue::from_str(&adjusted.to_string()) {
+        headers.insert(http::header::CONTENT_LENGTH, value);
+    } else {
+        headers.remove(http::header::CONTENT_LENGTH);
+    }
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
@@ -1778,7 +2196,7 @@ fn combine_request_cookie_headers(headers: &HeaderMap) -> Option<HeaderValue> {
     HeaderValue::from_str(&combined).ok()
 }
 
-fn apply_response_policy(state: &AppState, response: &mut Response<Full<Bytes>>) {
+fn apply_response_policy<B>(state: &AppState, response: &mut Response<B>) {
     let is_websocket_upgrade = response.status() == StatusCode::SWITCHING_PROTOCOLS
         || response.headers().contains_key(UPGRADE)
         || response
@@ -1795,13 +2213,13 @@ fn block_content_response(
     state: &AppState,
     status: StatusCode,
     fallback_message: &str,
-) -> Response<Full<Bytes>> {
+) -> WafResponse {
     let mut response = if let Some(body) = &state.block_response_body {
         Response::builder()
             .status(status)
             .header("content-type", state.block_response_content_type.as_str())
             .header("x-content-type-options", "nosniff")
-            .body(Full::new(body.clone()))
+            .body(full_body(body.clone()))
             .unwrap_or_else(|_| plain_response(status, fallback_message))
     } else {
         plain_response(status, fallback_message)
@@ -1811,7 +2229,7 @@ fn block_content_response(
 }
 
 #[must_use]
-pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>> {
+pub fn plain_response(status: StatusCode, message: &str) -> WafResponse {
     // All header names/values are static literals so the builder cannot actually fail.
     // Falling back to a bare Response::new keeps the request path infallible if the
     // http crate ever tightens its validation.
@@ -1819,9 +2237,9 @@ pub fn plain_response(status: StatusCode, message: &str) -> Response<Full<Bytes>
         .status(status)
         .header("content-type", "text/plain; charset=utf-8")
         .header("x-content-type-options", "nosniff")
-        .body(Full::new(Bytes::copy_from_slice(message.as_bytes())))
+        .body(full_body(Bytes::copy_from_slice(message.as_bytes())))
         .unwrap_or_else(|_| {
-            let mut resp = Response::new(Full::new(Bytes::copy_from_slice(message.as_bytes())));
+            let mut resp = Response::new(full_body(Bytes::copy_from_slice(message.as_bytes())));
             *resp.status_mut() = status;
             resp
         })
@@ -2084,7 +2502,9 @@ mod redirect_tests {
 
     #[test]
     fn header_value_control_break_guard_flags_crlf() {
-        assert!(super::header_value_has_control_break(b"value\r\nset-cookie: x"));
+        assert!(super::header_value_has_control_break(
+            b"value\r\nset-cookie: x"
+        ));
         assert!(super::header_value_has_control_break(b"value\ninjected"));
         assert!(super::header_value_has_control_break(b"value\rinjected"));
         assert!(!super::header_value_has_control_break(b"normal-value 123"));

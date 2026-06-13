@@ -100,6 +100,14 @@ memory-limits:
   # 2.29.0 default: 8 MiB (was 100 MiB).
   max_response_body_buffered_bytes: 8388608
 
+  # Maximum total bytes forwarded for a streaming upstream response.
+  # Streaming keeps only the current Hyper frame in memory.
+  max_streamed_response_bytes: 1073741824
+
+  # Prefix retained for inspection on generic/unknown binary responses.
+  # The remaining body is streamed without accumulation.
+  response_inspect_prefix_bytes: 65536
+
   # Streaming inspection window size (bytes). The buffered-and-inspect-once
   # body pipeline uses this only as the upper bound of pattern overlap.
   max_streaming_inspection_window_bytes: 262144

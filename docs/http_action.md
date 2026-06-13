@@ -19,8 +19,8 @@ existing rules remain forward-compatible.
 ```
 Client ──► WAF ──► Upstream
               │          │
-              │ inspect   │ buffer response body
-              │ request   │ inspect response
+              │ inspect   │ select response mode
+              │ request   │ inspect body or prefix
               │           │
               ◄──────────
 ```
@@ -30,9 +30,10 @@ Client ──► WAF ──► Upstream
    A match returns HTTP 403 immediately; the upstream never receives the
    request.
 
-2. **Response phase** — runs after the upstream response body is fully
-   buffered. Rules with `"http_action": "Response"` are checked against the
-   response status code, response headers, and response body.
+2. **Response phase** — runs after the upstream response headers select a
+   bounded response mode. Rules with `"http_action": "Response"` are checked
+   against the status, headers, and either the complete textual body or the
+   retained prefix of a generic binary body.
    A match returns HTTP 403 to the client and logs the finding.
 
 Both Aho-Corasick keyword matchers and regex matchers honour `http_action`.
@@ -58,12 +59,20 @@ Place response rules in `rules/regex/body_regex.json` (or
 `rules/Vectorscan/strings2block.json` for Vectorscan) with
 `"http_action": "Response"`.
 
-## Performance considerations
+## Bounded response modes
 
-The upstream response body is buffered in memory before inspection. The buffer
-cap is controlled by `--max-upstream-response-bytes` (default 100 MiB). If the
-upstream returns a body larger than this cap the connection is terminated with
-an error log entry, regardless of whether response rules are enabled.
+| Mode | Content types | Memory behaviour |
+|------|---------------|------------------|
+| `InspectBuffered` | `text/*`, JSON, XML, JavaScript, YAML, GraphQL, form data | Buffers up to `--max-upstream-response-bytes` (8 MiB default), then performs complete-body inspection and any required rewrite. |
+| `StreamOnly` | Images, video, audio, fonts, PDF, archives, WASM | Streams Hyper frames directly, counting bytes up to `max_streamed_response_bytes` (1 GiB default). |
+| `TeePrefix` | `application/octet-stream`, unknown or missing content type | Retains and inspects only `response_inspect_prefix_bytes` (64 KiB default), then streams the remainder. |
 
-If no `"Response"` rules are loaded, the response body is still buffered (for
-forwarding), but no pattern matching occurs, so the overhead is negligible.
+The streaming limits live under `memory-limits` in
+`rules/cmc/config.yaml`. A response with a declared `Content-Length` above its
+selected limit is rejected before forwarding. For chunked responses, KrakenWaf
+counts bytes during forwarding and terminates the response if the cap is
+crossed.
+
+Complete-body response rules are strongest on `InspectBuffered` content.
+`TeePrefix` rules can only detect evidence present in the configured prefix,
+which deliberately trades complete binary inspection for bounded memory use.

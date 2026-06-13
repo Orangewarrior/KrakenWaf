@@ -96,7 +96,8 @@ connection_timeout_secs: 30
 # Overridden by --max-body-bytes when > 0.
 max_body_bytes: 0
 
-# Hard ceiling on the upstream response body buffered in memory (bytes).
+# Hard ceiling on textual upstream responses buffered for complete inspection.
+# Binary/media responses use the streaming limits in rules/cmc/config.yaml.
 # 0 = use rules/cmc/config.yaml memory-limits (built-in 8 MiB / 8388608).
 # Overridden by --max-upstream-response-bytes when > 0.
 max_upstream_response_bytes: 0

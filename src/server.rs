@@ -1,7 +1,7 @@
 use crate::{
     app::AppState,
     logging::{write_critical, SecurityEvent},
-    proxy::{effective_client_ip, plain_response},
+    proxy::{effective_client_ip, full_body, plain_response, WafResponse},
     rules::{RuleSet, Severity},
     tls::TlsConfigStore,
 };
@@ -9,7 +9,6 @@ use anyhow::Result;
 use bytes::Bytes;
 use chrono::Utc;
 use http::{Request, Response, StatusCode};
-use http_body_util::Full;
 use hyper::{body::Incoming, service::service_fn};
 use hyper_util::{
     rt::{TokioExecutor, TokioIo},
@@ -191,7 +190,7 @@ fn enforce_bearer_auth(
     req: &Request<Incoming>,
     state: &Arc<AppState>,
     effective_ip: &str,
-) -> Option<Response<Full<Bytes>>> {
+) -> Option<WafResponse> {
     // No token configured ⇒ the bearer gate is disabled (a startup warning is
     // emitted in this case). This keeps deployments that have not provisioned a
     // secret working exactly as before.
@@ -249,7 +248,7 @@ fn serve_observability(
     client_ip: &str,
     include_metrics: bool,
     listener_port: u16,
-) -> Option<Response<Full<Bytes>>> {
+) -> Option<WafResponse> {
     let path = req.uri().path();
     let is_health = path == "/__krakenwaf/health"
         || path == "/__krakenwaf/livez"
@@ -336,7 +335,7 @@ fn serve_observability(
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
-        .body(Full::new(Bytes::from(state.metrics.render_prometheus())))
+        .body(full_body(Bytes::from(state.metrics.render_prometheus())))
         .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
     state.response_header_policy.apply(response.headers_mut(), false);
     Some(response)
@@ -679,7 +678,7 @@ async fn handle(
     req: Request<Incoming>,
     state: Arc<AppState>,
     client_ip: String,
-) -> Response<Full<Bytes>> {
+) -> WafResponse {
     // Liveness/readiness probes bypass per-IP concurrency and backpressure gates
     // and are still answered inline on the data-plane port (load balancers and
     // k8s probe the serving port). `/metrics`, however, is *not* served here: it

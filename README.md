@@ -102,7 +102,7 @@ max_coroutines_per_ip: 64      # simultaneous connections per IP (0 = disabled)
 max_connections: 0                 # 0 = derive from system RAM
 connection_timeout_secs: 30        # client connection timeout (>= 1)
 max_body_bytes: 0                  # 0 = 8 MiB default
-max_upstream_response_bytes: 0     # 0 = 8 MiB default
+max_upstream_response_bytes: 0     # 0 = 8 MiB buffered text default
 
 # Uncomment to enable Redis distributed rate limiting:
 # redis:
@@ -524,7 +524,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--connection-timeout-secs` | `30` | Timeout in seconds for a client connection accepted by the WAF. Also configurable via `connection_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--max-connections` | RAM-derived | Maximum simultaneous TCP connections accepted by the WAF. When unset, a conservative cap is derived from system RAM (clamped to 64–4096). Also configurable via `max_connections` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
 | `--max-body-bytes` | `8388608` (8 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request. Also configurable via `max_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
-| `--max-upstream-response-bytes` | `8388608` (8 MiB) | Hard ceiling on upstream response body buffered in memory; prevents a misbehaving upstream from exhausting WAF heap. Also configurable via `max_upstream_response_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
+| `--max-upstream-response-bytes` | `8388608` (8 MiB) | Ceiling for fully buffered textual upstream responses. Binary media streams without full accumulation; its total-byte cap and optional inspection prefix are configured by `max_streamed_response_bytes` and `response_inspect_prefix_bytes` in `rules/cmc/config.yaml`. Also configurable via `max_upstream_response_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--anomaly-threshold` | `600` | Score-engine block threshold. Detection rules with `score` below this are correlated; when their accumulated `sum_score` within a single inspection view reaches the threshold the request is blocked. Also configurable via `Anomaly_threshold` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml). See [docs/score_rank.md](docs/score_rank.md) |
 | `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set, inspection stops scanning additional views once the deadline elapses and the request proceeds with whatever findings were produced. `0` disables the deadline. Also configurable via `Max_inspection_ms` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml) |
 | `--body-frame-timeout-secs` | `30` | Per-frame timeout when streaming the request body. If the WAF waits longer than this for a single body chunk it returns 408 and drops the connection. Also configurable via `body_frame_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
