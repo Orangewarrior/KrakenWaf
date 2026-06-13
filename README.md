@@ -462,6 +462,10 @@ allow:
 Edit `rules/addr/allowlist/allow_addrs.txt` to add monitoring subnet IPs (exact,
 CIDR, or start–end range). See [docs/allowpaths.md](docs/allowpaths.md) for details.
 
+KrakenWaf fails startup when the observability listener inherits a non-loopback
+bind and neither `BEARER_PASSWORD` nor an effective `/metrics` IP allowlist is
+configured. Server-side TLS alone is not mTLS and does not satisfy this check.
+
 ---
 
 ## ❤️ Health

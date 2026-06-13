@@ -45,7 +45,7 @@ impl fmt::Display for Severity {
 
 /// Fully loaded rule set used by `KrakenWaf`.
 #[allow(dead_code)]
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RuleSet {
     /// Exact IPs blocked from all access (from rules/addr/blocklist.txt).
     pub blocked_ips: Vec<String>,

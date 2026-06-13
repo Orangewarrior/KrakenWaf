@@ -1,4 +1,5 @@
 use crate::{
+    allowpaths::AllowPathConfig,
     app::AppState,
     logging::{write_critical, SecurityEvent},
     proxy::{effective_client_ip, full_body, plain_response, WafResponse},
@@ -106,6 +107,40 @@ enum TlsAcceptOutcome {
 /// Interval at which idle per-IP counter entries are reaped from the
 /// concurrency and body-byte maps.
 const IP_MAP_SWEEP_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Reject an externally-bound observability listener unless at least one
+/// access-control mechanism is active before the socket is opened.
+///
+/// TLS server authentication alone is not mTLS and does not satisfy this
+/// policy. `KrakenWaf` currently accepts bearer authentication and either the
+/// port-scoped allow-path restriction or the legacy rules allowlist.
+///
+/// # Errors
+/// Returns an error when a non-loopback bind has no effective bearer token or
+/// IP allowlist.
+pub fn validate_observability_exposure(
+    metrics_addr: std::net::SocketAddr,
+    bearer_configured: bool,
+    allow_paths: Option<&AllowPathConfig>,
+    rules: &RuleSet,
+) -> Result<()> {
+    if metrics_addr.ip().is_loopback() {
+        return Ok(());
+    }
+
+    let allow_paths_protected = allow_paths
+        .is_some_and(|config| config.has_ip_restriction_for("/metrics", metrics_addr.port()));
+    let legacy_allowlist_protected = !rules.allowed_ips.is_empty();
+
+    if bearer_configured || allow_paths_protected || legacy_allowlist_protected {
+        return Ok(());
+    }
+
+    anyhow::bail!(
+        "refusing to expose observability on {metrics_addr}: a non-loopback metrics bind requires \
+         BEARER_PASSWORD or an explicit IP allowlist for /metrics; ordinary TLS is not mTLS"
+    )
+}
 
 fn connection_builder(header_read_timeout_secs: u64) -> Builder<TokioExecutor> {
     let mut builder = Builder::new(TokioExecutor::new());
@@ -809,7 +844,10 @@ async fn handle(
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, extract_bearer};
+    use super::{
+        constant_time_eq, extract_bearer, validate_observability_exposure,
+    };
+    use crate::{allowpaths::AllowPathConfig, rules::RuleSet};
     use http::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 
     fn headers_with_auth(value: &str) -> HeaderMap {
@@ -868,5 +906,68 @@ mod tests {
     fn extract_bearer_absent_header_is_none() {
         let h = HeaderMap::new();
         assert_eq!(extract_bearer(&h), None);
+    }
+
+    #[test]
+    fn public_observability_bind_without_protection_is_rejected() {
+        let addr = "0.0.0.0:4343".parse().expect("socket address");
+        let error = validate_observability_exposure(addr, false, None, &RuleSet::default())
+            .expect_err("public unprotected metrics must fail");
+        assert!(error.to_string().contains("refusing to expose observability"));
+    }
+
+    #[test]
+    fn loopback_observability_bind_needs_no_extra_gate() {
+        for addr in ["127.0.0.1:4343", "[::1]:4343"] {
+            validate_observability_exposure(
+                addr.parse().expect("socket address"),
+                false,
+                None,
+                &RuleSet::default(),
+            )
+            .expect("loopback bind");
+        }
+    }
+
+    #[test]
+    fn bearer_or_legacy_allowlist_protects_public_bind() {
+        let addr = "0.0.0.0:4343".parse().expect("socket address");
+        validate_observability_exposure(addr, true, None, &RuleSet::default())
+            .expect("bearer protection");
+
+        let mut rules = RuleSet::default();
+        rules.allowed_ips.push("127.0.0.1".to_string());
+        validate_observability_exposure(addr, false, None, &rules)
+            .expect("legacy allowlist protection");
+    }
+
+    #[test]
+    fn port_scoped_only_addrs_protects_public_bind() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("metrics.txt"), "127.0.0.1\n")
+            .expect("write allowlist");
+        std::fs::write(
+            temp.path().join("lists.yaml"),
+            r"allow:
+  - order: 1
+    title: Metrics
+    log: false
+    port: 4343
+    only_addrs: metrics.txt
+    paths: [/metrics]
+",
+        )
+        .expect("write allow paths");
+        let allow_paths =
+            AllowPathConfig::from_file(&temp.path().join("lists.yaml"), temp.path())
+                .expect("load allow paths");
+
+        validate_observability_exposure(
+            "0.0.0.0:4343".parse().expect("socket address"),
+            false,
+            Some(&allow_paths),
+            &RuleSet::default(),
+        )
+        .expect("port-scoped allowlist protection");
     }
 }

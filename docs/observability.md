@@ -72,7 +72,24 @@ listener** (default port `4343`, set via `--metrics-port` or `conf/proxy.yaml`'s
 TLS-encrypted (the listener reuses the data-plane certificates; it serves plain
 HTTP only when the whole WAF runs with `--no-tls`).
 
-Two **independent** gates protect everything on this port, in this order:
+### Fail-closed startup policy
+
+KrakenWaf refuses to start an observability listener on any non-loopback bind
+(`0.0.0.0`, `::`, a private address, or a public address) unless at least one
+effective access-control mechanism is configured:
+
+- a non-empty `BEARER_PASSWORD` resolved through the secret chain below;
+- a first-matching `only_addrs` entry for `/metrics` on the observability port;
+- a non-empty legacy `rules/addr/allowlist.txt`.
+
+Loopback binds (`127.0.0.0/8` and `::1`) remain valid without an additional
+gate. Ordinary server-side TLS does not satisfy this policy because it
+authenticates the server, not the client; KrakenWaf does not currently treat it
+as mTLS. An unsafe startup fails with a non-zero exit before any listener is
+opened.
+
+The shipped configuration enables two independent gates. When both are
+configured, they run in this order:
 
 1. **IP allowlist → HTTP 403.** Only source IPs listed in
    `rules/addr/allowlist/allow_addrs_metrics_n_ui.txt` may reach the port. Any
@@ -101,8 +118,8 @@ e.g. `openssl rand -hex 32`. Properties of the gate:
 - **Never logged** — every log line shows the literal `****` in place of the
   token, so it cannot leak to disk, a log shipper, or a crash dump.
 - **Disabled when unset** — if no token is provisioned the bearer gate is
-  skipped (IP allowlist only) and a startup warning is emitted. Provision the
-  secret to enable it.
+  skipped and a startup warning is emitted. A non-loopback bind then requires
+  an explicit IP allowlist or startup fails.
 
 systemd should supply the token via `LoadCredential=` (see
 `deploy/systemd/krakenwaf.service`), which places it on a 0400 tmpfs the service

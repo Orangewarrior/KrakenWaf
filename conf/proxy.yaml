@@ -43,4 +43,6 @@ blockmsg: ./alert/blockalert.html # if left empty, no page is used
 # credential. The token is NOT configured here — it is read from the
 # BEARER_PASSWORD secret/env var (never hard-coded). See
 # docs/observability.md.
+# A non-loopback `listen` address fails startup unless the bearer token or an
+# effective /metrics IP allowlist is present.
 metrics-port: 4343

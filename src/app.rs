@@ -37,8 +37,9 @@ pub struct AppState {
     /// Expected bearer token for the dedicated observability listener. Resolved
     /// once at startup from `BEARER_PASSWORD` (file-first, then env; see
     /// [`crate::secrets::load_secret`]). When `None` the bearer gate is disabled
-    /// and observability is protected by the IP allowlist alone (a startup
-    /// warning is emitted). Never logged — only `"****"` is.
+    /// and observability is protected by the IP allowlist alone. A non-loopback
+    /// observability bind without either gate is rejected at startup. Never
+    /// logged — only `"****"` is.
     pub metrics_auth_token: Option<Arc<str>>,
     /// Tracks the number of in-flight requests per source IP for per-IP
     /// concurrency limiting. Entries are lazily created on first request.

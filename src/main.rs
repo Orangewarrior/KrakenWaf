@@ -262,8 +262,8 @@ async fn main() -> Result<()> {
 
     // Resolve the observability bearer token (file-first, env fallback) so the
     // dedicated metrics/UI port can require `Authorization: Bearer <token>`.
-    // When absent the bearer gate stays disabled (IP allowlist only) — warn so
-    // the operator knows the port is not credential-protected.
+    // When absent the bearer gate stays disabled (IP allowlist only). Startup
+    // validation below rejects a non-loopback bind if no allowlist is active.
     let metrics_auth_token: Option<Arc<str>> =
         secrets::load_secret(BEARER_PASSWORD_SECRET).map(Arc::from);
     if metrics_auth_token.is_some() {
@@ -276,7 +276,8 @@ async fn main() -> Result<()> {
             target: "krakenwaf",
             secret = BEARER_PASSWORD_SECRET,
             "observability bearer-token gate DISABLED: no token provisioned; the metrics/UI port \
-             is protected by the IP allowlist only. Set {BEARER_PASSWORD_SECRET} (file or env) to enable it"
+             requires an IP allowlist when bound beyond loopback. Set {BEARER_PASSWORD_SECRET} \
+             (file or env) to enable bearer authentication"
         );
     }
 
@@ -316,6 +317,24 @@ async fn main() -> Result<()> {
         ws_control,
     });
 
+    // Resolve and validate the observability bind before opening any listener
+    // or spawning background reload tasks. Non-loopback exposure is fail-closed
+    // unless bearer authentication or an explicit IP allowlist is active.
+    let metrics_port = cli.metrics_port.unwrap_or_else(|| {
+        proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml"))
+            .ok()
+            .and_then(|cfg| cfg.metrics_port)
+            .unwrap_or(DEFAULT_METRICS_PORT)
+    });
+    let metrics_addr = std::net::SocketAddr::new(cli.listen.ip(), metrics_port);
+    let rules_snapshot = state.waf.rules_snapshot();
+    server::validate_observability_exposure(
+        metrics_addr,
+        state.metrics_auth_token.is_some(),
+        state.allow_path_config.as_ref(),
+        &rules_snapshot,
+    )?;
+
     // Build TLS store once; clone it for both the SIGHUP handler and the server.
     let tls_store = if cli.no_tls {
         None
@@ -334,13 +353,6 @@ async fn main() -> Result<()> {
     // --metrics-port → conf/proxy.yaml `metrics-port` → built-in default. It
     // binds the same IP as --listen and, in TLS mode, reuses the listener's TLS
     // store (same certs); under --no-tls it serves plain HTTP.
-    let metrics_port = cli.metrics_port.unwrap_or_else(|| {
-        proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml"))
-            .ok()
-            .and_then(|cfg| cfg.metrics_port)
-            .unwrap_or(DEFAULT_METRICS_PORT)
-    });
-    let metrics_addr = std::net::SocketAddr::new(cli.listen.ip(), metrics_port);
     if metrics_addr == cli.listen {
         warn!(
             target: "krakenwaf",

@@ -297,6 +297,28 @@ impl AllowPathConfig {
         PathDecision::NoMatch
     }
 
+    /// Returns whether the first allow-path entry applicable to `path` on
+    /// `listener_port` has an explicit `only_addrs` restriction.
+    ///
+    /// Entry order matters because [`Self::check`] stops at the first match. An
+    /// unrestricted earlier entry therefore cannot be made safe by adding a
+    /// restricted duplicate later in the file.
+    #[must_use]
+    pub fn has_ip_restriction_for(&self, path: &str, listener_port: u16) -> bool {
+        let normalized = crate::rules::normalize_url_path(path);
+        self.entries
+            .iter()
+            .filter(|entry| entry.port.is_none_or(|port| port == listener_port))
+            .find(|entry| {
+                entry.paths.iter().any(|configured| {
+                    let configured = crate::rules::normalize_url_path(configured);
+                    normalized == configured
+                        || normalized.starts_with(&format!("{configured}/"))
+                })
+            })
+            .is_some_and(|entry| entry.addr_restriction.is_some())
+    }
+
     /// Path-only match (no IP enforcement). Kept for backwards-compatibility and
     /// path-matching unit tests.
     #[must_use]
@@ -506,5 +528,36 @@ mod tests {
         // an IP that is not in the allowlist (it is not this listener's concern).
         expect_no_match(&config.check("/metrics", "/metrics", "203.0.113.7", 8443));
         expect_no_match(&config.check("/metrics", "/metrics", "127.0.0.1", 8443));
+    }
+
+    #[test]
+    fn reports_effective_port_scoped_ip_restriction() {
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
+        let config = make_port_scoped_config(&tmpdir);
+        assert!(config.has_ip_restriction_for("/metrics", 4343));
+        assert!(!config.has_ip_restriction_for("/metrics", 8443));
+    }
+
+    #[test]
+    fn unrestricted_first_match_is_not_reported_as_protected() {
+        let tmpdir = tempfile::tempdir().expect("tmpdir");
+        std::fs::write(tmpdir.path().join("allowed.txt"), "127.0.0.1\n")
+            .expect("write allowlist");
+        let yaml = r#"allow:
+  - order: 1
+    title: "Open metrics"
+    log: false
+    paths: ["/metrics"]
+  - order: 2
+    title: "Restricted metrics"
+    log: false
+    only_addrs: allowed.txt
+    paths: ["/metrics"]
+"#;
+        let yaml_file = tmpdir.path().join("lists.yaml");
+        std::fs::write(&yaml_file, yaml).expect("write yaml");
+        let config =
+            AllowPathConfig::from_file(&yaml_file, tmpdir.path()).expect("load config");
+        assert!(!config.has_ip_restriction_for("/metrics", 4343));
     }
 }

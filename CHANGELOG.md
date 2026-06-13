@@ -3,6 +3,13 @@
 
 ### Changed
 
+- **Fail-closed external observability startup.** When the dedicated metrics/UI
+  listener binds beyond loopback, startup now requires a provisioned
+  `BEARER_PASSWORD`, a first-matching `only_addrs` restriction for `/metrics`
+  on that port, or a non-empty legacy `rules/addr/allowlist.txt`. Without one,
+  KrakenWaf exits non-zero before opening listeners. Wildcard, private, and
+  public binds are all treated as external; ordinary TLS is not mistaken for
+  mTLS client authentication.
 - **HTTP/1 header-read timeout (`src/server.rs`).** Every data-plane and
   observability connection now configures Hyper's HTTP/1
   `header_read_timeout` with a Tokio timer. The 10-second default closes
@@ -29,6 +36,10 @@
 
 ### Tests
 
+- `tests/observability_startup_test.rs`: a real process rejects an unprotected
+  `0.0.0.0` metrics bind and remains running when the bearer secret is present.
+- `src/server.rs`, `src/allowpaths.rs`: loopback, bearer, legacy allowlist,
+  port-scoped `only_addrs`, and first-match ordering are covered directly.
 - `tests/ratelimit_real_test.rs`: opens a real TCP connection, sends an
   incomplete HTTP/1 header block, and verifies the WAF closes it using a
   one-second header timeout rather than waiting for the 30-second connection
