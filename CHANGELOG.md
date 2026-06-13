@@ -1,6 +1,25 @@
 
 ## [Unreleased]
 
+> **Hardening release.** Closes a set of robustness and defence-in-depth gaps
+> from a Rust/AppSec review: rate limiting is now unconditional, accept loops
+> survive transient errors, Slowloris coverage extends to the HTTP/1
+> header-read phase, external observability fails closed, upstream response
+> buffering is bounded, and the updater is hardened.
+
+### Fixed
+
+- **Listener accept loops no longer self-terminate on a transient `accept()`
+  error (`src/server.rs`).** All four listeners (data-plane TLS/plain and the
+  observability TLS/plain ports) previously propagated `accept()` errors with
+  `?`, so a benign per-socket failure — a client that reset between SYN and
+  accept (`ECONNABORTED`), or momentary FD/socket-buffer exhaustion
+  (`EMFILE`/`ENFILE`/`ENOBUFS`, itself a DoS) — tore down the entire accept loop
+  and stopped the WAF from accepting connections. The loops now classify the
+  error via `cope_with_accept_error`: spurious errors retry, connection-reset
+  errors are skipped, and resource-exhaustion errors log and apply a short
+  back-off before continuing.
+
 ### Changed
 
 - **Fail-closed external observability startup.** When the dedicated metrics/UI
@@ -33,6 +52,32 @@
   `response_inspect_prefix_bytes`. This prevents large downloads, images,
   videos, PDFs, archives, and malicious upstreams from forcing full-response
   heap allocation while retaining bounded inspection for ambiguous formats.
+- **Per-IP rate limiting is enforced for *every* request and on the
+  observability port (`src/proxy.rs`, `src/server.rs`, `src/waf/engine`).** The
+  GCRA/Redis budget check moved out of `inspect_early` into a standalone
+  `WafEngine::rate_limit_finding` / `check_rate_limit_ip`, and is now applied:
+  (1) in the proxy `dispatch` **before** the allow-paths decision, so an
+  allow-listed path still consumes the budget even though it skips CMC/regex/
+  keyword inspection; and (2) on the dedicated observability listener's
+  `/metrics` endpoint (4343 by default), so a scrape flood cannot exhaust the
+  WAF. Liveness/readiness probes remain exempt. Data-plane rejections keep their
+  `HTTP 403` (and BAN attribution); `/metrics` rejections return `HTTP 429`.
+- **Trusted-proxy CIDRs are parsed and validated once at startup
+  (`src/proxy.rs`, `src/app.rs`, `src/main.rs`, `src/proxy_config.rs`).**
+  `--trusted-proxy-cidrs` / `proxy.yaml` entries are parsed into
+  `AppState::trusted_proxy_nets` at boot instead of being re-parsed (and
+  silently dropping malformed entries) on every request. A typo is now a
+  fail-fast error — closing a silent misconfiguration that made the proxy IP
+  look like the client and broke rate-limit/ban/blocklist keying — and bare IP
+  literals are accepted alongside CIDR notation.
+
+### Security
+
+- **Bounded the `soldier_update` downloads (`src/update.rs`).** Address-list and
+  MaxMind GeoLite2 downloads now enforce a hard byte ceiling (rejecting an
+  oversized `Content-Length` up front and capping the streamed body), and the
+  GeoLite2 tar entry is unpacked through a bounded copy with a decompression-bomb
+  guard — matching the protections the request-body path already had.
 
 ### Tests
 
@@ -48,6 +93,21 @@
   binary media, generic prefix inspection, and prefix clamping.
 - `tests/server_real_test.rs`: a real 10 MiB image crosses the WAF successfully
   above the 8 MiB buffering cap, while a 10 MiB textual response is rejected.
+- `src/proxy.rs`: `--trusted-proxy-cidrs` parsing accepts CIDR and bare IP
+  literals, skips blanks, and fails on the first malformed entry.
+
+### Refactor / Tooling
+
+- **`--locked` added to the container/CI release builds** so the committed
+  `Cargo.lock` is authoritative and a poisoned registry cannot silently bump a
+  transitive dependency.
+- **New fuzz targets** for the multipart extractor and the body decompressor
+  (`fuzz/fuzz_targets/{multipart_extract,body_decode}.rs`).
+- **New docs:** `docs/max_inspection_ms.md` documents the exact scope of the
+  per-request inspection deadline (it bounds the keyword/regex view loop; every
+  engine is linear-time, so there is no ReDoS to defend against and the CMC
+  modules need no per-pattern deadline). `docs/rate_limit.md` and
+  `docs/real-ip-header-and-trusted-proxy-cidrs.md` document the changes above.
 
 ## [2.40.0] - 2026-06-12
 

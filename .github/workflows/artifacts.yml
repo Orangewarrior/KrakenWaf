@@ -156,9 +156,9 @@ jobs:
         shell: bash
         run: |
           RUNNER=${{ matrix.cross == true && 'cross' || 'cargo' }}
-          $RUNNER build --release --target ${{ matrix.target }} --bin krakenwaf
-          $RUNNER build --release --target ${{ matrix.target }} --bin demo_server
-          $RUNNER build --release --target ${{ matrix.target }} --bin attack
+          $RUNNER build --release --locked --target ${{ matrix.target }} --bin krakenwaf
+          $RUNNER build --release --locked --target ${{ matrix.target }} --bin demo_server
+          $RUNNER build --release --locked --target ${{ matrix.target }} --bin attack
 
       - name: Package
         shell: bash

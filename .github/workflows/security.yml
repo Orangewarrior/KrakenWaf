@@ -247,7 +247,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends libboost-all-dev ragel
 
       - name: Build all binaries (vectorscan-engine)
-        run: cargo build --features vectorscan-engine --bin krakenwaf --bin demo_server --bin attack
+        run: cargo build --locked --features vectorscan-engine --bin krakenwaf --bin demo_server --bin attack
 
       - name: Start demo_server
         run: |

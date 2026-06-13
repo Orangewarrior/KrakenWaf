@@ -208,22 +208,14 @@ impl WafEngine {
         let rules = &snap.rules;
         let matchers = &snap.matchers;
 
+        // The per-IP rate limit is intentionally NOT checked here. It is
+        // enforced separately — for *every* request — in the proxy `dispatch`
+        // via [`Self::rate_limit_finding`], so an allow-listed path (which
+        // returns `Allow` just below and skips the rest of this method) is still
+        // rate-limited. Keeping the budget check out of the signature pipeline
+        // also lets the observability listener reuse it on `/metrics`.
         if rules.is_allowlisted(&ctx.path) {
             return Decision::Allow;
-        }
-
-        if !self.rate_limiter.check(&ctx.client_ip).await {
-            self.metrics.inc_rate_limit_hits();
-            return Decision::Block(Box::new(self.simple_finding(
-                "Rate limit exceeded",
-                Severity::High,
-                "CWE-770",
-                "The client exceeded the configured requests-per-minute threshold.",
-                "https://cwe.mitre.org/data/definitions/770.html",
-                "rate_limiter",
-                "window_exceeded",
-                format!("{} {}", ctx.method, ctx.uri),
-            )));
         }
 
         if self.blocklist_ip_enabled {
@@ -291,6 +283,43 @@ impl WafEngine {
 
         let early_request = format_request_prefix_bytes(ctx);
         self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
+    }
+
+    /// Check only the per-IP rate limit, independent of the signature pipeline.
+    /// Returns `true` when the request is within budget, `false` when it must be
+    /// throttled (and records a `rate_limit_hits` metric in that case).
+    ///
+    /// Exposed so two callers that must rate-limit *without* running CMC / regex
+    /// / keyword inspection can share one budget: allow-listed request paths
+    /// (via [`Self::rate_limit_finding`]) and the dedicated observability
+    /// listener's `/metrics` endpoint.
+    pub async fn check_rate_limit_ip(&self, ip: &str) -> bool {
+        let allowed = self.rate_limiter.check(ip).await;
+        if !allowed {
+            self.metrics.inc_rate_limit_hits();
+        }
+        allowed
+    }
+
+    /// Build the rate-limit [`Finding`] for `ctx` when the client has exceeded
+    /// its per-IP budget, otherwise `None`. The finding is byte-for-byte the one
+    /// the engine produced inline before rate-limiting was split out of
+    /// [`Self::inspect_early`], so logging, ban attribution
+    /// ([`crate::banning::BlockReason::RateLimit`]), and metrics are unchanged.
+    pub async fn rate_limit_finding(&self, ctx: &InspectionContext) -> Option<Box<Finding>> {
+        if self.check_rate_limit_ip(&ctx.client_ip).await {
+            return None;
+        }
+        Some(Box::new(self.simple_finding(
+            "Rate limit exceeded",
+            Severity::High,
+            "CWE-770",
+            "The client exceeded the configured requests-per-minute threshold.",
+            "https://cwe.mitre.org/data/definitions/770.html",
+            "rate_limiter",
+            "window_exceeded",
+            format!("{} {}", ctx.method, ctx.uri),
+        )))
     }
 
     async fn spamhaus_dqs_finding(

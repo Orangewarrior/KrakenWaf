@@ -281,9 +281,18 @@ async fn main() -> Result<()> {
         );
     }
 
+    // Parse + validate the trusted-proxy CIDRs once, after proxy.yaml has been
+    // overlaid onto the CLI. A malformed entry is a hard startup error here
+    // rather than a value silently dropped on every request.
+    let trusted_proxy_nets = Arc::new(
+        proxy::parse_trusted_proxy_cidrs(&cli.trusted_proxy_cidrs)
+            .context("--trusted-proxy-cidrs / proxy.yaml trusted_proxy_cidrs is invalid")?,
+    );
+
     let state = Arc::new(AppState {
         mode: cli.mode,
         allow_path_config,
+        trusted_proxy_nets,
         metrics_auth_token,
         cli: cli.clone(),
         waf,

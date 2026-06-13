@@ -172,6 +172,39 @@ builder with `TokioTimer`; HTTP/2 support remains enabled and is unaffected by
 this HTTP/1-specific setting. The timeout applies again when a keep-alive
 connection starts reading the next HTTP/1 request.
 
+---
+
+## Scope: what the per-IP rate limit applies to
+
+The per-IP GCRA / Redis budget is enforced for **every** proxied request,
+**before** the allow-paths decision and **independently** of CMC / regex /
+keyword inspection:
+
+- **Allow-listed paths still count.** A path matched by the allow-paths YAML or
+  by `allow_paths` in `rules.json` skips *signature* inspection
+  (CMC modules, regex rules, keyword matchers) — but it is **still
+  rate-limited**. An allow-listed route is not an unbounded request sink. (The
+  per-IP concurrency cap and the BAN-list check already applied to those paths;
+  the per-minute budget now does too.)
+- **The observability port (`/metrics`, 4343 by default) is rate-limited.**
+  A scrape flood — authenticated or not — cannot turn `/metrics` into a free
+  CPU/allocation sink. It shares the same per-IP budget as the data plane.
+  **Liveness/readiness probes (`/livez`, `/readyz`,
+  `/__krakenwaf/*`) are exempt** so orchestration health checks are never
+  throttled.
+
+Internally the budget check is exposed by the engine as
+`WafEngine::check_rate_limit_ip` / `rate_limit_finding`, kept separate from the
+signature pipeline (`inspect_early`) so both the allow-path branch in the proxy
+and the observability listener can enforce it with one shared counter.
+
+> A data-plane rate-limit rejection returns **HTTP 403** (it flows through the
+> same `Decision::Block` → `log_and_enforce` path, so Block/Silent/DetectOnly
+> mode and BAN attribution are unchanged). A `/metrics` rejection on the
+> observability port returns **HTTP 429 `Retry-After: 5`**.
+
+---
+
 ## Per-IP concurrency limiter
 
 `max_coroutines_per_ip` caps the number of **simultaneous in-flight requests**

@@ -211,8 +211,10 @@ impl ProxyConfig {
         }
         if let Some(cidrs) = &self.trusted_proxy_cidrs {
             for cidr in cidrs {
-                cidr.parse::<ipnet::IpNet>().with_context(|| {
-                    format!("'trusted-proxy-cidrs' entry '{cidr}' is not a valid CIDR (e.g. 127.0.0.1/32)")
+                // Shared with the startup parser so `config validate` and the
+                // running WAF accept exactly the same set (CIDR or bare IP).
+                crate::proxy::parse_trusted_proxy_cidr(cidr).with_context(|| {
+                    format!("'trusted-proxy-cidrs' entry '{cidr}' is invalid")
                 })?;
             }
         }

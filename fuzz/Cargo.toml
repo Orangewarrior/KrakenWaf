@@ -11,6 +11,7 @@ cargo-fuzz = true
 libfuzzer-sys = "0.4"
 krakenwaf = { path = ".." }
 tempfile = "3"
+bytes = "1"
 
 # Disable release-profile optimisations that can interfere with coverage
 # instrumentation used by cargo-fuzz / libFuzzer.
@@ -33,5 +34,17 @@ doc = false
 [[bin]]
 name = "parse_rules"
 path = "fuzz_targets/parse_rules.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "multipart_extract"
+path = "fuzz_targets/multipart_extract.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "body_decode"
+path = "fuzz_targets/body_decode.rs"
 test = false
 doc = false

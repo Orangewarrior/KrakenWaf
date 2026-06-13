@@ -29,8 +29,10 @@ COPY ffi ./ffi
 COPY src ./src
 
 # Build a stripped release binary. CARGO_NET_RETRY hardens flaky CI networks.
+# --locked makes the committed Cargo.lock authoritative so the image build can
+# never silently pull a different (e.g. poisoned) transitive dependency version.
 ENV CARGO_NET_RETRY=5
-RUN cargo build --release --bin krakenwaf \
+RUN cargo build --release --locked --bin krakenwaf \
     && strip target/release/krakenwaf
 
 # ── Stage 2: runtime (distroless, non-root) ──────────────────────────────────
