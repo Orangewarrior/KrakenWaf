@@ -1,9 +1,12 @@
 use anyhow::{Context, Result};
+use arc_swap::ArcSwap;
+use parking_lot::Mutex;
 use serde::Deserialize;
 use std::{
     collections::BTreeMap,
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
 use tracing::warn;
 
@@ -138,7 +141,88 @@ pub struct CmcConfig {
     pub max_inspection_ms: Option<u64>,
 }
 
+/// Canonical, ordered list of the toggleable CMC module keys exposed by the
+/// rule-management control plane (`/rule/control/cmc/{list,update}`). The order
+/// mirrors the documented `list` response. Each key maps 1:1 to a `bool` field
+/// on [`CmcConfig`] via [`CmcConfig::module_enabled`] / [`CmcConfig::set_module`].
+pub const CMC_MODULE_KEYS: &[&str] = &[
+    "SQLi_comments_detect",
+    "Overflow_detect",
+    "SSTI_detect",
+    "SSI_injection_detect",
+    "ESI_injection_detect",
+    "CRLF_injection_detect",
+    "Request_Smuggling_detect",
+    "NOSQL_injection_detect",
+    "XXE_attack_detect",
+    "Anti_exposed_backup",
+    "Anti_passwd_leak",
+    "Java_deserialize_detect",
+    "Detect_db_errors",
+    "Silent_sql_errors",
+    "Detect_bad_artifacts",
+    "Detect_bots_n_scanners",
+    "HPP_detect",
+    "Open_redirect_n_RFI_detect",
+];
+
 impl CmcConfig {
+    /// Return the current enable state of the module named `key`, or `None` when
+    /// `key` is not a recognised CMC module. `key` uses the public JSON / YAML
+    /// names listed in [`CMC_MODULE_KEYS`].
+    #[must_use]
+    pub fn module_enabled(&self, key: &str) -> Option<bool> {
+        Some(match key {
+            "SQLi_comments_detect" => self.sqli_comments_detect,
+            "Overflow_detect" => self.overflow_detect,
+            "SSTI_detect" => self.ssti_detect,
+            "SSI_injection_detect" => self.ssi_injection_detect,
+            "ESI_injection_detect" => self.esi_injection_detect,
+            "CRLF_injection_detect" => self.crlf_injection_detect,
+            "Request_Smuggling_detect" => self.request_smuggling_detect,
+            "NOSQL_injection_detect" => self.nosql_injection_detect,
+            "XXE_attack_detect" => self.xxe_attack_detect,
+            "Anti_exposed_backup" => self.anti_exposed_backup,
+            "Anti_passwd_leak" => self.anti_passwd_leak_detect,
+            "Java_deserialize_detect" => self.java_deserialize_detect,
+            "Detect_db_errors" => self.detect_db_errors,
+            "Silent_sql_errors" => self.silent_sql_errors,
+            "Detect_bad_artifacts" => self.detect_bad_artifacts,
+            "Detect_bots_n_scanners" => self.detect_bots_n_scanners,
+            "HPP_detect" => self.hpp_detect,
+            "Open_redirect_n_RFI_detect" => self.open_redirect_n_rfi_detect,
+            _ => return None,
+        })
+    }
+
+    /// Set the enable state of the module named `key`. Returns `true` when the
+    /// key is recognised and applied, `false` when it is unknown (so callers can
+    /// reject unknown module names).
+    pub fn set_module(&mut self, key: &str, value: bool) -> bool {
+        match key {
+            "SQLi_comments_detect" => self.sqli_comments_detect = value,
+            "Overflow_detect" => self.overflow_detect = value,
+            "SSTI_detect" => self.ssti_detect = value,
+            "SSI_injection_detect" => self.ssi_injection_detect = value,
+            "ESI_injection_detect" => self.esi_injection_detect = value,
+            "CRLF_injection_detect" => self.crlf_injection_detect = value,
+            "Request_Smuggling_detect" => self.request_smuggling_detect = value,
+            "NOSQL_injection_detect" => self.nosql_injection_detect = value,
+            "XXE_attack_detect" => self.xxe_attack_detect = value,
+            "Anti_exposed_backup" => self.anti_exposed_backup = value,
+            "Anti_passwd_leak" => self.anti_passwd_leak_detect = value,
+            "Java_deserialize_detect" => self.java_deserialize_detect = value,
+            "Detect_db_errors" => self.detect_db_errors = value,
+            "Silent_sql_errors" => self.silent_sql_errors = value,
+            "Detect_bad_artifacts" => self.detect_bad_artifacts = value,
+            "Detect_bots_n_scanners" => self.detect_bots_n_scanners = value,
+            "HPP_detect" => self.hpp_detect = value,
+            "Open_redirect_n_RFI_detect" => self.open_redirect_n_rfi_detect = value,
+            _ => return false,
+        }
+        true
+    }
+
     /// Resolve the effective `anomaly_threshold`:
     ///   1. Explicit `--anomaly-threshold` CLI argument
     ///   2. `Anomaly_threshold` from the CMC config file
@@ -918,6 +1002,171 @@ impl CmcManager {
             }
             JavaDeserDecision::Clean => None,
         }
+    }
+}
+
+/// Result of a real-time CMC module update: the module keys whose state was
+/// actually changed, partitioned by their new value. Modules already in the
+/// requested state are omitted (a no-op update reports both lists empty).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CmcUpdateOutcome {
+    pub enabled: Vec<String>,
+    pub disabled: Vec<String>,
+}
+
+/// Mutable build context retained so the live [`CmcManager`] can be rebuilt
+/// whenever the module table changes at runtime.
+#[derive(Debug)]
+struct CmcControllerState {
+    config: CmcConfig,
+    vectorscan_enabled: bool,
+    rules_dir: Option<PathBuf>,
+}
+
+/// Runtime owner of the live [`CmcManager`], enabling **hot, lock-free** module
+/// toggling for the rule-management control plane.
+///
+/// The active manager lives behind an [`ArcSwap`]: every inspection path loads
+/// it with a single relaxed atomic load, exactly as before. An update rebuilds
+/// a fresh manager from the retained [`CmcConfig`] + build context and swaps it
+/// in atomically, so in-flight requests keep using the previous manager and the
+/// next request sees the new one — no request ever observes a half-applied
+/// table. Rebuild cost is paid only on the (rare, admin-only) update call.
+#[derive(Debug)]
+pub struct CmcController {
+    manager: ArcSwap<CmcManager>,
+    state: Mutex<CmcControllerState>,
+}
+
+impl CmcController {
+    /// Build a controller around the initial CMC configuration. `rules_dir` is
+    /// required by the file-loading modules (`Detect_db_errors`, etc.) and is
+    /// retained so those modules can be re-enabled at runtime.
+    #[must_use]
+    pub fn new(config: CmcConfig, vectorscan_enabled: bool, rules_dir: Option<PathBuf>) -> Self {
+        let manager = Self::build_manager(&config, vectorscan_enabled, rules_dir.as_ref());
+        Self {
+            manager: ArcSwap::from_pointee(manager),
+            state: Mutex::new(CmcControllerState {
+                config,
+                vectorscan_enabled,
+                rules_dir,
+            }),
+        }
+    }
+
+    fn build_manager(
+        config: &CmcConfig,
+        vectorscan_enabled: bool,
+        rules_dir: Option<&PathBuf>,
+    ) -> CmcManager {
+        let mut builder =
+            CmcManagerBuilder::new(config.clone()).vectorscan_enabled(vectorscan_enabled);
+        if let Some(dir) = rules_dir {
+            builder = builder.rules_dir(dir.clone());
+        }
+        builder.build()
+    }
+
+    /// Snapshot the current enable state of every toggleable module, in the
+    /// canonical [`CMC_MODULE_KEYS`] order.
+    #[must_use]
+    pub fn module_states(&self) -> Vec<(&'static str, bool)> {
+        let state = self.state.lock();
+        CMC_MODULE_KEYS
+            .iter()
+            .map(|&key| (key, state.config.module_enabled(key).unwrap_or(false)))
+            .collect()
+    }
+
+    /// Apply a partial module patch and atomically swap in a rebuilt manager.
+    ///
+    /// Only the modules present in `patch` are considered; a module already in
+    /// the requested state is left untouched and omitted from the outcome. The
+    /// returned [`CmcUpdateOutcome`] lists exactly the modules whose state
+    /// changed.
+    ///
+    /// # Errors
+    /// Returns the offending key when `patch` names a module that is not a
+    /// recognised CMC module (the caller maps this to HTTP 400).
+    pub fn apply_update(
+        &self,
+        patch: &[(String, bool)],
+    ) -> Result<CmcUpdateOutcome, String> {
+        let mut state = self.state.lock();
+
+        // Validate every key before mutating anything so a bad key is a clean
+        // rejection with no partial application.
+        for (key, _) in patch {
+            if state.config.module_enabled(key).is_none() {
+                return Err(key.clone());
+            }
+        }
+
+        let mut outcome = CmcUpdateOutcome::default();
+        for (key, value) in patch {
+            let current = state.config.module_enabled(key).unwrap_or(false);
+            if current == *value {
+                continue; // no-op: module already in the requested state
+            }
+            state.config.set_module(key, *value);
+            if *value {
+                outcome.enabled.push(key.clone());
+            } else {
+                outcome.disabled.push(key.clone());
+            }
+        }
+
+        if !outcome.enabled.is_empty() || !outcome.disabled.is_empty() {
+            let manager =
+                Self::build_manager(&state.config, state.vectorscan_enabled, state.rules_dir.as_ref());
+            self.manager.store(Arc::new(manager));
+        }
+        Ok(outcome)
+    }
+
+    /// Load the live manager for one inspection call.
+    fn live(&self) -> arc_swap::Guard<Arc<CmcManager>> {
+        self.manager.load()
+    }
+
+    // ── Inspection delegations ────────────────────────────────────────────────
+    // These mirror `CmcManager`'s surface so call sites in the engine read
+    // exactly as they did when the field was a plain `Arc<CmcManager>`.
+
+    #[must_use]
+    pub fn inspect(&self, input: &str) -> Option<Finding> {
+        self.live().inspect(input)
+    }
+
+    #[must_use]
+    pub fn inspect_user_agent(&self, user_agent: &str) -> Option<Finding> {
+        self.live().inspect_user_agent(user_agent)
+    }
+
+    #[must_use]
+    pub fn inspect_uri(&self, method: &str, path: &str) -> Option<Finding> {
+        self.live().inspect_uri(method, path)
+    }
+
+    #[must_use]
+    pub fn inspect_hpp(&self, query: &str, body: &str) -> Option<Finding> {
+        self.live().inspect_hpp(query, body)
+    }
+
+    #[must_use]
+    pub fn inspect_open_redirect_rfi(&self, query: &str, body: &str) -> Option<Finding> {
+        self.live().inspect_open_redirect_rfi(query, body)
+    }
+
+    #[must_use]
+    pub fn inspect_response_body(&self, body: &str) -> Option<CmcResponseDecision> {
+        self.live().inspect_response_body(body)
+    }
+
+    #[must_use]
+    pub fn inspect_java_deser(&self, text: &str, raw_bytes: &[u8]) -> Option<Finding> {
+        self.live().inspect_java_deser(text, raw_bytes)
     }
 }
 

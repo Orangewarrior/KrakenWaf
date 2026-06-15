@@ -16,6 +16,8 @@ mod proxy;
 mod proxy_config;
 mod ratelimit_config;
 mod response_headers;
+mod rorschach;
+mod rule_management;
 mod rules;
 mod secrets;
 mod server;
@@ -33,7 +35,7 @@ use banning::BanManager;
 use bytes::Bytes;
 use clap::Parser;
 use cli::{Cli, WalMode};
-use cmc::{CmcConfig, CmcManagerBuilder};
+use cmc::{CmcConfig, CmcController};
 use dashmap::DashMap;
 use limits::MemoryLimits;
 use metrics::WafMetrics;
@@ -49,6 +51,11 @@ use waf::rate_limit::{PersistenceMode, RateLimiter};
 /// Built-in fallback port for the dedicated observability listener, used when
 /// neither `--metrics-port` nor `conf/proxy.yaml`'s `metrics-port` supplies one.
 const DEFAULT_METRICS_PORT: u16 = 4343;
+
+/// Built-in fallback port for the dedicated rule-management control-plane
+/// listener, used when neither `--rule-management-port` nor
+/// `conf/proxy.yaml`'s `rule_management_port` supplies one.
+const DEFAULT_RULE_MANAGEMENT_PORT: u16 = 4342;
 
 /// Secret name for the observability bearer token. Resolved file-first
 /// (`BEARER_PASSWORD_FILE` → `/run/secrets/krakenwaf/BEARER_PASSWORD`
@@ -149,12 +156,13 @@ async fn main() -> Result<()> {
         cmc_config.effective_anomaly_threshold(cli.anomaly_threshold);
     let effective_max_inspection_ms =
         cmc_config.effective_max_inspection_ms(cli.max_inspection_ms);
-    let cmc_manager = Arc::new(
-        CmcManagerBuilder::new(cmc_config)
-            .vectorscan_enabled(cli.enable_vectorscan)
-            .rules_dir(rules_root.clone())
-            .build(),
-    );
+    // Wrap the CMC manager in a controller so the rule-management control plane
+    // can toggle modules in real time (atomic hot-swap of the live manager).
+    let cmc_manager = Arc::new(CmcController::new(
+        cmc_config,
+        cli.enable_vectorscan,
+        Some(rules_root.clone()),
+    ));
     let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
 
     // ── GeoIP reader ─────────────────────────────────────────────────────────
@@ -281,6 +289,27 @@ async fn main() -> Result<()> {
         );
     }
 
+    // ── Rorschach rule-management control plane ───────────────────────────────
+    // Resolve the even/odd Rorschach secrets (file-first, env fallback). When
+    // neither is provisioned the control plane stays disabled. A
+    // provisioned-but-invalid secret, or an empty/invalid IP allowlist, is a
+    // fatal startup error (fail-closed) — the WAF does not run.
+    let rule_management = build_rule_management_gate(&cli, &rules_root)?;
+    if rule_management.is_some() {
+        info!(
+            target: "krakenwaf",
+            "rule-management control plane ENABLED (Rorschach bearer token + IP allowlist)"
+        );
+    } else {
+        info!(
+            target: "krakenwaf",
+            secret_even = rorschach::SECRET_EVEN_NAME,
+            secret_odd = rorschach::SECRET_ODD_NAME,
+            "rule-management control plane DISABLED: Rorschach secrets not provisioned; set both \
+             secrets (file or env) to enable real-time CMC rule management"
+        );
+    }
+
     // Parse + validate the trusted-proxy CIDRs once, after proxy.yaml has been
     // overlaid onto the CLI. A malformed entry is a hard startup error here
     // rather than a value silently dropped on every request.
@@ -324,6 +353,7 @@ async fn main() -> Result<()> {
         ban_manager,
         geo_reader,
         ws_control,
+        rule_management,
     });
 
     // Resolve and validate the observability bind before opening any listener
@@ -386,6 +416,50 @@ async fn main() -> Result<()> {
                     error!(target: "krakenwaf", %metrics_addr, "observability listener failed: {err:#}");
                 }
             });
+        }
+    }
+
+    // ── Rule-management control-plane listener ────────────────────────────────
+    // Started only when the Rorschach control plane is enabled. Mirrors the
+    // observability listener: binds the same IP as --listen on a separate port
+    // (--rule-management-port → conf/proxy.yaml `rule_management_port` → 4342),
+    // reusing the listener TLS certs (plain HTTP under --no-tls). Protected by
+    // the IP allowlist (403) and the Rorschach bearer token (401).
+    if state.rule_management.is_some() {
+        let rm_port = cli.rule_management_port.unwrap_or_else(|| {
+            proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml"))
+                .ok()
+                .and_then(|cfg| cfg.rule_management_port)
+                .unwrap_or(DEFAULT_RULE_MANAGEMENT_PORT)
+        });
+        let rm_addr = std::net::SocketAddr::new(cli.listen.ip(), rm_port);
+        if rm_addr == cli.listen || rm_addr == metrics_addr {
+            warn!(
+                target: "krakenwaf",
+                %rm_addr,
+                "rule_management_port collides with the proxy listen or metrics port; \
+                 the rule-management listener was not started — choose a distinct port"
+            );
+        } else {
+            rule_management::spawn_nonce_janitor(&state);
+            let rm_state = state.clone();
+            if cli.no_tls {
+                tokio::spawn(async move {
+                    if let Err(err) = rule_management::run_plain(rm_addr, rm_state).await {
+                        error!(target: "krakenwaf", %rm_addr, "rule-management listener failed: {err:#}");
+                    }
+                });
+            } else {
+                let rm_store = tls_store
+                    .clone()
+                    .expect("tls_store is Some when !cli.no_tls");
+                tokio::spawn(async move {
+                    if let Err(err) = rule_management::run(rm_addr, rm_store, rm_state).await {
+                        error!(target: "krakenwaf", %rm_addr, "rule-management listener failed: {err:#}");
+                    }
+                });
+            }
+            info!(target: "krakenwaf", %rm_addr, no_tls = cli.no_tls, "rule-management listener bound");
         }
     }
 
@@ -498,6 +572,37 @@ async fn build_rate_limiter(
     };
     RateLimiter::new(effective_limit, std::time::Duration::from_mins(1), &snapshot_path, persistence)
         .context("failed to initialise local GCRA rate-limiter")
+}
+
+/// Resolve the rule-management control-plane access gate.
+///
+/// Returns `Ok(None)` when neither Rorschach secret is provisioned (feature
+/// off). Returns an error — aborting startup, fail-closed — when a secret is
+/// provisioned but invalid, only one secret is set, or the IP allowlist is
+/// missing/empty/invalid.
+fn build_rule_management_gate(
+    cli: &Cli,
+    rules_root: &std::path::Path,
+) -> Result<Option<Arc<rule_management::RuleManagementGate>>> {
+    use rorschach::SecretsConfig;
+
+    let secrets = match rorschach::load_secrets().map_err(|e| anyhow::anyhow!(e))? {
+        SecretsConfig::Disabled => return Ok(None),
+        SecretsConfig::Enabled(secrets) => secrets,
+    };
+
+    let allowlist_path = match cli.rule_management_allowlist.as_deref() {
+        Some(path) => PathBuf::from(path),
+        None => rule_management::default_allowlist_path(rules_root),
+    };
+    let allowlist = rule_management::load_allowlist(&allowlist_path)
+        .context("rule-management IP allowlist failed validation; the control plane cannot start")?;
+
+    let validator = rorschach::RorschachValidator::new(secrets);
+    Ok(Some(Arc::new(rule_management::RuleManagementGate {
+        validator,
+        allowlist,
+    })))
 }
 
 fn spawn_rule_reload(state: Arc<AppState>, tls_store: Option<tls::TlsConfigStore>) {

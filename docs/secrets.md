@@ -34,6 +34,8 @@ next source.
 | `REDIS_PASSWORD` | Redis AUTH (rate-limiter / ban list) | `/run/secrets/krakenwaf/REDIS_PASSWORD` | `REDIS_PASSWORD` |
 | `REDIS_USERNAME` | Redis ACL username (Redis 6+) | `/run/secrets/krakenwaf/REDIS_USERNAME` | `REDIS_USERNAME` |
 | `BEARER_PASSWORD` | `Authorization: Bearer` token for the dedicated observability port (`/metrics`, health probes, kraken-ui) | `/run/secrets/krakenwaf/BEARER_PASSWORD` | `BEARER_PASSWORD` |
+| `RORSCHACH_SECRET_EVEN` | Even-parity secret for the Rorschach rule-management bearer token (`/rule/control/cmc/*`). base64url (no padding), ≥ 64 random bytes. See `docs/rule_management.md`. | `/run/secrets/krakenwaf/RORSCHACH_SECRET_EVEN` | `RORSCHACH_SECRET_EVEN` |
+| `RORSCHACH_SECRET_ODD` | Odd-parity secret for the Rorschach rule-management bearer token. base64url (no padding), ≥ 64 random bytes. | `/run/secrets/krakenwaf/RORSCHACH_SECRET_ODD` | `RORSCHACH_SECRET_ODD` |
 
 Every place in the docs and config that mentions one of these variables also
 notes the file option.

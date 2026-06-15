@@ -1,5 +1,5 @@
 use krakenwaf::{
-    cmc::{CmcConfig, CmcManagerBuilder},
+    cmc::{CmcConfig, CmcController},
     metrics::WafMetrics,
     rules::RuleSet,
     waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngine, WafEngineConfig, WafEngineFactory},
@@ -21,7 +21,7 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
         libinjection_xss_enabled: false,
         vectorscan_enabled,
         metrics: Arc::new(WafMetrics::default()),
-        cmc_manager: Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build()),
+        cmc_manager: Arc::new(CmcController::new(CmcConfig::default(), false, None)),
         anomaly_threshold: 600,
         max_inspection_ms: 0,
     })

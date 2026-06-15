@@ -6,7 +6,7 @@ pub mod normalize;
 pub use finding::Finding;
 pub use normalize::{normalize_str, strip_control_and_space_prefix};
 
-use crate::cmc::CmcManager;
+use crate::cmc::{CmcController, CmcUpdateOutcome};
 use crate::proxy::format_request_prefix_bytes;
 use crate::update::{
     default_config_path, load_update_config, normalized_dqs_zones, query_spamhaus_dqs,
@@ -100,7 +100,7 @@ pub struct WafEngineConfig {
     pub libinjection_xss_enabled: bool,
     pub vectorscan_enabled: bool,
     pub metrics: Arc<WafMetrics>,
-    pub cmc_manager: Arc<CmcManager>,
+    pub cmc_manager: Arc<CmcController>,
     /// Anomaly-score block threshold. `0` falls back to the built-in default.
     pub anomaly_threshold: u32,
     /// Per-request wall-clock cap on WAF inspection in milliseconds. `0` = unlimited.
@@ -136,7 +136,7 @@ pub struct WafEngine {
     libinjection_xss_enabled: bool,
     vectorscan_enabled: bool,
     metrics: Arc<WafMetrics>,
-    cmc_manager: Arc<CmcManager>,
+    cmc_manager: Arc<CmcController>,
     spamhaus_dqs: Option<SpamhausDqsConfig>,
     anomaly_threshold: u32,
     max_inspection_ms: u64,
@@ -200,6 +200,22 @@ impl WafEngine {
             matchers: new_matchers,
         }));
         Ok(())
+    }
+
+    /// Snapshot the live enable state of every toggleable CMC module, in the
+    /// canonical order. Backs `GET /rule/control/cmc/list`.
+    #[must_use]
+    pub fn cmc_module_states(&self) -> Vec<(&'static str, bool)> {
+        self.cmc_manager.module_states()
+    }
+
+    /// Apply a partial CMC module patch in real time, atomically swapping the
+    /// live detection table. Backs `POST /rule/control/cmc/update`.
+    ///
+    /// # Errors
+    /// Returns the offending module key when the patch names an unknown module.
+    pub fn cmc_apply_update(&self, patch: &[(String, bool)]) -> Result<CmcUpdateOutcome, String> {
+        self.cmc_manager.apply_update(patch)
     }
 
     pub async fn inspect_early(&self, ctx: &InspectionContext) -> Decision {

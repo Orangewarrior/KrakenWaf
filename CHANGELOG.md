@@ -1,11 +1,46 @@
 
-## [Unreleased]
+## [2.41.0] - 2026-06-15
 
-> **Hardening release.** Closes a set of robustness and defence-in-depth gaps
-> from a Rust/AppSec review: rate limiting is now unconditional, accept loops
-> survive transient errors, Slowloris coverage extends to the HTTP/1
-> header-read phase, external observability fails closed, upstream response
-> buffering is bounded, and the updater is hardened.
+> **Real-time rule management + hardening release.** Adds the Rorschach
+> token-authenticated CMC rule-management control plane (inspect and toggle
+> detection modules at runtime, no restart) and closes a set of robustness and
+> defence-in-depth gaps from a Rust/AppSec review: rate limiting is now
+> unconditional, accept loops survive transient errors, Slowloris coverage
+> extends to the HTTP/1 header-read phase, external observability fails closed,
+> upstream response buffering is bounded, and the updater is hardened.
+
+### Added
+
+- **Real-time CMC rule-management control plane (`/rule/control/cmc/list`,
+  `/rule/control/cmc/update`).** A dedicated, isolated listener (default port
+  `4342`, `rule_management_port` in `conf/proxy.yaml` or
+  `--rule-management-port`) lets an operator inspect every CMC module's state
+  and toggle modules **in real time** without restarting the WAF. `list`
+  returns the live state of all 18 modules; `update` applies a partial patch
+  (only the modules present in the body change; absent fields are untouched;
+  unknown fields → `400`). The live detection table is hot-swapped atomically
+  via an `ArcSwap` so in-flight requests are never disrupted. See
+  `docs/rule_management.md`.
+- **Rorschach Token — a rotating bearer credential (`src/rorschach.rs`).** The
+  control plane is authenticated by a time-windowed token built only from
+  audited primitives in the `orion` crate: a BLAKE2b-256 **keyed MAC**
+  (`orion::auth`) over a canonical message, with the request method, path and an
+  unkeyed BLAKE2b-256 **body hash** (`orion::hash`) bound inside it. Tokens
+  rotate every 5-minute window (`step = floor(unix_time / 300)`), tolerate ±60 s
+  of clock skew, are verified in constant time, and are single-use per
+  `(client_id, step, nonce)` (anti-replay). Wire form:
+  `Authorization: Bearer rch1.<client_id>.<step>.<nonce_b64>.<token_b64>`. The
+  token is never logged — only the `+++++` placeholder.
+- **Two-gate access control for the control plane.** Requests must pass a
+  CIDR-aware IP allowlist (`rules/addr/allowlist/allow_rule_management.txt`,
+  overridable with `--rule-management-allowlist`) returning `403`, **and** a
+  valid Rorschach token returning `401`. The allowlist is checked first. The
+  even/odd secrets are resolved file-first then env
+  (`RORSCHACH_SECRET_EVEN` / `RORSCHACH_SECRET_ODD`; base64url, ≥ 64 random
+  bytes), following the existing CIS-aligned no-hardcoded-credentials secret
+  chain (`docs/secrets.md`). The control plane is **fail-closed**: a
+  provisioned-but-invalid secret, or an empty/invalid allowlist, aborts startup
+  with an informative error; absent secrets simply leave the feature disabled.
 
 ### Fixed
 
