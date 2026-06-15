@@ -439,7 +439,7 @@ impl RorschachValidator {
 }
 
 /// Recommended interval between [`RorschachValidator::sweep`] passes.
-pub const NONCE_SWEEP_INTERVAL: Duration = Duration::from_secs(120);
+pub const NONCE_SWEEP_INTERVAL: Duration = Duration::from_mins(2);
 
 #[cfg(test)]
 mod tests {
