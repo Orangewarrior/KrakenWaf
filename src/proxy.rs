@@ -457,6 +457,20 @@ impl ProxyClient {
             continent_name: geo.continent_name,
         };
 
+        // Per-IP rate limit — enforced for EVERY request, BEFORE the allow-paths
+        // decision and independent of CMC/regex/keyword inspection. An
+        // allow-listed path skips signature inspection but must still be
+        // rate-limited; otherwise an allow-listed route is an unbounded request
+        // sink. Routed through the same finding + `log_and_enforce` path the
+        // engine used before, so Block/Silent/DetectOnly semantics, the ban
+        // attribution, and the metrics are all unchanged.
+        if let Some(finding) = state.waf.rate_limit_finding(&context).await {
+            let event = build_event(&context, &finding, None);
+            if let Some(response) = self.log_and_enforce(state, event).await {
+                return response;
+            }
+        }
+
         // Check allow-paths: IP-restricted entries block non-allowed IPs; matched entries
         // without IP restriction skip WAF inspection entirely.
         let (skip_inspection, block_by_ip) = if let Some(config) = &state.allow_path_config {
@@ -1464,6 +1478,11 @@ fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>)
     SecurityEvent::from_finding(finding, ctx, request_payload)
 }
 
+/// Build a `SecurityEvent` for a **response-phase** finding (rules with
+/// `http_action: Response`). The response pipeline has no request
+/// `InspectionContext`, so it synthesises a minimal one carrying just the
+/// method, URI, and request-id for correlation. Shared by the `Block`,
+/// `Monitor`, and `SilentReplace` arms of `inspect_upstream_response`.
 fn build_response_event(
     finding: &Finding,
     method: &str,
@@ -1539,6 +1558,96 @@ fn format_full_request(
         _ => {}
     }
     out
+}
+
+/// Parse a single `--trusted-proxy-cidrs` / `proxy.yaml` entry. Accepts either
+/// CIDR notation (`10.0.0.0/8`, `2001:db8::/32`) or a bare IP literal
+/// (`192.0.2.1`, treated as a `/32`; `2001:db8::1` as a `/128`). Surrounding
+/// whitespace is trimmed.
+///
+/// # Errors
+/// Returns an error when `entry` is neither a valid IP nor a valid CIDR.
+pub fn parse_trusted_proxy_cidr(entry: &str) -> Result<ipnet::IpNet> {
+    let trimmed = entry.trim();
+    if let Ok(net) = trimmed.parse::<ipnet::IpNet>() {
+        return Ok(net);
+    }
+    let ip = trimmed.parse::<std::net::IpAddr>().map_err(|_| {
+        anyhow::anyhow!(
+            "'{entry}' is not a valid IP address or CIDR (e.g. 10.0.0.0/8 or 192.0.2.1)"
+        )
+    })?;
+    let prefix = if ip.is_ipv4() { 32 } else { 128 };
+    ipnet::IpNet::new(ip, prefix)
+        .with_context(|| format!("failed to build a host network for '{entry}'"))
+}
+
+/// Parse every trusted-proxy entry once, failing on the first malformed value.
+/// Empty entries are skipped. Done eagerly at startup so a typo fails fast
+/// instead of being silently dropped on every request — a dropped entry would
+/// make the proxy's own IP look like the client and break rate-limit, ban, and
+/// blocklist keying.
+///
+/// # Errors
+/// Returns an error if any entry is neither a valid IP nor a valid CIDR.
+pub fn parse_trusted_proxy_cidrs(entries: &[String]) -> Result<Vec<ipnet::IpNet>> {
+    entries
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .map(parse_trusted_proxy_cidr)
+        .collect()
+}
+
+#[cfg(test)]
+mod trusted_proxy_cidr_tests {
+    use super::{parse_trusted_proxy_cidr, parse_trusted_proxy_cidrs};
+
+    #[test]
+    fn accepts_cidr_and_bare_ip() {
+        // CIDR notation passes through unchanged.
+        assert_eq!(
+            parse_trusted_proxy_cidr("10.0.0.0/8").expect("cidr").to_string(),
+            "10.0.0.0/8"
+        );
+        // A bare IPv4 becomes a /32 host network.
+        assert_eq!(
+            parse_trusted_proxy_cidr("192.0.2.1").expect("v4 host").to_string(),
+            "192.0.2.1/32"
+        );
+        // A bare IPv6 becomes a /128 host network.
+        assert_eq!(
+            parse_trusted_proxy_cidr("2001:db8::1").expect("v6 host").to_string(),
+            "2001:db8::1/128"
+        );
+        // Surrounding whitespace is tolerated.
+        assert!(parse_trusted_proxy_cidr("  127.0.0.1/32  ").is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_entry() {
+        // A typo no longer fails silently — it is a hard error at parse time.
+        assert!(parse_trusted_proxy_cidr("999.0.0.0/8").is_err());
+        assert!(parse_trusted_proxy_cidr("not-an-ip").is_err());
+        assert!(parse_trusted_proxy_cidr("10.0.0.0/40").is_err());
+    }
+
+    #[test]
+    fn parses_list_skipping_blanks_and_fails_on_first_bad() {
+        let nets = parse_trusted_proxy_cidrs(&[
+            "127.0.0.1/32".to_string(),
+            "  ".to_string(),
+            "10.0.0.0/8".to_string(),
+        ])
+        .expect("all valid");
+        assert_eq!(nets.len(), 2, "blank entries are skipped");
+
+        let err = parse_trusted_proxy_cidrs(&[
+            "127.0.0.1/32".to_string(),
+            "bogus".to_string(),
+        ]);
+        assert!(err.is_err(), "one malformed entry fails the whole parse");
+    }
 }
 
 fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()> {
@@ -2305,12 +2414,11 @@ pub(crate) fn effective_client_ip(
     let Ok(peer) = peer_ip.parse::<IpAddr>() else {
         return peer_ip.to_string();
     };
-    let trusted_nets: Vec<ipnet::IpNet> = state
-        .cli
-        .trusted_proxy_cidrs
-        .iter()
-        .filter_map(|cidr| cidr.parse().ok())
-        .collect();
+    // Trusted-proxy CIDRs are parsed and validated once at startup
+    // (see `parse_trusted_proxy_cidrs`), so the request path is a cheap slice
+    // scan instead of re-parsing strings — and a malformed entry can no longer
+    // be silently dropped here (it fails the process at boot instead).
+    let trusted_nets = state.trusted_proxy_nets.as_slice();
     if !trusted_nets.iter().any(|net| net.contains(&peer)) {
         return peer_ip.to_string();
     }
@@ -2319,7 +2427,7 @@ pub(crate) fn effective_client_ip(
     // proxies (HAProxy 2.x, recent nginx with the realip module) emit it
     // instead of `X-Forwarded-For`. We walk the chain right-to-left and pick
     // the first `for=` value whose IP is *not* one of our trusted proxies.
-    if let Some(ip) = forwarded_header_real_ip(headers, &trusted_nets) {
+    if let Some(ip) = forwarded_header_real_ip(headers, trusted_nets) {
         return ip;
     }
 

@@ -3,6 +3,10 @@
 /tmp_cache
 /.claude/
 
+# cargo-fuzz build artifacts (the fuzz crate is built on demand, not committed).
+/fuzz/target
+/fuzz/Cargo.lock
+
 # Local TLS material — never commit private keys. A self-signed dev pair can be
 # (re)generated with scripts/gen-dev-certs.sh; production certs come from your CA.
 /certs/*.pem

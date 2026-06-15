@@ -21,7 +21,7 @@ use std::sync::{
 };
 use std::time::Duration;
 use tokio::{net::TcpListener, sync::Notify, task, time::timeout};
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Compact request-correlation ID matching the WAF engine's format
 /// (32-char lowercase hex, no hyphens). Used by BAN-list short-circuit
@@ -86,6 +86,42 @@ fn log_banned_request(
 /// Maximum time the listener waits for in-flight connections to drain after
 /// receiving SIGINT/SIGTERM before forcibly returning.
 const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Back-off applied after a resource-exhaustion `accept()` error so the accept
+/// loop cannot spin at 100% CPU while the kernel is out of file descriptors or
+/// socket buffers.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
+
+/// React to a [`TcpListener::accept`] error **without** tearing down the accept
+/// loop. The previous `result?` propagated the error and exited the loop, so a
+/// single transient, per-socket failure became a full listener outage — a
+/// client that reset between SYN and accept (`ECONNABORTED`), or momentary FD /
+/// buffer exhaustion (`EMFILE`/`ENFILE`/`ENOBUFS`), which is itself a `DoS` the
+/// WAF must survive rather than self-terminate on.
+///
+/// * `Interrupted` / `WouldBlock` — spurious; the caller simply retries.
+/// * `ConnectionAborted` / `ConnectionReset` — the peer vanished before we
+///   accepted; benign and common under scans, logged at debug and skipped.
+/// * anything else (incl. FD / socket-buffer exhaustion) — logged at warn, then
+///   a short back-off so the loop cannot busy-spin while the kernel recovers.
+async fn cope_with_accept_error(err: &std::io::Error) {
+    use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted, WouldBlock};
+    match err.kind() {
+        Interrupted | WouldBlock => {}
+        ConnectionAborted | ConnectionReset => {
+            debug!(target: "krakenwaf", error = %err, "accept: peer reset before accept; skipping connection");
+        }
+        _ => {
+            warn!(
+                target: "krakenwaf",
+                error = %err,
+                backoff = ?ACCEPT_BACKOFF,
+                "accept failed (possible FD/socket-buffer exhaustion); backing off and continuing"
+            );
+            tokio::time::sleep(ACCEPT_BACKOFF).await;
+        }
+    }
+}
 
 /// RAII guard that decrements the per-IP in-flight counter when dropped.
 struct ConnGuard(Arc<AtomicUsize>);
@@ -289,7 +325,7 @@ fn metrics_access_allowed(snap: &RuleSet, effective_ip: &str, peer_ip: &str) -> 
 /// `include_metrics = false`, keeping liveness/readiness inline but delegating
 /// `/metrics` to the dedicated port) and the observability listener (which sets
 /// `include_metrics = true`).
-fn serve_observability(
+async fn serve_observability(
     req: &Request<Incoming>,
     state: &Arc<AppState>,
     client_ip: &str,
@@ -341,6 +377,24 @@ fn serve_observability(
         if let Some(resp) = enforce_bearer_auth(req, state, &effective_ip) {
             return Some(resp);
         }
+    }
+    // Per-IP rate limit on the dedicated observability port's `/metrics`
+    // endpoint (4343 by default), sharing the same GCRA budget as the data
+    // plane. A scrape flood — authenticated or not — must not be a free
+    // CPU/allocation sink. Liveness/readiness probes are intentionally exempt so
+    // orchestration health checks are never throttled; `is_metrics` is only true
+    // for `/metrics` on the dedicated listener (`include_metrics`).
+    if is_metrics && !state.waf.check_rate_limit_ip(&effective_ip).await {
+        warn!(
+            target: "krakenwaf",
+            ip = %effective_ip,
+            "rate-limited /metrics scrape on the observability port"
+        );
+        let mut resp = plain_response(StatusCode::TOO_MANY_REQUESTS, "Too many requests");
+        resp.headers_mut()
+            .insert("Retry-After", http::HeaderValue::from_static("5"));
+        state.response_header_policy.apply(resp.headers_mut(), false);
+        return Some(resp);
     }
     if path == "/__krakenwaf/livez" || path == "/livez" {
         let mut response = plain_response(StatusCode::OK, "ok");
@@ -409,6 +463,7 @@ async fn serve_observability_conn<I>(
         let client_ip = client_ip.clone();
         async move {
             let resp = serve_observability(&req, &state, &client_ip, true, listener_port)
+                .await
                 .unwrap_or_else(|| {
                 let mut resp = plain_response(StatusCode::NOT_FOUND, "Not found");
                 state.response_header_policy.apply(resp.headers_mut(), false);
@@ -448,7 +503,13 @@ pub async fn run_metrics(
 
     loop {
         let (stream, peer) = tokio::select! {
-            result = listener.accept() => result?,
+            result = listener.accept() => match result {
+                Ok(pair) => pair,
+                Err(err) => {
+                    cope_with_accept_error(&err).await;
+                    continue;
+                }
+            },
             () = &mut shutdown => break,
         };
 
@@ -498,7 +559,13 @@ pub async fn run_metrics_plain(
 
     loop {
         let (stream, peer) = tokio::select! {
-            result = listener.accept() => result?,
+            result = listener.accept() => match result {
+                Ok(pair) => pair,
+                Err(err) => {
+                    cope_with_accept_error(&err).await;
+                    continue;
+                }
+            },
             () = &mut shutdown => break,
         };
 
@@ -586,7 +653,13 @@ pub async fn run(
         };
 
         let (stream, peer) = tokio::select! {
-            result = listener.accept() => result?,
+            result = listener.accept() => match result {
+                Ok(pair) => pair,
+                Err(err) => {
+                    cope_with_accept_error(&err).await;
+                    continue;
+                }
+            },
             () = &mut shutdown => break,
         };
 
@@ -680,7 +753,13 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
         };
 
         let (stream, peer) = tokio::select! {
-            result = listener.accept() => result?,
+            result = listener.accept() => match result {
+                Ok(pair) => pair,
+                Err(err) => {
+                    cope_with_accept_error(&err).await;
+                    continue;
+                }
+            },
             () = &mut shutdown => break,
         };
 
@@ -732,7 +811,8 @@ async fn handle(
     // moved to the dedicated observability listener (see `run_metrics`) so the
     // Prometheus surface can be firewalled/routed in isolation — hence
     // `include_metrics = false`.
-    if let Some(resp) = serve_observability(&req, &state, &client_ip, false, state.cli.listen.port())
+    if let Some(resp) =
+        serve_observability(&req, &state, &client_ip, false, state.cli.listen.port()).await
     {
         return resp;
     }

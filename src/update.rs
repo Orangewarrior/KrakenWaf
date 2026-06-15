@@ -34,6 +34,19 @@ const GEO_DB_FILE: &str = "GeoLite2-City.mmdb";
 const DOWNLOAD_PROGRESS_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const DOWNLOAD_PROGRESS_MIN_BYTES: u64 = 5 * 1024 * 1024;
 
+/// Hard ceiling on a single address-list download (Firehol / Spamhaus /
+/// blocklist text files). Real lists are a few MB at most; this bounds memory
+/// if a mirror is compromised or MITM'd and streams an unbounded body or lies
+/// about `Content-Length`.
+const MAX_ADDR_LIST_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
+/// Hard ceiling on the `MaxMind` GeoLite2-City archive download. The City DB is
+/// ~70 MB uncompressed; the gzip is smaller. Generous but bounded.
+const MAX_GEO_DB_DOWNLOAD_BYTES: u64 = 256 * 1024 * 1024;
+/// Hard ceiling on a single tar entry unpacked from the `GeoLite2` archive — a
+/// decompression-bomb guard equivalent to the one the request-body path
+/// already applies (`body_decode`); the updater must not be the weak link.
+const MAX_GEO_DB_UNPACKED_BYTES: u64 = 512 * 1024 * 1024;
+
 static QUAD9_DOT_DNS_RESOLVER: LazyLock<Arc<Quad9DotDnsResolver>> =
     LazyLock::new(|| Arc::new(Quad9DotDnsResolver::new()));
 
@@ -635,6 +648,7 @@ pub async fn download_addr_list_url_files_with_reporter(
             Some(destination.as_path()),
             reporter,
             "address list",
+            MAX_ADDR_LIST_DOWNLOAD_BYTES,
         )
         .await?;
         let body = String::from_utf8(bytes.to_vec())
@@ -757,9 +771,17 @@ async fn download_url_bytes(
     destination: Option<&Path>,
     reporter: &dyn UpdateReporter,
     label: &str,
+    max_bytes: u64,
 ) -> Result<Bytes> {
-    download_url_bytes_with_request(client.get(url.clone()), url, destination, reporter, label)
-        .await
+    download_url_bytes_with_request(
+        client.get(url.clone()),
+        url,
+        destination,
+        reporter,
+        label,
+        max_bytes,
+    )
+    .await
 }
 
 async fn download_url_bytes_with_request(
@@ -768,6 +790,7 @@ async fn download_url_bytes_with_request(
     destination: Option<&Path>,
     reporter: &dyn UpdateReporter,
     label: &str,
+    max_bytes: u64,
 ) -> Result<Bytes> {
     reporter.report(UpdateEvent::DownloadStarted { url, destination });
     let mut response = request
@@ -784,7 +807,20 @@ async fn download_url_bytes_with_request(
     }
 
     let total = response.content_length();
-    let mut body = Vec::with_capacity(total.and_then(|len| len.try_into().ok()).unwrap_or(0));
+    // Reject up-front when the server advertises a body larger than the ceiling,
+    // so a hostile `Content-Length` cannot drive a huge pre-allocation.
+    if let Some(total) = total {
+        anyhow::ensure!(
+            total <= max_bytes,
+            "{label} from {url} advertises Content-Length {total} > ceiling {max_bytes} bytes; refusing"
+        );
+    }
+    // Cap the pre-allocation at the ceiling regardless of the advertised length.
+    let prealloc = total
+        .and_then(|len| usize::try_from(len).ok())
+        .unwrap_or(0)
+        .min(usize::try_from(max_bytes).unwrap_or(usize::MAX));
+    let mut body = Vec::with_capacity(prealloc);
     let mut downloaded = 0_u64;
     let mut last_report = Instant::now();
     let mut last_reported_bytes = 0_u64;
@@ -795,6 +831,13 @@ async fn download_url_bytes_with_request(
         .with_context(|| format!("failed to read {label} response body from {url}"))?
     {
         downloaded += chunk.len() as u64;
+        // Streaming guard: a chunked / Content-Length-less response cannot grow
+        // the buffer past the ceiling.
+        anyhow::ensure!(
+            downloaded <= max_bytes,
+            "{label} download from {url} exceeded the {max_bytes}-byte ceiling and was aborted \
+             (possible compromised mirror or misconfiguration)"
+        );
         body.extend_from_slice(&chunk);
         let enough_time = last_report.elapsed() >= DOWNLOAD_PROGRESS_MIN_INTERVAL;
         let enough_bytes =
@@ -1057,6 +1100,7 @@ async fn download_and_extract_mmdb(
         Some(destination.as_path()),
         reporter,
         "MaxMind DB",
+        MAX_GEO_DB_DOWNLOAD_BYTES,
     )
     .await?;
 
@@ -1122,9 +1166,29 @@ fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<PathBuf> {
             // Write to a temporary file first, then rename atomically so the
             // WAF never sees a partially-written database.
             let tmp_path = out_dir.join(format!("{GEO_DB_FILE}.tmp"));
-            entry
-                .unpack(&tmp_path)
-                .context("failed to unpack GeoLite2-City.mmdb")?;
+            // Bounded copy instead of `entry.unpack`: a malicious archive could
+            // gzip-compress a tiny tar that declares (or streams) a multi-GiB
+            // entry. Cap the bytes written and abort past the ceiling so the
+            // updater cannot be OOM'd by a decompression bomb.
+            {
+                let mut out_file = fs::File::create(&tmp_path)
+                    .with_context(|| format!("failed to create {}", tmp_path.display()))?;
+                let mut capped =
+                    std::io::Read::take(&mut entry, MAX_GEO_DB_UNPACKED_BYTES + 1);
+                let written = std::io::copy(&mut capped, &mut out_file)
+                    .context("failed to unpack GeoLite2-City.mmdb")?;
+                if written > MAX_GEO_DB_UNPACKED_BYTES {
+                    drop(out_file);
+                    let _ = fs::remove_file(&tmp_path);
+                    anyhow::bail!(
+                        "GeoLite2-City.mmdb entry exceeded the {MAX_GEO_DB_UNPACKED_BYTES}-byte \
+                         unpack ceiling; refusing (possible decompression bomb)"
+                    );
+                }
+                out_file
+                    .sync_all()
+                    .context("failed to flush unpacked GeoLite2-City.mmdb")?;
+            }
             let final_path = out_dir.join(GEO_DB_FILE);
             fs::rename(&tmp_path, &final_path).with_context(|| {
                 format!(

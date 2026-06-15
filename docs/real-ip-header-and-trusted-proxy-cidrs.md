@@ -65,6 +65,27 @@ Example:
 2. If peer ∈ trusted CIDR → trust header  
 3. Else → ignore header  
 
+### Validated once, at startup (fail-fast)
+
+The entries are **parsed and validated a single time at startup**, not on every
+request. Two consequences:
+
+- A **malformed entry is a hard boot error**, surfaced by `config validate` too.
+  Previously a typo (e.g. `127.0.0.1/3X`) was silently dropped on each request —
+  the proxy then looked like the client, and rate-limiting / banning /
+  blocklisting all keyed on the **proxy** IP. That failure mode is gone.
+- Both **CIDR** (`10.0.0.0/8`) and **bare IP literals** (`192.0.2.1`, treated as
+  `/32`; `2001:db8::1` as `/128`) are accepted, so you can list single hosts
+  without the `/32` suffix.
+
+```text
+# valid
+--trusted-proxy-cidrs 10.0.0.0/8,192.0.2.1,2001:db8::/32
+
+# invalid → WAF refuses to start with a clear error
+--trusted-proxy-cidrs 127.0.0.1/3X
+```
+
 ---
 
 ## 🔐 Security Rule (CRITICAL)

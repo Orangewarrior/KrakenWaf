@@ -34,6 +34,14 @@ pub struct AppState {
     pub response_header_policy: Arc<ResponseHeaderPolicy>,
     pub mode: WafMode,
     pub allow_path_config: Option<AllowPathConfig>,
+    /// Trusted reverse-proxy CIDRs, parsed and validated **once at startup**
+    /// from `--trusted-proxy-cidrs` / `proxy.yaml` (see
+    /// [`crate::proxy::parse_trusted_proxy_cidrs`]). A peer whose IP falls inside
+    /// one of these networks may set the real client IP via `Forwarded:` /
+    /// `X-Forwarded-For` / `X-Real-IP`. Pre-parsing keeps the request path free
+    /// of per-request string parsing and makes a malformed entry a fail-fast
+    /// boot error instead of a silently-dropped network.
+    pub trusted_proxy_nets: Arc<Vec<ipnet::IpNet>>,
     /// Expected bearer token for the dedicated observability listener. Resolved
     /// once at startup from `BEARER_PASSWORD` (file-first, then env; see
     /// [`crate::secrets::load_secret`]). When `None` the bearer gate is disabled
