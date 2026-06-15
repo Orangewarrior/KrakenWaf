@@ -15,6 +15,8 @@ pub mod proxy;
 pub mod proxy_config;
 pub mod ratelimit_config;
 pub mod response_headers;
+pub mod rorschach;
+pub mod rule_management;
 pub mod rules;
 pub mod secrets;
 pub mod server;

@@ -9,6 +9,7 @@ use crate::{
     metrics::WafMetrics,
     proxy::ProxyClient,
     response_headers::ResponseHeaderPolicy,
+    rule_management::RuleManagementGate,
     storage::SqliteStore,
     waf::WafEngine,
     websocket::WebSocketControl,
@@ -95,4 +96,8 @@ pub struct AppState {
     /// `enable_ws_control` is false the limits are inert and `ws://` / `wss://`
     /// upgrades are tunneled transparently.
     pub ws_control: Arc<WebSocketControl>,
+    /// Rule-management control-plane access gate (Rorschach bearer validator +
+    /// IP allowlist). `Some` only when the Rorschach secrets were provisioned at
+    /// startup; `None` leaves the control plane (and its listener) disabled.
+    pub rule_management: Option<Arc<RuleManagementGate>>,
 }

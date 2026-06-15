@@ -1,0 +1,15 @@
+127.0.0.1
+# Rule-management control-plane IP allowlist.
+# ─────────────────────────────────────────────────────────────────────────────
+# One entry per line. A request whose effective client IP (honouring trusted
+# proxy CIDRs / X-Forwarded-For) is not contained by any entry below receives
+# HTTP 403 from the rule-management listener — regardless of its Rorschach
+# bearer token.
+#
+# Accepted forms:
+#   • bare IPv4/IPv6 host      127.0.0.1            ::1
+#   • CIDR network             10.0.0.0/8           2001:db8::/32
+#
+# Blank lines and lines beginning with '#' are ignored. The allowlist must
+# contain at least one valid entry or the rule-management control plane refuses
+# to start (fail-closed). The shipped default restricts access to loopback only.

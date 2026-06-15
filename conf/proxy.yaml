@@ -46,3 +46,18 @@ blockmsg: ./alert/blockalert.html # if left empty, no page is used
 # A non-loopback `listen` address fails startup unless the bearer token or an
 # effective /metrics IP allowlist is present.
 metrics-port: 4343
+
+# Dedicated rule-management control-plane port (/rule/control/cmc/list and
+# /rule/control/cmc/update). Like metrics-port it binds the same IP as `listen`
+# on a separate port and reuses the listener's TLS certs (plain HTTP only under
+# --no-tls). When --rule-management-port is not passed on the command line, the
+# WAF reads the port below (default 4342).
+#
+# The control plane only opens when the Rorschach bearer secrets are
+# provisioned (RORSCHACH_SECRET_EVEN / RORSCHACH_SECRET_ODD, file-first then env
+# — never hard-coded; see docs/secrets.md and docs/rule_management.md). It is
+# protected by two independent gates: an IP allowlist
+# (rules/addr/allowlist/allow_rule_management.txt, CIDR-aware) returning 403, and
+# a rotating Rorschach bearer token returning 401. A provisioned-but-invalid
+# secret, or an empty/invalid allowlist, is a fatal startup error (fail-closed).
+rule_management_port: 4342

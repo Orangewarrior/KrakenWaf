@@ -104,7 +104,7 @@ const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 ///   accepted; benign and common under scans, logged at debug and skipped.
 /// * anything else (incl. FD / socket-buffer exhaustion) — logged at warn, then
 ///   a short back-off so the loop cannot busy-spin while the kernel recovers.
-async fn cope_with_accept_error(err: &std::io::Error) {
+pub(crate) async fn cope_with_accept_error(err: &std::io::Error) {
     use std::io::ErrorKind::{ConnectionAborted, ConnectionReset, Interrupted, WouldBlock};
     match err.kind() {
         Interrupted | WouldBlock => {}
@@ -178,7 +178,7 @@ pub fn validate_observability_exposure(
     )
 }
 
-fn connection_builder(header_read_timeout_secs: u64) -> Builder<TokioExecutor> {
+pub(crate) fn connection_builder(header_read_timeout_secs: u64) -> Builder<TokioExecutor> {
     let mut builder = Builder::new(TokioExecutor::new());
     let mut http1 = builder.http1();
     http1.timer(TokioTimer::default());
@@ -580,7 +580,7 @@ pub async fn run_metrics_plain(
 }
 
 /// Resolves when the process receives SIGINT or, on Unix, SIGTERM.
-async fn wait_for_shutdown_signal() {
+pub(crate) async fn wait_for_shutdown_signal() {
     #[cfg(unix)]
     {
         use tokio::signal::unix::{signal, SignalKind};

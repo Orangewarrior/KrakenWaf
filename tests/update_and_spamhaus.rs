@@ -1,5 +1,5 @@
 use krakenwaf::{
-    cmc::CmcManager,
+    cmc::{CmcConfig, CmcController},
     metrics::WafMetrics,
     rules::RuleSet,
     update::{
@@ -322,7 +322,7 @@ async fn waf_blocks_spamhaus_ip_and_reports_source_list() {
         libinjection_xss_enabled: false,
         vectorscan_enabled: false,
         metrics: Arc::new(WafMetrics::default()),
-        cmc_manager: Arc::new(CmcManager::default()),
+        cmc_manager: Arc::new(CmcController::new(CmcConfig::default(), false, None)),
         anomaly_threshold: 600,
         max_inspection_ms: 0,
     })
@@ -379,7 +379,7 @@ async fn waf_blocks_firehol_dir_ip_and_reports_source_list() {
         libinjection_xss_enabled: false,
         vectorscan_enabled: false,
         metrics: Arc::new(WafMetrics::default()),
-        cmc_manager: Arc::new(CmcManager::default()),
+        cmc_manager: Arc::new(CmcController::new(CmcConfig::default(), false, None)),
         anomaly_threshold: 600,
         max_inspection_ms: 0,
     })
@@ -491,7 +491,7 @@ async fn waf_blocks_blocklist_dir_ip_and_reports_yaml_title() {
         libinjection_xss_enabled: false,
         vectorscan_enabled: false,
         metrics: Arc::new(WafMetrics::default()),
-        cmc_manager: Arc::new(CmcManager::default()),
+        cmc_manager: Arc::new(CmcController::new(CmcConfig::default(), false, None)),
         anomaly_threshold: 600,
         max_inspection_ms: 0,
     })

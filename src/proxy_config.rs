@@ -40,6 +40,7 @@ pub struct ProxyConfig {
     pub header_protection_injection: Option<String>,
     pub blockmsg: Option<String>,
     pub metrics_port: Option<u16>,
+    pub rule_management_port: Option<u16>,
 }
 
 impl ProxyConfig {
@@ -83,6 +84,7 @@ impl ProxyConfig {
     /// # Errors
     /// Returns an error on a malformed line (no colon), an unknown key, or a
     /// value that does not parse for its key's type (booleans, integers).
+    #[allow(clippy::too_many_lines)]
     pub fn parse(raw: &str) -> Result<Self> {
         let mut cfg = Self::default();
         for (idx, line) in raw.lines().enumerate() {
@@ -178,6 +180,16 @@ impl ProxyConfig {
                         })?);
                     }
                 }
+                "rule_management_port" | "rule-management-port" => {
+                    if set {
+                        cfg.rule_management_port = Some(value.parse().with_context(|| {
+                            format!(
+                                "line {lineno}: 'rule_management_port' must be a TCP port in \
+                                 1..=65535, got '{value}'"
+                            )
+                        })?);
+                    }
+                }
                 other => bail!("line {lineno}: unknown proxy config key '{other}'"),
             }
         }
@@ -231,6 +243,11 @@ impl ProxyConfig {
         if let Some(port) = self.metrics_port {
             if port == 0 {
                 bail!("'metrics-port' must be a TCP port in 1..=65535, got 0");
+            }
+        }
+        if let Some(port) = self.rule_management_port {
+            if port == 0 {
+                bail!("'rule_management_port' must be a TCP port in 1..=65535, got 0");
             }
         }
         Ok(())
@@ -308,6 +325,11 @@ impl ProxyConfig {
                 cli.metrics_port = Some(port);
             }
         }
+        if let Some(port) = self.rule_management_port {
+            if !is_explicit("rule-management-port") {
+                cli.rule_management_port = Some(port);
+            }
+        }
     }
 }
 
@@ -364,6 +386,7 @@ no-tls: false # no-tls disabled by default
 header-protection-injection: ./rules/headers_http/relax.headers
 blockmsg: ./alert/blockalert.html # if left empty, no page is used
 metrics-port: 4343
+rule_management_port: 4342
 ";
 
     #[test]
@@ -391,6 +414,30 @@ metrics-port: 4343
         );
         assert_eq!(cfg.blockmsg.as_deref(), Some("./alert/blockalert.html"));
         assert_eq!(cfg.metrics_port, Some(4343));
+        assert_eq!(cfg.rule_management_port, Some(4342));
+    }
+
+    #[test]
+    fn rule_management_port_parses_and_merges() {
+        let cfg = ProxyConfig::parse("rule_management_port: 5005\n").expect("parses");
+        assert_eq!(cfg.rule_management_port, Some(5005));
+        let mut cli = base_cli();
+        cfg.merge_into(&mut cli, &|_| false);
+        assert_eq!(cli.rule_management_port, Some(5005));
+        // Explicit CLI flag wins over the file.
+        let mut cli2 = base_cli();
+        cli2.rule_management_port = Some(6006);
+        cfg.merge_into(&mut cli2, &|f| f == "rule-management-port");
+        assert_eq!(cli2.rule_management_port, Some(6006));
+    }
+
+    #[test]
+    fn zero_rule_management_port_fails_validation() {
+        let cfg = ProxyConfig {
+            rule_management_port: Some(0),
+            ..Default::default()
+        };
+        assert!(cfg.validate().is_err());
     }
 
     #[test]

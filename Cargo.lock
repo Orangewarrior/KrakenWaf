@@ -542,6 +542,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "ct-codecs"
+version = "1.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "49fb0c6640b4507ebd99ff67677009e381ba5eee1d14df78de4a3d16eb123c39"
+
+[[package]]
 name = "dashmap"
 version = "6.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -723,6 +729,12 @@ name = "fastrand"
 version = "2.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9f1f227452a390804cdb637b74a86990f2a7d7ba4b7d5693aac9b4dd6defd8d6"
+
+[[package]]
+name = "fiat-crypto"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "64cd1e32ddd350061ae6edb1b082d7c54915b5c672c389143b9a63403a109f24"
 
 [[package]]
 name = "filetime"
@@ -1489,13 +1501,14 @@ dependencies = [
 
 [[package]]
 name = "krakenwaf"
-version = "2.40.0"
+version = "2.41.0"
 dependencies = [
  "ahash",
  "aho-corasick",
  "anyhow",
  "arc-swap",
  "axum",
+ "base64",
  "brotli",
  "bytes",
  "cc",
@@ -1517,6 +1530,7 @@ dependencies = [
  "maxminddb",
  "memchr",
  "once_cell",
+ "orion",
  "parking_lot",
  "percent-encoding",
  "postcard",
@@ -1757,6 +1771,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7bb71e1b3fa6ca1c61f383464aaf2bb0e2f8e772a1f01d486832464de363b951"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "orion"
+version = "0.17.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5e6758747fd1ce1efaf2bd43219ac4aa9e28263b236b2b6a1e486bcd06820707"
+dependencies = [
+ "ct-codecs",
+ "fiat-crypto",
+ "getrandom 0.4.2",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]

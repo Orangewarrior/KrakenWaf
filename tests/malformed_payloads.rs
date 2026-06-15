@@ -1,5 +1,5 @@
 use krakenwaf::{
-    cmc::{CmcConfig, CmcManagerBuilder},
+    cmc::{CmcConfig, CmcController},
     metrics::WafMetrics,
     rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity},
     waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, ResponseContext, WafEngineConfig, WafEngineFactory},
@@ -7,8 +7,8 @@ use krakenwaf::{
 use regex::Regex;
 use std::{collections::HashMap, sync::Arc};
 
-fn empty_cmc_manager() -> Arc<krakenwaf::cmc::CmcManager> {
-    Arc::new(CmcManagerBuilder::new(CmcConfig::default()).build())
+fn empty_cmc_manager() -> Arc<krakenwaf::cmc::CmcController> {
+    Arc::new(CmcController::new(CmcConfig::default(), false, None))
 }
 
 fn make_test_rl() -> Arc<RateLimiter> {

@@ -70,6 +70,21 @@ full module catalogue.
 
 ---
 
+## 🎛️ Real-time rule management
+
+A dedicated, isolated control plane (default port `4342`) lets an operator
+inspect and **toggle CMC detection modules at runtime** — no restart — via
+`GET /rule/control/cmc/list` and `POST /rule/control/cmc/update` (partial patch;
+the detection table is hot-swapped atomically). It is protected by two
+independent gates: a CIDR-aware IP allowlist (`403`) and the **Rorschach
+Token** — a rotating, body-bound bearer credential built on BLAKE2b keyed MAC
+(`orion`), recomputed every 5-minute window, verified in constant time with
+anti-replay (`401`). Secrets come from ENV with FILE fallback (no hard-coded
+credentials); the control plane is fail-closed and opt-in. See
+[docs/rule_management.md](docs/rule_management.md).
+
+---
+
 ## 📊 User interface
 
 KrakenWAF have a external software for user interface [kraken-ui](https://github.com/Orangewarrior/kraken-ui),hardened web application for operating a KrakenWAF deployment: manage operators, watch blocked attacks in real time, and read live WAF metrics from a single TLS-only console. It is written in Rust with Axum, Askama and SeaORM, ships no CDN assets and runs no inline JavaScript.

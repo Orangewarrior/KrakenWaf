@@ -83,6 +83,25 @@ pub struct Cli {
     #[arg(long = "metrics-port")]
     pub metrics_port: Option<u16>,
 
+    /// TCP port for the dedicated **rule-management** control-plane listener
+    /// (`/rule/control/cmc/list`, `/rule/control/cmc/update`). Like the metrics
+    /// listener it binds the same IP as `--listen` on this separate port and
+    /// reuses the `--listen` TLS certificates (plain HTTP only under `--no-tls`).
+    /// When omitted, the WAF reads `rule_management_port` from
+    /// `conf/proxy.yaml` (shipped default: 4342). The control plane only opens
+    /// when the Rorschach secrets are provisioned.
+    #[arg(long = "rule-management-port")]
+    pub rule_management_port: Option<u16>,
+
+    /// Path to the rule-management IP allowlist (one CIDR or bare IP per line;
+    /// `#` comments allowed). Defaults to
+    /// `<rules-dir>/addr/allowlist/allow_rule_management.txt`. A request whose
+    /// effective client IP is outside every entry receives HTTP 403. An empty or
+    /// invalid allowlist is a fatal startup error when the control plane is
+    /// enabled (fail-closed).
+    #[arg(long = "rule-management-allowlist")]
+    pub rule_management_allowlist: Option<String>,
+
     #[arg(long, default_value = "http://127.0.0.1:8080")]
     pub upstream: String,
 
