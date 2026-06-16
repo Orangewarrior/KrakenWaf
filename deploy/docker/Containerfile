@@ -7,10 +7,18 @@
 #     manager), running as the built-in non-root user.
 #
 # Build:  docker build -f deploy/docker/Containerfile -t krakenwaf:latest .
-# Run:    docker run --rm -p 8443:8443 \
+# Run:    docker run --rm -p 8443:8443 -p 4343:4343 -p 4342:4342 \
 #           --read-only --cap-drop ALL --security-opt no-new-privileges \
 #           --tmpfs /tmp --tmpfs /var/lib/krakenwaf --tmpfs /var/log/krakenwaf \
+#           -v "$PWD/secrets/BEARER_PASSWORD:/run/secrets/krakenwaf/BEARER_PASSWORD:ro" \
+#           -v "$PWD/secrets/RORSCHACH_SECRET_EVEN:/run/secrets/krakenwaf/RORSCHACH_SECRET_EVEN:ro" \
+#           -v "$PWD/secrets/RORSCHACH_SECRET_ODD:/run/secrets/krakenwaf/RORSCHACH_SECRET_ODD:ro" \
 #           krakenwaf:latest
+#
+# Secrets are resolved file-first from /run/secrets/krakenwaf/<NAME> (preferred).
+# The legacy <NAME>_FILE / plain <NAME> env vars are also accepted but leak via
+# /proc/<pid>/environ — see deploy/README.md and docs/secrets.md. Port 4342 is
+# the rule-management control plane (only opens with both RORSCHACH_SECRET_*).
 
 # ── Stage 1: builder ─────────────────────────────────────────────────────────
 FROM docker.io/library/rust:1.90-bookworm AS builder
@@ -61,7 +69,8 @@ COPY --chown=nonroot:nonroot alert ./alert
 USER nonroot:nonroot
 VOLUME ["/var/lib/krakenwaf", "/var/log/krakenwaf", "/tmp"]
 
-EXPOSE 8443 4343
+# 8443 data plane · 4343 observability/metrics · 4342 rule-management control plane.
+EXPOSE 8443 4343 4342
 
 # Image-level healthcheck hits the liveness probe. (Kubernetes uses its own
 # httpGet probes; this benefits plain `docker run` / compose.)
@@ -71,6 +80,7 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
 ENTRYPOINT ["/usr/local/bin/krakenwaf"]
 CMD ["--listen=0.0.0.0:8443", \
      "--metrics-port=4343", \
+     "--rule-management-port=4342", \
      "--external-proxy-conf=/etc/krakenwaf/conf/proxy.yaml", \
      "--ratelimit-by-file-conf=/etc/krakenwaf/conf/ratelimit.yaml", \
      "--websocket-conf=/etc/krakenwaf/conf/websocket.yaml", \

@@ -49,6 +49,22 @@ Environment=REDIS_PASSWORD_FILE=%d/REDIS_PASSWORD
 # owned by root, mode 0400. Omit both lines to leave the port IP-allowlist-only.
 LoadCredential=BEARER_PASSWORD:/etc/krakenwaf/secrets/BEARER_PASSWORD
 Environment=BEARER_PASSWORD_FILE=%d/BEARER_PASSWORD
+# Rorschach secrets for the rule-management control plane (/rule/control/cmc/*,
+# default port 4342). Both must be base64url (no padding) of >= 64 random bytes.
+# Resolved file-first via RORSCHACH_SECRET_*_FILE (an env var that points at the
+# tmpfs credential), so the key material itself is never placed in Environment=.
+# Generate each source file once, owned by root, mode 0400:
+#   openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' \
+#     > /etc/krakenwaf/secrets/RORSCHACH_SECRET_EVEN
+#   openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' \
+#     > /etc/krakenwaf/secrets/RORSCHACH_SECRET_ODD
+# Both must be present or the control plane stays disabled; a provisioned-but-
+# invalid secret is fail-closed (the unit will not start). Omit all four lines
+# to leave the rule-management API off.
+LoadCredential=RORSCHACH_SECRET_EVEN:/etc/krakenwaf/secrets/RORSCHACH_SECRET_EVEN
+Environment=RORSCHACH_SECRET_EVEN_FILE=%d/RORSCHACH_SECRET_EVEN
+LoadCredential=RORSCHACH_SECRET_ODD:/etc/krakenwaf/secrets/RORSCHACH_SECRET_ODD
+Environment=RORSCHACH_SECRET_ODD_FILE=%d/RORSCHACH_SECRET_ODD
 
 # ── Hardening (CIS / systemd security sandbox) ───────────────────────────────
 # Privilege & capability containment. The WAF needs CAP_NET_BIND_SERVICE only
