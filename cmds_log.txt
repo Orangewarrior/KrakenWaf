@@ -1,0 +1,40 @@
+Commands used to provision and enable the Rule Management API secrets.
+
+1. Generate the shared Rorschach secret files:
+
+```bash
+cargo run --bin rorschach_keygen -- --dir /home/orangedude/codex/.secrets/krakenwaf
+```
+
+2. Tighten permissions on the generated secret directory and files:
+
+```bash
+chmod 0700 /home/orangedude/codex/.secrets/krakenwaf
+chmod 0400 /home/orangedude/codex/.secrets/krakenwaf/RORSCHACH_SECRET_EVEN /home/orangedude/codex/.secrets/krakenwaf/RORSCHACH_SECRET_ODD
+```
+
+3. Start KrakenWAF with the rule-management listener enabled on port 4342:
+
+```bash
+set -a
+source .env
+set +a
+target/release/krakenwaf \
+  --listen 127.0.0.1:8443 \
+  --upstream http://127.0.0.1:8080 \
+  --rules-dir ./rules \
+  --sni-map ./rules/tls/sni_map.csv \
+  --blockmsg ./alert/blockalert.html \
+  --verbose \
+  --allow-private-upstream \
+  --enable-vectorscan \
+  --enable-libinjection-sqli \
+  --enable-libinjection-xss \
+  --cmc-load ./rules/cmc/config.yaml \
+  --real-ip-header X-Forwarded-For \
+  --trusted-proxy-cidrs 127.0.0.1/32 \
+  --rule-management-port 4342
+```
+
+The actual secret values are stored on disk in `/home/orangedude/codex/.secrets/krakenwaf`
+and are intentionally not recorded here.

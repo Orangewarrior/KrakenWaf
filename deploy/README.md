@@ -70,6 +70,9 @@ openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' \
   | sudo tee /etc/krakenwaf/secrets/RORSCHACH_SECRET_ODD >/dev/null
 
 sudo chmod 0400 /etc/krakenwaf/secrets/*
+
+# Or generate the same pair with the bundled helper:
+cargo run --bin rorschach_keygen -- --dir /etc/krakenwaf/secrets
 ```
 
 The unit ships the `LoadCredential=` / `Environment=<NAME>_FILE=` pairs for all

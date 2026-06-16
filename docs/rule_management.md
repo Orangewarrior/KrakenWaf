@@ -79,6 +79,14 @@ for name in ("RORSCHACH_SECRET_EVEN", "RORSCHACH_SECRET_ODD"):
 PY
 ```
 
+Or use the bundled helper:
+
+```sh
+cargo run --bin rorschach_keygen
+cargo run --bin rorschach_keygen -- --write
+cargo run --bin rorschach_keygen -- --dir /secure/dir
+```
+
 At startup the WAF decodes each secret and verifies it is **at least 64 bytes**.
 If a provisioned secret is missing its pair, fails to decode, or is too short,
 **the WAF refuses to start** with an informative error (fail-closed). The first
