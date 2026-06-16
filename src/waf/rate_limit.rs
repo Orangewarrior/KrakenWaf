@@ -356,7 +356,14 @@ impl Backend {
                     return Ok(Vec::new());
                 }
                 let items: Vec<(u64, u64)> =
-                    postcard::from_bytes(&buf[POSTCARD_MAGIC.len()..]).unwrap_or_default();
+                    match postcard::from_bytes(&buf[POSTCARD_MAGIC.len()..]) {
+                        Ok(items) => items,
+                        Err(e) => {
+                            warn!(target: "krakenwaf", path = %path.display(), error = %e,
+                                "postcard rate-limiter snapshot decode failed; ignoring");
+                            Vec::new()
+                        }
+                    };
                 Ok(items.into_iter().filter(|(_, tat)| *tat >= cutoff).collect())
             }
         }
@@ -763,13 +770,11 @@ fn hash_ip(ip: &str) -> u64 {
 /// guaranteed monotonic and immune to NTP skew. We retain a wall-clock
 /// offset so persisted snapshots can be written/read in epoch form.
 static MONO_ANCHOR: std::sync::LazyLock<(Instant, u64)> = std::sync::LazyLock::new(|| {
-    let epoch_ns = u64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos(),
-    )
-    .unwrap_or(0);
+    let epoch_ns = match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(since_epoch) => u64::try_from(since_epoch.as_nanos()).unwrap_or(0),
+        // Wall clock is before the Unix epoch; anchor at 0.
+        Err(_) => 0,
+    };
     (Instant::now(), epoch_ns)
 });
 

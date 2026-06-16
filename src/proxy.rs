@@ -969,7 +969,10 @@ impl ProxyClient {
                 }
             }
         }
-        let resp_headers_map = response_builder.headers_ref().cloned().unwrap_or_default();
+        let resp_headers_map = match response_builder.headers_ref() {
+            Some(headers) => headers.clone(),
+            None => HeaderMap::new(),
+        };
         let mode = response_mode(
             &resp_headers_map,
             state.cli.max_upstream_response_bytes,
@@ -1275,9 +1278,10 @@ fn decode_body_for_inspection(
     ctx: &InspectionContext,
     raw_body: &Bytes,
 ) -> std::result::Result<Bytes, BodyInspectionError> {
-    let encodings = ctx_header(ctx, "content-encoding")
-        .map(|v| parse_content_encoding(&v))
-        .unwrap_or_default();
+    let encodings = match ctx_header(ctx, "content-encoding") {
+        Some(v) => parse_content_encoding(&v),
+        None => Vec::new(),
+    };
     if encodings.is_empty() {
         return Ok(raw_body.clone());
     }
@@ -1842,8 +1846,8 @@ fn build_upstream_websocket_request(
     origin: &ForwardedOrigin,
 ) -> Result<Vec<u8>> {
     let target = build_upstream_target(upstream, req.uri());
-    let path = if target.query().is_some() {
-        format!("{}?{}", target.path(), target.query().unwrap_or_default())
+    let path = if let Some(query) = target.query() {
+        format!("{}?{}", target.path(), query)
     } else {
         target.path().to_string()
     };

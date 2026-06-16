@@ -111,16 +111,34 @@ const REDACTED: &str = "***REDACTED***";
 fn config_dump(cli: &Cli, root: &Path, redact: bool) -> Result<()> {
     let proxy_path = resolved_path(cli.external_proxy_conf.as_deref(), root, "conf/proxy.yaml");
     let proxy = if proxy_path.exists() {
-        ProxyConfig::load_from(&proxy_path).unwrap_or_default()
+        match ProxyConfig::load_from(&proxy_path) {
+            Ok(proxy) => proxy,
+            Err(e) => {
+                eprintln!("# warning: failed to parse {}: {e:#}; using built-in defaults", proxy_path.display());
+                ProxyConfig::default()
+            }
+        }
     } else {
         ProxyConfig::default()
     };
 
     let rl_path = resolved_path(cli.ratelimit_by_file_conf.as_deref(), root, "conf/ratelimit.yaml");
-    let ratelimit = RateLimitConfig::load_from(&rl_path).unwrap_or_default();
+    let ratelimit = match RateLimitConfig::load_from(&rl_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("# warning: failed to parse {}: {e:#}; using built-in defaults", rl_path.display());
+            RateLimitConfig::default()
+        }
+    };
 
     let ws_path = resolved_path(cli.websocket_conf.as_deref(), root, "conf/websocket.yaml");
-    let websocket = WebSocketConfig::load_from(&ws_path).unwrap_or_default();
+    let websocket = match WebSocketConfig::load_from(&ws_path) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("# warning: failed to parse {}: {e:#}; using built-in defaults", ws_path.display());
+            WebSocketConfig::default()
+        }
+    };
 
     // Serialize each section to a YAML value so secret-bearing fields can be
     // masked in-place before printing.

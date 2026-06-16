@@ -275,11 +275,17 @@ fn is_multipart_part_header_continuation(input: &str, break_idx: usize, prev: &s
     }
 
     let next = input[break_idx..].trim_start_matches(['\r', '\n', ' ', '\t']);
-    is_multipart_part_header_line(next.lines().next().unwrap_or_default())
+    match next.lines().next() {
+        Some(line) => is_multipart_part_header_line(line),
+        // An empty `next` has no header line to continue onto.
+        None => false,
+    }
 }
 
 fn starts_with_header_name_and_separator(line: &str, name: &str) -> bool {
-    let rest = line.strip_prefix(name).unwrap_or_default();
+    let Some(rest) = line.strip_prefix(name) else {
+        return false;
+    };
     rest.starts_with(':') || rest.starts_with("%3a") || rest.starts_with("%253a")
 }
 

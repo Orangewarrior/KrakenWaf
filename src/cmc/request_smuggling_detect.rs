@@ -119,7 +119,9 @@ fn has_small_content_length(input: &str) -> bool {
 }
 
 fn is_socketio_polling_request(input: &str) -> bool {
-    let first_line = input.lines().next().unwrap_or_default();
+    let Some(first_line) = input.lines().next() else {
+        return false;
+    };
     first_line.starts_with("post ")
         && first_line.contains("/socket.io/")
         && first_line.contains("transport=polling")

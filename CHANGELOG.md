@@ -1,4 +1,44 @@
 
+## [2.41.1] - 2026-06-16
+
+> **Error-handling readability pass.** Replaces every `unwrap_or_default()` in
+> the production source (`src/`) with explicit `match` / `let else` / `if let`
+> control flow. The behaviour is preserved bit-for-bit, but the fallback paths
+> are now visible at the call site (and several previously-silent error paths
+> now log), which makes the WAF easier to debug. No public API or runtime
+> behaviour changes.
+
+### Changed
+
+- **All 18 `unwrap_or_default()` call sites in `src/` rewritten with explicit
+  control flow.** Each fallback is now spelled out instead of hidden behind the
+  `Default` trait:
+  - `src/rorschach.rs` (`body_hash`) — the infallible-in-practice digest now
+    uses an explicit `match`, documenting the defensive `Err` arm.
+  - `src/cmc/request_smuggling_detect.rs`,
+    `src/cmc/crlf_injection_detect.rs` — string/header probes use `let else`
+    (early `return false`) and `match`, equivalent to the old empty-string
+    default but clearer.
+  - `src/rule_management.rs` (`json_response`) — a serialization failure of a
+    control-plane response is now logged via `error!` instead of silently
+    yielding an empty body.
+  - `src/waf/rate_limit.rs` — a corrupt postcard snapshot now logs a `warn!`
+    (with the path and decode error) before falling back to an empty set; the
+    monotonic-anchor epoch computation uses an explicit `match`.
+  - `src/subcommands.rs` (`config_dump`) — a malformed `proxy.yaml` /
+    `ratelimit.yaml` / `websocket.yaml` now prints a `# warning:` to stderr
+    before falling back to built-in defaults, so the dumped config can no
+    longer silently misrepresent a parse error.
+  - `src/proxy.rs` — response-header cloning and content-encoding parsing use
+    `match`; the upstream-path builder uses `if let Some(query)`, removing a
+    redundant double call to `Uri::query()`.
+  - `src/main.rs` — static-asset extension lookup uses `match`.
+  - `src/update.rs` — the MaxMind credential check uses a single `let else`
+    that binds both secrets and bails when either is absent (dropping the
+    now-redundant `is_empty()` guard); archive size uses an explicit `match`.
+  - `src/bin/attack.rs` — a response-body read error is now reported instead of
+    silently treated as empty.
+
 ## [2.41.0] - 2026-06-15
 
 > **Real-time rule management + hardening release.** Adds the Rorschach

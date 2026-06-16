@@ -659,11 +659,10 @@ fn load_block_message(path: Option<&str>, root: &std::path::Path) -> Result<(Opt
                 root.display()
             );
             let content = std::fs::read(&canonical)?;
-            let ext = canonical
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or_default()
-                .to_ascii_lowercase();
+            let ext = match canonical.extension().and_then(|e| e.to_str()) {
+                Some(ext) => ext.to_ascii_lowercase(),
+                None => String::new(),
+            };
             let content_type = match ext.as_str() {
                 "html" | "htm" => "text/html; charset=utf-8",
                 "json" => "application/json",
