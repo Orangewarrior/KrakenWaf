@@ -263,11 +263,12 @@ impl VerifyError {
 #[must_use]
 pub fn body_hash(body: &[u8]) -> String {
     // `orion::hash::digest` is unkeyed BLAKE2b-256 and is infallible for an
-    // in-memory slice; the `unwrap_or_default` fallback is defensive and never
-    // taken in practice (an empty digest would simply encode to "").
-    let digest = hash::digest(body)
-        .map(|d| d.as_ref().to_vec())
-        .unwrap_or_default();
+    // in-memory slice; the `Err` arm is defensive and never taken in practice
+    // (an empty digest would simply encode to "").
+    let digest = match hash::digest(body) {
+        Ok(d) => d.as_ref().to_vec(),
+        Err(_) => Vec::new(),
+    };
     URL_SAFE_NO_PAD.encode(digest)
 }
 

@@ -727,7 +727,13 @@ async fn run_observability_probe(client: &reqwest::Client, cfg: &Config) -> usiz
             .await
         {
             Ok(r) if r.status() == StatusCode::OK => {
-                let body = r.text().await.unwrap_or_default();
+                let body = match r.text().await {
+                    Ok(body) => body,
+                    Err(e) => {
+                        println!("  [WARN] could not read response body: {e}");
+                        String::new()
+                    }
+                };
                 if body.contains("krakenwaf_requests_inspected_total") {
                     println!("  [OK]   valid token (****) → 200 OK with Prometheus metrics");
                 } else {

@@ -1049,16 +1049,18 @@ pub async fn update_maxmind_geo_with_reporter(
     // File-first secrets (see `crate::secrets`): `<NAME>_FILE`, then
     // `/run/secrets/krakenwaf/<NAME>`, then the plain env var. `load_secret`
     // already trims surrounding whitespace and treats empty as absent.
-    let account_id = crate::secrets::load_secret("MAXMIND_ACCOUNT_ID").unwrap_or_default();
-    let key = crate::secrets::load_secret("MAXMIND_LICENSE_KEY").unwrap_or_default();
-
-    if account_id.is_empty() || key.is_empty() {
+    // `load_secret` treats empty as absent, so `Some` already guarantees a
+    // non-empty credential — bind both with a single `let else`.
+    let (Some(account_id), Some(key)) = (
+        crate::secrets::load_secret("MAXMIND_ACCOUNT_ID"),
+        crate::secrets::load_secret("MAXMIND_LICENSE_KEY"),
+    ) else {
         anyhow::bail!(
             "maxmind-geo: MAXMIND_ACCOUNT_ID and MAXMIND_LICENSE_KEY must be set. Provide them \
              as file secrets (/run/secrets/krakenwaf/<NAME> or <NAME>_FILE) or environment \
              variables. Register at https://www.maxmind.com/en/ to obtain free credentials."
         );
-    }
+    };
 
     let urls = cfg.url_file.values();
     if urls.is_empty() {
@@ -1110,9 +1112,10 @@ async fn download_and_extract_mmdb(
     let final_path = extract_mmdb_from_targz(repo_root, &bytes).with_context(|| {
         format!("failed to extract {GEO_DB_FILE} from archive downloaded from {url}")
     })?;
-    let size = fs::metadata(&final_path)
-        .map(|metadata| metadata.len())
-        .unwrap_or_default();
+    let size = match fs::metadata(&final_path) {
+        Ok(metadata) => metadata.len(),
+        Err(_) => 0,
+    };
     reporter.report(UpdateEvent::FileSaved {
         path: &final_path,
         bytes: size,

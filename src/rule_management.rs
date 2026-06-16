@@ -321,7 +321,13 @@ struct UpdatedModules {
 // ── Response helpers ──────────────────────────────────────────────────────────
 
 fn json_response<T: Serialize>(state: &Arc<AppState>, status: StatusCode, body: &T) -> WafResponse {
-    let bytes = serde_json::to_vec(body).unwrap_or_default();
+    let bytes = match serde_json::to_vec(body) {
+        Ok(bytes) => bytes,
+        Err(e) => {
+            error!(target: "krakenwaf", error = %e, "failed to serialize control-plane JSON response body");
+            Vec::new()
+        }
+    };
     let mut resp = Response::builder()
         .status(status)
         .header("content-type", "application/json")

@@ -1,4 +1,78 @@
 
+## [2.41.2] - 2026-06-16
+
+> **Validation release for the `unwrap_or_default()` refactor under the
+> optional vectorscan engine.** No source-code or runtime behaviour changes —
+> this entry records the end-to-end verification of `2.41.1` against the
+> `vectorscan-engine` feature and the in-tree `attack.rs` harness, plus the
+> build prerequisites needed to compile that feature.
+
+### Validated
+
+- **Full test suite passes with `--features vectorscan-engine`.** `cargo build`
+  and `cargo test` both exit `0` with **0 failures** across all 26 test
+  targets — the 391-test library unit suite, 19 integration suites, and the
+  doctest (2 GeoIP tests ignored pending the optional GeoLite2 database). The
+  two real `attack.rs`-over-TLS integration tests
+  (`attack_binary_runs_against_tls_waf_with_custom_ca` and
+  `…_with_insecure_skip_verify`) and the CMC payload sweeps
+  (`tests/server_real_test.rs`, 68 tests) all pass with the
+  Hyperscan/vectorscan matcher compiled in.
+- **End-to-end `attack.rs` + `demo_server.rs` run at concurrency 50.** Against
+  a live `krakenwaf --no-tls` instance proxying to `demo_server` (vectorscan
+  build), the attack tool fired **677 requests at `--concurrency 50`** across
+  every sweep (SQLi, XSS, HPP, NoSQL, XXE, request smuggling, open redirect/RFI,
+  scanner UAs, passwd/SQL-error/Java-deser/backup-artifact leaks). Result:
+  **677 blocked, 0 bypassed, 0 errors, 0 score-engine failures** — exit `0`.
+
+### Notes
+
+- **Building the `vectorscan-engine` feature requires Boost ≥ 1.57 headers and
+  Ragel** on the build host (the vendored `vectorscan-rs-sys` Hyperscan source
+  is compiled via CMake). On Debian/Ubuntu: `apt-get install libboost-dev
+  ragel`. The default build (matchers via `aho-corasick`/`regex`) is unaffected
+  and needs neither.
+
+## [2.41.1] - 2026-06-16
+
+> **Error-handling readability pass.** Replaces every `unwrap_or_default()` in
+> the production source (`src/`) with explicit `match` / `let else` / `if let`
+> control flow. The behaviour is preserved bit-for-bit, but the fallback paths
+> are now visible at the call site (and several previously-silent error paths
+> now log), which makes the WAF easier to debug. No public API or runtime
+> behaviour changes.
+
+### Changed
+
+- **All 18 `unwrap_or_default()` call sites in `src/` rewritten with explicit
+  control flow.** Each fallback is now spelled out instead of hidden behind the
+  `Default` trait:
+  - `src/rorschach.rs` (`body_hash`) — the infallible-in-practice digest now
+    uses an explicit `match`, documenting the defensive `Err` arm.
+  - `src/cmc/request_smuggling_detect.rs`,
+    `src/cmc/crlf_injection_detect.rs` — string/header probes use `let else`
+    (early `return false`) and `match`, equivalent to the old empty-string
+    default but clearer.
+  - `src/rule_management.rs` (`json_response`) — a serialization failure of a
+    control-plane response is now logged via `error!` instead of silently
+    yielding an empty body.
+  - `src/waf/rate_limit.rs` — a corrupt postcard snapshot now logs a `warn!`
+    (with the path and decode error) before falling back to an empty set; the
+    monotonic-anchor epoch computation uses an explicit `match`.
+  - `src/subcommands.rs` (`config_dump`) — a malformed `proxy.yaml` /
+    `ratelimit.yaml` / `websocket.yaml` now prints a `# warning:` to stderr
+    before falling back to built-in defaults, so the dumped config can no
+    longer silently misrepresent a parse error.
+  - `src/proxy.rs` — response-header cloning and content-encoding parsing use
+    `match`; the upstream-path builder uses `if let Some(query)`, removing a
+    redundant double call to `Uri::query()`.
+  - `src/main.rs` — static-asset extension lookup uses `match`.
+  - `src/update.rs` — the MaxMind credential check uses a single `let else`
+    that binds both secrets and bails when either is absent (dropping the
+    now-redundant `is_empty()` guard); archive size uses an explicit `match`.
+  - `src/bin/attack.rs` — a response-body read error is now reported instead of
+    silently treated as empty.
+
 ## [2.41.0] - 2026-06-15
 
 > **Real-time rule management + hardening release.** Adds the Rorschach
