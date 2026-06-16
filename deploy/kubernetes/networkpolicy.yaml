@@ -46,6 +46,18 @@ spec:
       ports:
         - protocol: TCP
           port: 4343
+    # Rule-management control plane (/rule/control/cmc/*) from the admin
+    # namespace only. Narrow this to wherever kraken-ui / your operators connect
+    # from; it is defence-in-depth on top of the WAF's own IP allowlist + the
+    # Rorschach bearer token. Remove this block to keep the port cluster-internal
+    # and unreachable.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: krakenwaf-admin
+      ports:
+        - protocol: TCP
+          port: 4342
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy

@@ -44,10 +44,40 @@ Key hardening directives: `NoNewPrivileges=true`, `ProtectSystem=strict`,
 /var/log/krakenwaf`, `CapabilityBoundingSet=CAP_NET_BIND_SERVICE`,
 `AmbientCapabilities=CAP_NET_BIND_SERVICE`, plus a `@system-service` syscall
 allow-list and `MemoryDenyWriteExecute=true`. Secrets are delivered with
-`LoadCredential=` (tmpfs, 0400) and consumed file-first via `REDIS_PASSWORD_FILE`.
+`LoadCredential=` (tmpfs, 0400) and consumed file-first via the matching
+`<NAME>_FILE` env var (`REDIS_PASSWORD_FILE`, `BEARER_PASSWORD_FILE`,
+`RORSCHACH_SECRET_EVEN_FILE`, `RORSCHACH_SECRET_ODD_FILE`).
 
 `ExecStartPre` runs `krakenwaf config validate`, so the unit fails fast **before**
 binding any port if a config file is invalid.
+
+### Provision the secret source files (systemd)
+
+```bash
+sudo install -d -o root -g root -m 0700 /etc/krakenwaf/secrets
+umask 0377   # new files are 0400 (root-only) by default
+
+# Redis AUTH (only if distributed rate-limit / ban list is used).
+printf '%s' "$REDIS_PASS" | sudo tee /etc/krakenwaf/secrets/REDIS_PASSWORD >/dev/null
+
+# Observability bearer token (/metrics, health probes, kraken-ui) — opaque token.
+openssl rand -hex 32 | sudo tee /etc/krakenwaf/secrets/BEARER_PASSWORD >/dev/null
+
+# Rule-management (Rorschach) secrets — base64url (no padding), >= 64 random bytes.
+openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' \
+  | sudo tee /etc/krakenwaf/secrets/RORSCHACH_SECRET_EVEN >/dev/null
+openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' \
+  | sudo tee /etc/krakenwaf/secrets/RORSCHACH_SECRET_ODD >/dev/null
+
+sudo chmod 0400 /etc/krakenwaf/secrets/*
+```
+
+The unit ships the `LoadCredential=` / `Environment=<NAME>_FILE=` pairs for all
+of these; remove the lines for any secret you do not use. The rule-management
+control plane (`/rule/control/cmc/*`, port 4342) only opens when **both**
+Rorschach secrets are present, and is **fail-closed**: a provisioned-but-invalid
+secret aborts startup. See [`../docs/rule_management.md`](../docs/rule_management.md)
+and [`../docs/secrets.md`](../docs/secrets.md).
 
 ## Kubernetes
 
@@ -61,10 +91,30 @@ kubectl apply -f deploy/kubernetes/networkpolicy.yaml   # default-deny + explici
 kubectl -n krakenwaf create configmap krakenwaf-config --from-file=conf/
 kubectl -n krakenwaf create configmap krakenwaf-rules  --from-file=rules/
 kubectl -n krakenwaf create secret tls   krakenwaf-tls --cert=certs/server.crt --key=certs/server.key
-kubectl -n krakenwaf create secret generic krakenwaf-secrets --from-file=REDIS_PASSWORD=/path/to/redis-pass
+
+# Generate the secret source files (file-first; never plaintext env):
+openssl rand -hex 32                       > /tmp/BEARER_PASSWORD
+openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' > /tmp/RORSCHACH_SECRET_EVEN
+openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' > /tmp/RORSCHACH_SECRET_ODD
+
+# Provision ALL secrets the deployment reads (drop REDIS_PASSWORD if unused).
+kubectl -n krakenwaf create secret generic krakenwaf-secrets \
+  --from-file=REDIS_PASSWORD=/path/to/redis-pass \
+  --from-file=BEARER_PASSWORD=/tmp/BEARER_PASSWORD \
+  --from-file=RORSCHACH_SECRET_EVEN=/tmp/RORSCHACH_SECRET_EVEN \
+  --from-file=RORSCHACH_SECRET_ODD=/tmp/RORSCHACH_SECRET_ODD
+shred -u /tmp/BEARER_PASSWORD /tmp/RORSCHACH_SECRET_EVEN /tmp/RORSCHACH_SECRET_ODD
 
 kubectl apply -f deploy/kubernetes/deployment.yaml
 ```
+
+The Secret is mounted file-first under `/run/secrets/krakenwaf/<NAME>` (never as
+plaintext env). The Deployment exposes the rule-management control plane on port
+**4342** via the `krakenwaf-rule-management` Service, and `networkpolicy.yaml`
+only admits it from the `krakenwaf-admin` namespace. The shipped IP allowlist
+(`rules/addr/allowlist/allow_rule_management.txt`) is **loopback-only**, so set
+it to your management client's CIDR in the `krakenwaf-rules` ConfigMap before the
+API will answer in-cluster (defence-in-depth on top of the Rorschach token).
 
 Pod/container security context satisfies the **restricted** Pod Security
 Standard: `runAsNonRoot: true`, `readOnlyRootFilesystem: true`,
@@ -83,15 +133,37 @@ the root filesystem is read-only.
 ```bash
 docker build -f deploy/docker/Containerfile -t krakenwaf:latest .
 
-docker run --rm -p 8443:8443 -p 4343:4343 \
+docker run --rm -p 8443:8443 -p 4343:4343 -p 4342:4342 \
     --read-only \
     --cap-drop ALL \
     --security-opt no-new-privileges \
     --tmpfs /tmp --tmpfs /var/lib/krakenwaf --tmpfs /var/log/krakenwaf \
     -v "$PWD/conf:/etc/krakenwaf/conf:ro" \
     -v "$PWD/rules:/etc/krakenwaf/rules:ro" \
+    -v "$PWD/secrets/BEARER_PASSWORD:/run/secrets/krakenwaf/BEARER_PASSWORD:ro" \
+    -v "$PWD/secrets/RORSCHACH_SECRET_EVEN:/run/secrets/krakenwaf/RORSCHACH_SECRET_EVEN:ro" \
+    -v "$PWD/secrets/RORSCHACH_SECRET_ODD:/run/secrets/krakenwaf/RORSCHACH_SECRET_ODD:ro" \
     krakenwaf:latest
 ```
+
+Each secret is mounted file-first as a single file under
+`/run/secrets/krakenwaf/<NAME>`, which KrakenWaf resolves automatically — no
+plaintext env required.
+
+> Port **4342** is the rule-management control plane (`/rule/control/cmc/*`). It
+> only opens when both `RORSCHACH_SECRET_*` files are present and is fail-closed.
+> Generate the secret files first (`mkdir secrets`):
+>
+> ```bash
+> openssl rand -hex 32                              > secrets/BEARER_PASSWORD
+> openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' > secrets/RORSCHACH_SECRET_EVEN
+> openssl rand -base64 64 | tr '+/' '-_' | tr -d '=\n' > secrets/RORSCHACH_SECRET_ODD
+> chmod 0400 secrets/*
+> ```
+>
+> The `<NAME>_FILE` / plain-`<NAME>` environment variables are also accepted (see
+> [`../docs/secrets.md`](../docs/secrets.md)), but prefer files in production —
+> env vars leak via `/proc/<pid>/environ` and into child processes.
 
 The image is a multi-stage build whose runtime layer is
 `gcr.io/distroless/cc-debian12:nonroot` — no shell, no package manager, runs as

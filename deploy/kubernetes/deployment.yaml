@@ -5,7 +5,13 @@
 #   * networkpolicy.yaml — default-deny ingress/egress with explicit allows
 #
 # Secrets are mounted as files under /run/secrets/krakenwaf (KrakenWaf resolves
-# them file-first), never as environment variables.
+# them file-first), never as plaintext environment variables. Provision the
+# `krakenwaf-secrets` Secret with every credential the deployment needs:
+#   REDIS_PASSWORD          — Redis AUTH (if distributed rate-limit/ban is used)
+#   BEARER_PASSWORD         — observability port bearer token (/metrics, kraken-ui)
+#   RORSCHACH_SECRET_EVEN   — rule-management token, base64url, >= 64 random bytes
+#   RORSCHACH_SECRET_ODD    — rule-management token, base64url, >= 64 random bytes
+# See deploy/README.md for the generation commands.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -93,6 +99,11 @@ spec:
           args:
             - --listen=0.0.0.0:8443
             - --metrics-port=4343
+            # Rule-management control plane. Only opens when the RORSCHACH_SECRET_*
+            # secrets are present; gated by the IP allowlist in
+            # rules/addr/allowlist/allow_rule_management.txt (default loopback-only,
+            # so set it to your management client's CIDR in the rules ConfigMap).
+            - --rule-management-port=4342
             - --external-proxy-conf=/etc/krakenwaf/conf/proxy.yaml
             - --ratelimit-by-file-conf=/etc/krakenwaf/conf/ratelimit.yaml
             - --websocket-conf=/etc/krakenwaf/conf/websocket.yaml
@@ -103,6 +114,9 @@ spec:
               protocol: TCP
             - name: metrics
               containerPort: 4343
+              protocol: TCP
+            - name: rulemgmt
+              containerPort: 4342
               protocol: TCP
           # ── Container-level security context (CIS 5.2) ─────────────────────
           securityContext:
@@ -226,4 +240,25 @@ spec:
     - name: metrics
       port: 4343
       targetPort: metrics
+      protocol: TCP
+---
+# Dedicated rule-management service so the control plane (/rule/control/cmc/*)
+# is reachable on its own isolated, independently routable/firewallable port,
+# separate from the data plane and metrics.
+apiVersion: v1
+kind: Service
+metadata:
+  name: krakenwaf-rule-management
+  namespace: krakenwaf
+  labels:
+    app.kubernetes.io/name: krakenwaf
+    app.kubernetes.io/component: rule-management
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: krakenwaf
+  ports:
+    - name: rulemgmt
+      port: 4342
+      targetPort: rulemgmt
       protocol: TCP
