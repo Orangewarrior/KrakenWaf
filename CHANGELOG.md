@@ -1,4 +1,24 @@
 
+## [Unreleased]
+
+> **Rorschach key-generation tooling and deployment docs.** Adds a local helper
+> for generating the Rorschach secret material used by the rule-management
+> control plane, plus the deployment notes and environment bootstrap helper
+> needed to wire it in cleanly. No runtime behaviour changes.
+
+### Added
+
+- **`src/bin/rorschach_keygen.rs` (`rorschach_keygen`).** New CLI helper for
+  generating Rorschach key material for the rule-management control plane.
+- **`scripts/set_env_api_keys.py`.** Convenience script to populate the
+  environment variables used by the new key-generation / secret workflow.
+
+### Documentation
+
+- **`docs/rule_management.md` and `deploy/README.md`.** Document the
+  Rorschach key-generation flow and the deployment steps for wiring the new
+  secrets into KrakenWAF.
+
 ## [2.41.2] - 2026-06-16
 
 > **Validation release for the `unwrap_or_default()` refactor under the
