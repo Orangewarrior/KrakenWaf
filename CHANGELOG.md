@@ -1,15 +1,15 @@
 
-## [Unreleased]
-
 ## [2.42.0] - 2026-06-17
 
 > **Real-time regex / keyword / scanner rule editing on the rule-management
-> control plane.** Building on the CMC module toggles, the Rorschach-gated
-> control plane can now inspect and **replace the content** of the rule files
-> that drive the regex, keyword and scanner matchers, hot-reloading the engine
-> atomically with no restart. Editing is confined to a closed allowlist of five
-> files, resolved through a small factory that selects the validate/serialize
-> strategy per file format.
+> control plane, plus Rorschach key-generation tooling.** Building on the CMC
+> module toggles, the Rorschach-gated control plane can now inspect and
+> **replace the content** of the rule files that drive the regex, keyword and
+> scanner matchers, hot-reloading the engine atomically with no restart. Editing
+> is confined to a closed allowlist of five files, resolved through a small
+> factory that selects the validate/serialize strategy per file format. Ships a
+> local helper for generating the Rorschach secret material and the deployment
+> notes needed to wire it in.
 
 ### Added
 
@@ -34,6 +34,8 @@
   updates, token enforcement, and rejection of empty/malformed/out-of-scope
   edits (including a never-modified `rules.json`). Each WAF runs against a
   private copy of the rules tree so tests never mutate the checked-in files.
+- **`src/bin/rorschach_keygen.rs` (`rorschach_keygen`).** New CLI helper for
+  generating Rorschach key material for the rule-management control plane.
 
 ### Changed
 
@@ -49,24 +51,8 @@
 - **`docs/rule_management.md`, `README.md`.** Document the new regex view/update
   endpoints, the five-file managed allowlist, the request/response shapes, and
   the validation rules.
-
-> **Rorschach key-generation tooling and deployment docs.** Adds a local helper
-> for generating the Rorschach secret material used by the rule-management
-> control plane, plus the deployment notes and environment bootstrap helper
-> needed to wire it in cleanly. No runtime behaviour changes.
-
-### Added
-
-- **`src/bin/rorschach_keygen.rs` (`rorschach_keygen`).** New CLI helper for
-  generating Rorschach key material for the rule-management control plane.
-- **`scripts/set_env_api_keys.py`.** Convenience script to populate the
-  environment variables used by the new key-generation / secret workflow.
-
-### Documentation
-
-- **`docs/rule_management.md` and `deploy/README.md`.** Document the
-  Rorschach key-generation flow and the deployment steps for wiring the new
-  secrets into KrakenWAF.
+- **`deploy/README.md`.** Document the Rorschach key-generation flow and the
+  deployment steps for wiring the new secrets into KrakenWAF.
 
 ## [2.41.2] - 2026-06-16
 
