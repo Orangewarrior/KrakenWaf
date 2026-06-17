@@ -1,21 +1,26 @@
-//! Generates the Rorschach shared secrets used to authenticate to KrakenWAF's
+//! Generates the Rorschach shared secrets used to authenticate to `KrakenWAF`'s
 //! rule-management API (`RORSCHACH_SECRET_EVEN` / `RORSCHACH_SECRET_ODD`).
 //!
-//! When KrakenWAF and kraken-ui share a container they should share one
+//! When `KrakenWAF` and kraken-ui share a container they should share one
 //! `/run/secrets/krakenwaf/<NAME>` mount and there is nothing to generate here.
 //! Use this tool for a *split* deployment, where the two services run in
 //! different containers and each needs its own copy of the same secret pair:
 //! generate once, then install the identical values on both sides.
 //!
 //! Usage:
-//!   rorschach_keygen              Print `NAME=value` lines to stdout.
-//!   rorschach_keygen --write      Write CIS-style secret files under
+//!   `rorschach_keygen`              Print `NAME=value` lines to stdout.
+//!   `rorschach_keygen` --write      Write CIS-style secret files under
 //!                                 /run/secrets/krakenwaf (dir 0750, files 0440).
-//!   rorschach_keygen --dir PATH   Write the files under PATH instead.
+//!   `rorschach_keygen` --dir PATH   Write the files under PATH instead.
 //!
 //! Secrets are 64 random bytes, base64url-encoded without padding — exactly the
-//! format KrakenWAF documents. They are written only to stdout or the requested
+//! format `KrakenWAF` documents. They are written only to stdout or the requested
 //! files, never to logs.
+
+// Like the rule-management modules, this binary uses `match` for two-arm
+// Option/Result branches by convention; silence the pedantic lint that would
+// prefer `if let ... else`.
+#![allow(clippy::single_match_else)]
 
 use std::{
     path::{Path, PathBuf},
@@ -25,7 +30,7 @@ use std::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 
 /// CIS-benchmark recommended location for container secrets, shared with
-/// KrakenWAF's file-first resolution.
+/// `KrakenWAF`'s file-first resolution.
 const DEFAULT_SECRETS_DIR: &str = "/run/secrets/krakenwaf";
 const SECRET_NAMES: [&str; 2] = ["RORSCHACH_SECRET_EVEN", "RORSCHACH_SECRET_ODD"];
 const SECRET_BYTES: usize = 64;

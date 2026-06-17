@@ -80,7 +80,14 @@ independent gates: a CIDR-aware IP allowlist (`403`) and the **Rorschach
 Token** — a rotating, body-bound bearer credential built on BLAKE2b keyed MAC
 (`orion`), recomputed every 5-minute window, verified in constant time with
 anti-replay (`401`). Secrets come from ENV with FILE fallback (no hard-coded
-credentials); the control plane is fail-closed and opt-in. See
+credentials); the control plane is fail-closed and opt-in.
+
+The same control plane also **edits regex, keyword and scanner rule files in
+real time**: `POST /rule/control/regex/view` returns a managed rule file's
+content, and `POST /rule/control/regex/update/<name>` replaces every rule in a
+context and hot-reloads the engine atomically — no restart. Editing is limited
+to a closed allowlist of five files (`body_regex`, `header_regex`, `path_regex`,
+`vectorscan_list`, `scanners`); any other name is rejected. See
 [docs/rule_management.md](docs/rule_management.md).
 
 ---

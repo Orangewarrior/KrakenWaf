@@ -22,15 +22,17 @@ client ──► KrakenWaf rule-management :4342  (TLS, or plain HTTP under --no
               ├─ Gate 1: IP allowlist (CIDR-aware)        → 403 if outside
               └─ Gate 2: Rorschach bearer token            → 401 if missing/invalid
                           │
-                          └─► GET  /rule/control/cmc/list
-                              POST /rule/control/cmc/update
+                          ├─► GET  /rule/control/cmc/list
+                          ├─► POST /rule/control/cmc/update
+                          ├─► POST /rule/control/regex/view
+                          └─► POST /rule/control/regex/update/<name>
 ```
 
 * It binds the **same IP as `--listen`** on a separate port and reuses the
   listener's TLS certificates (plain HTTP only when the whole WAF runs with
   `--no-tls`).
-* It is **not** a reverse proxy: it serves only the two endpoints and answers
-  everything else with `404`.
+* It is **not** a reverse proxy: it serves only the control endpoints and
+  answers everything else with `404`.
 
 ### Port configuration
 
@@ -253,6 +255,113 @@ Every JSON document is strictly typed with `deny_unknown_fields`:
 
 ---
 
+## Regex / keyword / scanner rule editing
+
+Where the CMC endpoints flip whole detection modules on and off, these two
+endpoints inspect and **replace the content** of the rule files that drive the
+regex, keyword and scanner matchers — discarding every rule in a context and
+hot-reloading the new set in real time, with no restart.
+
+Both endpoints accept only the **five managed rule names** below; any other name
+is rejected with `400 unknown_rule`. The names map to a closed allowlist of
+files, so the endpoints cannot read or write an arbitrary path (including other
+real files in the repository, such as `rules.json`).
+
+| Rule name | Backing file (relative to `--rules-dir`) | Format |
+| --- | --- | --- |
+| `body_regex` | `regex/body_regex.json` | regex rule bundle |
+| `header_regex` | `regex/header_regex.json` | regex rule bundle |
+| `path_regex` | `regex/path_regex.json` | regex rule bundle |
+| `vectorscan_list` | `Vectorscan/strings2block.json` | literal-keyword bundle |
+| `scanners` | `user_agents/scanners.txt` | one substring per line |
+
+The mapping and per-format validate/serialize strategy are produced by a small
+**factory** (`src/rule_management/factory.rs`): a rule name resolves to a
+descriptor carrying the file path and its on-disk kind, which selects how the
+update body is validated and written.
+
+### `POST /rule/control/regex/view`
+
+Returns the full content of a managed rule file. The file is opened and read
+**line by line** into a single string buffer, returned in the `content` field.
+
+Request:
+
+```json
+{ "rule_view": "body_regex" }
+```
+
+Response:
+
+```json
+{
+  "status": "ok",
+  "context": "regex_view",
+  "rule": "body_regex",
+  "content": "{\n  \"rules\": [\n    { ... }\n  ]\n}\n"
+}
+```
+
+### `POST /rule/control/regex/update/<name>`
+
+Replaces **all** rules in the named context. The trailing path segment is the
+rule name (e.g. `POST /rule/control/regex/update/body_regex`); the body carries
+the complete new rule set. The old rules are discarded, the new ones validated
+and written atomically (staged temp file + rename), and the engine is
+hot-reloaded — it re-reads every rule file and atomically swaps the live
+detection snapshot, so the new rules filter traffic immediately.
+
+For the three regex bundles and the keyword bundle, the body is a rule document:
+
+```json
+{
+  "rules": [
+    {
+      "enable": 1,
+      "http_action": "Request",
+      "title": "Command injection separators body",
+      "severity": "critical",
+      "cwe": "CWE-78",
+      "description": "Detects shell metacharacters combined with execution primitives.",
+      "url": "https://cwe.mitre.org/data/definitions/78.html",
+      "rule_match": "(?i)(?:;\\s*(?:wget|curl|bash|sh))",
+      "id": "00001",
+      "score": 1000
+    }
+  ]
+}
+```
+
+For `scanners` (the plain-text User-Agent list) the body is a line list:
+
+```json
+{ "lines": ["arachni", "sqlmap", "nikto"] }
+```
+
+Success response:
+
+```json
+{
+  "status": "ok",
+  "context": "regex_update",
+  "rule": "body_regex",
+  "rules_written": 1
+}
+```
+
+#### Input validation
+
+* The rule name must be one of the five managed names → otherwise `400`
+  `unknown_rule`.
+* The rule set must **not be empty** → `400` `invalid_rules`.
+* Each rule's `rule_match` must be non-empty; for the regex bundles each enabled
+  rule's pattern must **compile** → otherwise `400` `invalid_rules`.
+* A malformed or out-of-shape JSON document (unknown fields, wrong types) →
+  `400`.
+* A rejected update never touches the file on disk. If the post-write
+  hot-reload fails, the previous content is restored and reloaded
+  (`500` `reload_failed`).
+
 ## Status codes
 
 | Condition | Status |
@@ -261,7 +370,8 @@ Every JSON document is strictly typed with `deny_unknown_fields`:
 | Missing or invalid Rorschach token | `401` |
 | Replayed nonce / altered path, body, or method / future step | `401` |
 | Effective client IP outside the allowlist | `403` |
-| Unknown JSON field / malformed body | `400` |
+| Unknown JSON field / malformed body / empty or invalid rule set / unknown rule name | `400` |
+| Failed to persist or hot-reload the new rules | `500` |
 
 ---
 
