@@ -459,10 +459,10 @@ fn write_atomic(target: &Path, bytes: &[u8]) -> std::io::Result<()> {
             ))
         }
     };
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
+    let stamp = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(elapsed) => elapsed.as_nanos(),
+        Err(_) => 0,
+    };
     let tmp_path = parent.join(format!(".{file_name}.{stamp}.tmp"));
     std::fs::write(&tmp_path, bytes)?;
     match std::fs::rename(&tmp_path, target) {
