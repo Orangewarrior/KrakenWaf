@@ -1,6 +1,55 @@
 
 ## [Unreleased]
 
+## [2.42.0] - 2026-06-17
+
+> **Real-time regex / keyword / scanner rule editing on the rule-management
+> control plane.** Building on the CMC module toggles, the Rorschach-gated
+> control plane can now inspect and **replace the content** of the rule files
+> that drive the regex, keyword and scanner matchers, hot-reloading the engine
+> atomically with no restart. Editing is confined to a closed allowlist of five
+> files, resolved through a small factory that selects the validate/serialize
+> strategy per file format.
+
+### Added
+
+- **`POST /rule/control/regex/view`.** Returns a managed rule file's content,
+  read line-by-line into a buffer and returned in the JSON `content` field.
+  Accepts the five managed names `body_regex`, `header_regex`, `path_regex`,
+  `vectorscan_list` and `scanners`.
+- **`POST /rule/control/regex/update/<name>`.** Replaces every rule in the named
+  context: validates the new rule set, writes it atomically (staged temp file +
+  rename), then calls `WafEngine::reload_from_dir` to re-read all rule files and
+  atomically swap the live detection snapshot. A failed hot-reload rolls back to
+  the previous content. Empty rule sets, malformed documents, uncompilable
+  regexes, and names outside the allowlist are rejected with `400`; the file is
+  never touched on rejection.
+- **`src/rule_management/factory.rs`.** A `RuleFileFactory` resolving a rule name
+  to a `RuleFile` descriptor (path + `RuleFileKind`), the single point that
+  enforces the closed five-file allowlist and selects the per-format
+  validate/serialize strategy (regex JSON, keyword JSON, or plain-text line
+  list).
+- **`tests/rule_management_regex_test.rs`.** End-to-end reqwest integration
+  tests covering view, real-time update + live blocking, scanner/vectorscan
+  updates, token enforcement, and rejection of empty/malformed/out-of-scope
+  edits (including a never-modified `rules.json`). Each WAF runs against a
+  private copy of the rules tree so tests never mutate the checked-in files.
+
+### Changed
+
+- **`src/rule_management.rs` → `src/rule_management/` module.** Refactored the
+  single-file control plane into a directory module (`mod.rs` shared
+  gates/listeners/router, `cmc.rs` CMC endpoints, `regex_rules.rs` regex
+  endpoints, `factory.rs`). The public API (`RuleManagementGate`, `run`,
+  `run_plain`, `spawn_nonce_janitor`, `load_allowlist`, `default_allowlist_path`)
+  is unchanged.
+
+### Documentation
+
+- **`docs/rule_management.md`, `README.md`.** Document the new regex view/update
+  endpoints, the five-file managed allowlist, the request/response shapes, and
+  the validation rules.
+
 > **Rorschach key-generation tooling and deployment docs.** Adds a local helper
 > for generating the Rorschach secret material used by the rule-management
 > control plane, plus the deployment notes and environment bootstrap helper
