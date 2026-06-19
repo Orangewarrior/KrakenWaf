@@ -8,12 +8,16 @@ use std::{sync::Arc, path::Path};
 
 fn build_engine(vectorscan_enabled: bool) -> WafEngine {
     let rules = Arc::new(RuleSet::from_dir(Path::new("./rules")).expect("load bundled rules"));
-    let tmp = tempfile::tempdir().expect("tempdir");
+    let path = tempfile::NamedTempFile::new()
+        .expect("tempfile")
+        .into_temp_path()
+        .keep()
+        .expect("keep tempfile path");
     let rl = Arc::new(
-        RateLimiter::new(240, std::time::Duration::from_mins(1), &tmp.path().join("rate_limit.db"), PersistenceMode::Sqlite)
+        RateLimiter::new(240, std::time::Duration::from_mins(1), &path, PersistenceMode::Postcard)
             .expect("rate limiter"),
     );
-    let engine = WafEngineFactory::create(WafEngineConfig {
+    WafEngineFactory::create(WafEngineConfig {
         rules,
         rate_limiter: rl,
         blocklist_ip_enabled: false,
@@ -25,9 +29,7 @@ fn build_engine(vectorscan_enabled: bool) -> WafEngine {
         anomaly_threshold: 600,
         max_inspection_ms: 0,
     })
-    .expect("engine");
-    drop(tmp);
-    engine
+    .expect("engine")
 }
 
 #[tokio::test(flavor = "multi_thread")]

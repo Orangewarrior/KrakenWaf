@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use std::{net::IpAddr, path::PathBuf, sync::Arc};
+use tracing::warn;
 
 /// Geolocation result for a single IP lookup.
 #[derive(Debug, Clone, Default)]
@@ -86,8 +87,10 @@ impl GeoIpReader {
             _ => return GeoIpResult::empty(),
         };
 
-        let country_name = city.country.names.english.unwrap_or("").to_string();
-        let continent_name = city.continent.names.english.unwrap_or("").to_string();
+        let country_name =
+            geo_name_or_empty(ip, "country.names.english", city.country.names.english);
+        let continent_name =
+            geo_name_or_empty(ip, "continent.names.english", city.continent.names.english);
 
         GeoIpResult {
             country_name,
@@ -101,6 +104,24 @@ fn is_private_or_loopback(addr: IpAddr) -> bool {
         IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local(),
         IpAddr::V6(v6) => v6.is_loopback() || v6.is_unique_local(),
     }
+}
+
+#[track_caller]
+fn geo_name_or_empty(ip: &str, field: &str, value: Option<&str>) -> String {
+    if let Some(name) = value.filter(|name| !name.trim().is_empty()) {
+        return name.to_string();
+    }
+    let location = std::panic::Location::caller();
+    warn!(
+        target: "krakenwaf",
+        function = "GeoIpReader::lookup",
+        file = location.file(),
+        line = location.line(),
+        ip,
+        field,
+        "GeoIP lookup returned a missing or empty English name; using empty GeoIP field"
+    );
+    String::new()
 }
 
 #[cfg(test)]

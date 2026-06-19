@@ -8,7 +8,7 @@ const LIST_A: &[&str] = &["entity", "xi:include"];
 const LIST_B: &[&str] = &[
     "xxe",
     "system",
-    "etc/password",
+    "etc/passwd",
     "eval",
     "exfil",
     "xmlns:xi",
@@ -259,6 +259,9 @@ mod tests {
             .is_some());
         assert!(cmc
             .detect(r#"<xi:include href="file:///etc/passwd" xmlns:xi="x"/>"#)
+            .is_some());
+        assert!(cmc
+            .detect(r#"<!DOCTYPE soap [<!ENTITY xxe SYSTEM "file:///etc/passwd">]>"#)
             .is_some());
 
         assert!(cmc.detect(r#"<!ENTITY harmless "value">"#).is_none());

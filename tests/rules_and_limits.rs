@@ -21,7 +21,7 @@ fn loads_external_rule_tree() {
                 {"title":"Traversal","severity":"high","cwe":"CWE-22","description":"Traversal payload","url":"https://cwe.mitre.org/data/definitions/22.html","rule_match":"../"}
             ],
             "allow_paths": ["/health"],
-            "body_limits": {"/upload": 2048}
+            "body_limits": {"/upload": 2048, "/upload/private": 4096}
         }"#,
     ).expect("test");
     fs::write(tmp.path().join("addr/blocklist.txt"), "203.0.113.10\n").expect("test");
@@ -49,6 +49,7 @@ fn loads_external_rule_tree() {
     assert_eq!(rules.header_keywords.len(), 1);
     assert_eq!(rules.body_keywords.len(), 1);
     assert_eq!(rules.body_limit_for_path("/upload/file"), 2048);
+    assert_eq!(rules.body_limit_for_path("/upload/private/file"), 4096);
     assert!(!rules.is_allowlisted("/health/../../admin"));
     assert_eq!(rules.vectorscan_keywords[0].rule_match, "cmd.exe");
     assert_eq!(rules.path_regex[0].meta.score, 1000);

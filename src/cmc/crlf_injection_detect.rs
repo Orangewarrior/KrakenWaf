@@ -321,6 +321,7 @@ fn is_http_header_line(line: &str) -> bool {
             matches!(
                 b,
                 b'a'..=b'z'
+                    | b'A'..=b'Z'
                     | b'0'..=b'9'
                     | b'!'
                     | b'#'
@@ -352,6 +353,7 @@ fn is_multipart_part_header_line(line: &str) -> bool {
 }
 
 fn is_request_line(line: &str) -> bool {
+    let line = line.to_ascii_lowercase();
     let starts_with_method = [
         "get ", "post ", "put ", "patch ", "delete ", "head ", "options ", "trace ", "connect ",
     ]
@@ -410,7 +412,7 @@ mod tests {
     #[test]
     fn ignores_normal_http_request_framing() {
         let cmc = CrlfInjectionCmcBuilder::new().build();
-        let request = "get /test_get?payload_test=hello http/1.1\r\nhost: localhost\r\nuser-agent: reqwest\r\n\r\n";
+        let request = "GET /test_get?payload_test=hello HTTP/1.1\r\nHost: localhost\r\nUser-Agent: reqwest\r\n\r\n";
 
         assert!(cmc.detect(request).is_none());
     }

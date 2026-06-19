@@ -32,7 +32,7 @@ uses `DOCTYPE` or `ENTITY` declarations without external references.
 |--------|--------------|
 | `xxe` | Named entity token used in most XXE proof-of-concept payloads |
 | `system` | `SYSTEM` keyword that introduces an external identifier URI |
-| `etc/password` | Canonical LFI target path |
+| `etc/passwd` | Canonical LFI target path |
 | `eval` | PHP/JS eval function — used in XXE-to-RCE chains |
 | `exfil` | Data exfiltration marker |
 | `xmlns:xi` | XInclude namespace binding |

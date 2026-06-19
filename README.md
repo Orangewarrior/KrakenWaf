@@ -192,6 +192,7 @@ upstream : https://127.0.0.1:8080 # host defined by the operator
 upstream-timeout-secs: # empty -> WAF default (15 s)
 upstream-ca: # empty -> trust public CAs only; PEM path to trust a private upstream CA
 allow-private-upstream: false # disabled
+debug-proxy-dev: false # true -> persist diagnostic proxy JSONL under logs/proxy_errors_dev/
 internal-header-name: # empty -> internal header disabled
 real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 127.0.0.1/32
@@ -206,6 +207,12 @@ blockmsg: ./alert/blockalert.html # empty -> no custom block page
 > webpki roots by default; the supplied CA is *added* to them (full verification
 > is still enforced), so a backend presenting a private-PKI certificate is
 > verified instead of rejected with a 502.
+
+`debug-proxy-dev` controls noisy developer diagnostics for proxy parsing errors,
+such as malformed `Forwarded:` values from trusted proxies. When `false`, only
+critical proxy failures are persisted. When `true`, diagnostic events are
+written as JSONL to `logs/proxy_errors_dev/proxy_errors.jsonl`; see
+[`docs/proxy_diagnostics.md`](docs/proxy_diagnostics.md).
 
 **Parsing & precedence**
 
@@ -544,7 +551,8 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--enable-vectorscan` | `false` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature) |
 | `--rate-limit-per-minute` | 240 | Per-IP request budget per 60 s window. Overrides the config file. Default when absent: 240. See [docs/rate_limit.md](docs/rate_limit.md) |
 | `--ratelimit-by-file-conf` | auto-discover | Path to a YAML rate-limit config file. Auto-discovered at `conf/ratelimit.yaml` in the working directory. Enables Redis backend, `max_coroutines_per_ip`, and the connection/body-size caps. See [docs/rate_limit.md](docs/rate_limit.md) |
-| `--external-proxy-conf` | — / `conf/proxy.yaml` | Load the proxy flags (`--listen`, `--upstream`, `--upstream-timeout-secs`, `--allow-private-upstream`, `--internal-header-name`, `--real-ip-header`, `--trusted-proxy-cidrs`, `--sni-map`, `--no-tls`, `--header-protection-injection`, `--blockmsg`) from a YAML file. Passed bare it auto-loads `conf/proxy.yaml`; pass a path for a different file. An explicit CLI flag still wins; an empty field keeps the WAF default. See [Proxy configuration file](#-proxy-configuration-file-confproxyyaml) |
+| `--external-proxy-conf` | — / `conf/proxy.yaml` | Load the proxy flags (`--listen`, `--upstream`, `--upstream-timeout-secs`, `--allow-private-upstream`, `--debug-proxy-dev`, `--internal-header-name`, `--real-ip-header`, `--trusted-proxy-cidrs`, `--sni-map`, `--no-tls`, `--header-protection-injection`, `--blockmsg`) from a YAML file. Passed bare it auto-loads `conf/proxy.yaml`; pass a path for a different file. An explicit CLI flag still wins; an empty field keeps the WAF default. See [Proxy configuration file](#-proxy-configuration-file-confproxyyaml) |
+| `--debug-proxy-dev` | `false` | Persist diagnostic proxy errors to `logs/proxy_errors_dev/proxy_errors.jsonl`. Critical proxy failures are still saved when disabled; this enables noisy developer events such as malformed forwarding headers. Also settable via `debug-proxy-dev` in `conf/proxy.yaml`. See [docs/proxy_diagnostics.md](docs/proxy_diagnostics.md) |
 | `--wal-mode` | `sqlite` | Persistence backend for the local rate-limiter snapshot: `sqlite` (inspectable WAL) or `postcard` (atomic-rename binary, ~10–50× faster). Ignored when using Redis. See [docs/rate_limit.md](docs/rate_limit.md) |
 | `--websocket-conf` | auto-discover | Path to a YAML WebSocket control-policy file. Auto-discovered at `conf/websocket.yaml`. Governs `ws://`/`wss://` upgrade limits (allowed paths, per-IP session cap, idle/session timeouts, handshake inspection). See [docs/websocket.md](docs/websocket.md) |
 | `--upstream-timeout-secs` | `15` | Timeout in seconds for upstream requests |
@@ -554,7 +562,7 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--max-body-bytes` | `8388608` (8 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request. Also configurable via `max_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
 | `--max-upstream-response-bytes` | `8388608` (8 MiB) | Ceiling for fully buffered textual upstream responses. Binary media streams without full accumulation; its total-byte cap and optional inspection prefix are configured by `max_streamed_response_bytes` and `response_inspect_prefix_bytes` in `rules/cmc/config.yaml`. Also configurable via `max_upstream_response_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--anomaly-threshold` | `600` | Score-engine block threshold. Detection rules with `score` below this are correlated; when their accumulated `sum_score` within a single inspection view reaches the threshold the request is blocked. Also configurable via `Anomaly_threshold` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml). See [docs/score_rank.md](docs/score_rank.md) |
-| `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set, inspection stops scanning additional views once the deadline elapses and the request proceeds with whatever findings were produced. `0` disables the deadline. Also configurable via `Max_inspection_ms` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml) |
+| `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set and elapsed, inspection blocks fail-closed with a deadline finding and records a JSONL event under `logs/filter/deadline.jsonl`. `0` disables the deadline. Also configurable via `Max_inspection_ms` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml) |
 | `--body-frame-timeout-secs` | `30` | Per-frame timeout when streaming the request body. If the WAF waits longer than this for a single body chunk it returns 408 and drops the connection. Also configurable via `body_frame_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--max-inflight-body-bytes` | `1073741824` (1 GiB) | Global ceiling on bytes from in-flight request bodies across all clients. When exceeded, new requests receive 503 + `Retry-After: 5`. Also configurable via `max_inflight_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--max-per-ip-body-bytes` | `209715200` (200 MiB) | Per-IP ceiling on bytes from in-flight request bodies. Prevents a single client from saturating the global body buffer. Also configurable via `max_per_ip_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
@@ -732,7 +740,7 @@ Set any key to `false` to disable that detector without recompiling.
 
 `NOSQL_injection_detect` blocks when the same URI/body inspection payload contains at least one NoSQL operator/selector marker such as `$gt`, `$where`, `$or`, `$and`, `selector`, `this.password.match`, `&&` or `||`, and at least one suspicious value/control marker such as `true`, `admin`, `pass`, `user`, `null`, `sleep(`, `dropDatabase(`, `%00`, `{}`, `.insert`, `==1`, `== 1`, `]=1`, `] = 1`, or `==` followed by a digit from `1` to `9`.
 
-`XXE_attack_detect` blocks when the same URI/body inspection payload contains at least one XML entity/include marker (`ENTITY` or `xi:include`) and at least one XXE context marker such as `xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, or `file`. UTF-16LE/BE payloads that arrive after URL decoding as NUL-interleaved text are decoded before XXE matching.
+`XXE_attack_detect` blocks when the same URI/body inspection payload contains at least one XML entity/include marker (`ENTITY` or `xi:include`) and at least one XXE context marker such as `xxe`, `SYSTEM`, `etc/passwd`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, or `file`. UTF-16LE/BE payloads that arrive after URL decoding as NUL-interleaved text are decoded before XXE matching.
 
 `HPP_detect` blocks HTTP Parameter Pollution: the query string and request body are each normalized first (percent-decoding, double/recursive percent-decoding, UTF-16 LE/BE transcoding — all via the global normalizer so every CMC module benefits), the `=` characters are counted on the **normalized** form, and when there are two or more the parameter names are parsed (split on `&`, key = substring before the first `=`). If any name repeats — compared **case-insensitively**, so `email` and `eMail` collide — the request is flagged `Critical` and blocked at `Untrust ≥ 60`. Example: `name=Antonio&email=a@x&age=39&eMail=<bingo>` is blocked (duplicate `email`), while `name=Antonio&email=a@x&age=39` is allowed.
 

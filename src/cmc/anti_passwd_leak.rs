@@ -221,8 +221,23 @@ impl AntiPasswdLeakCmc {
 #[cfg(feature = "vectorscan-engine")]
 fn build_vectorscan(patterns: &[&str]) -> Option<BlockDatabase> {
     super::vectorscan_util::build_block_database(patterns, Flag::SINGLEMATCH, |p| {
-        p.as_bytes().to_vec()
+        regex_escape_literal(p).into_bytes()
     })
+}
+
+#[cfg(feature = "vectorscan-engine")]
+fn regex_escape_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 8);
+    for c in s.chars() {
+        if matches!(
+            c,
+            '.' | '^' | '$' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\'
+        ) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 #[cfg(test)]

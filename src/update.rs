@@ -1253,7 +1253,8 @@ pub fn build_spamhaus_dqs_query(ip: IpAddr, token: &str, zone: &str) -> Option<S
         IpAddr::V6(v6) => v6
             .octets()
             .into_iter()
-            .flat_map(|byte| [byte & 0x0f, byte >> 4])
+            .flat_map(|byte| [byte >> 4, byte & 0x0f])
+            .rev()
             .map(|nibble| format!("{nibble:x}"))
             .collect::<Vec<_>>()
             .join("."),

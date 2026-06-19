@@ -425,132 +425,132 @@
       "http_action": "Request",
       "title": "Score engine request test 1",
       "severity": "low",
-      "score": 150,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-a",
-      "id": "score-body-low-001"
+      "id": "score-body-low-001",
+      "score": 150
     },
     {
       "enable": 1,
       "http_action": "Request",
       "title": "Score engine request test 2",
       "severity": "low",
-      "score": 150,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-b",
-      "id": "score-body-low-002"
+      "id": "score-body-low-002",
+      "score": 150
     },
     {
       "enable": 1,
       "http_action": "Request",
       "title": "Score engine request test 3",
       "severity": "low",
-      "score": 150,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-c",
-      "id": "score-body-low-003"
+      "id": "score-body-low-003",
+      "score": 150
     },
     {
       "enable": 1,
       "http_action": "Request",
       "title": "Score engine request test 4",
       "severity": "low",
-      "score": 150,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-d",
-      "id": "score-body-low-004"
+      "id": "score-body-low-004",
+      "score": 150
     },
     {
       "enable": 1,
       "http_action": "Request",
       "title": "Score engine request test 5",
       "severity": "low",
-      "score": 250,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-e",
-      "id": "score-body-low-005"
+      "id": "score-body-low-005",
+      "score": 250
     },
     {
       "enable": 1,
       "http_action": "Request",
       "title": "Score engine request test 6",
       "severity": "low",
-      "score": 350,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-f",
-      "id": "score-body-low-006"
+      "id": "score-body-low-006",
+      "score": 350
     },
     {
       "enable": 1,
       "http_action": "Request",
       "title": "Score engine request test 7",
       "severity": "low",
-      "score": 599,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-near",
-      "id": "score-body-low-007"
+      "id": "score-body-low-007",
+      "score": 599
     },
     {
       "enable": 1,
       "http_action": "Request",
       "title": "Score engine request test 8",
       "severity": "high",
-      "score": 600,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on request payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-post-high",
-      "id": "score-body-high-001"
+      "id": "score-body-high-001",
+      "score": 600
     },
     {
       "enable": 1,
       "http_action": "Response",
       "title": "Score engine response test 9",
       "severity": "low",
-      "score": 200,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on response payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-response-a",
-      "id": "score-body-response-low-001"
+      "id": "score-body-response-low-001",
+      "score": 200
     },
     {
       "enable": 1,
       "http_action": "Response",
       "title": "Score engine response test 10",
       "severity": "low",
-      "score": 200,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on response payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-response-b",
-      "id": "score-body-response-low-002"
+      "id": "score-body-response-low-002",
+      "score": 200
     },
     {
       "enable": 1,
       "http_action": "Response",
       "title": "Score engine response test 11",
       "severity": "low",
-      "score": 200,
       "cwe": "CWE-693",
       "description": "Laboratory rule used by the demo attack tool to validate score accumulation on response payloads.",
       "url": "https://owasp.org/www-project-web-security-testing-guide/",
       "rule_match": "kwaf-score-response-c",
-      "id": "score-body-response-low-003"
+      "id": "score-body-response-low-003",
+      "score": 200
     }
   ]
 }

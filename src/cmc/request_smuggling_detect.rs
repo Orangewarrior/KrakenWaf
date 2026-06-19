@@ -122,6 +122,7 @@ fn is_socketio_polling_request(input: &str) -> bool {
     let Some(first_line) = input.lines().next() else {
         return false;
     };
+    let first_line = first_line.to_ascii_lowercase();
     first_line.starts_with("post ")
         && first_line.contains("/socket.io/")
         && first_line.contains("transport=polling")
@@ -213,7 +214,7 @@ mod tests {
     fn ignores_legitimate_short_socketio_polling_frames() {
         let cmc = RequestSmugglingCmcBuilder::new().build();
         let request = concat!(
-            "post /socket.io/?eio=4&transport=polling&t=abc&sid=xyz http/1.1\r\n",
+            "POST /socket.io/?EIO=4&transport=polling&t=abc&sid=xyz HTTP/1.1\r\n",
             "host: localhost\r\n",
             "content-length: 2\r\n",
             "\r\n",

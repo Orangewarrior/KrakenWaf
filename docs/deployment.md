@@ -30,6 +30,7 @@ upstream : https://app.internal:8080
 upstream-timeout-secs:                 # empty -> WAF default (15 s)
 upstream-ca: /etc/krakenwaf/internal-ca.pem  # trust the backend's private CA
 allow-private-upstream: true           # internal upstream
+debug-proxy-dev: false                 # persist noisy proxy diagnostics only when needed
 real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 10.0.0.0/8, 192.168.0.0/16
 no-tls: false
@@ -52,6 +53,12 @@ boot with a descriptive error. The connection / body-size caps
 (`--max-connections`, `--connection-timeout-secs`, `--max-body-bytes`,
 `--max-upstream-response-bytes`) live in `conf/ratelimit.yaml` instead — see
 [rate_limit.md](rate_limit.md).
+
+`debug-proxy-dev` is a development/incident-debug switch for proxy diagnostics.
+Leave it `false` in normal production so malformed forwarding headers do not
+create noisy JSONL. Turn it on temporarily to persist diagnostic proxy events to
+`logs/proxy_errors_dev/proxy_errors.jsonl`; critical proxy failures remain
+persisted even when the switch is off. See [proxy_diagnostics.md](proxy_diagnostics.md).
 
 ## Request inspection scope
 

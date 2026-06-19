@@ -75,6 +75,8 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
     fs::create_dir_all(root.join("logs/json"))?;
     fs::create_dir_all(root.join("logs/raw"))?;
     fs::create_dir_all(root.join("logs/db"))?;
+    fs::create_dir_all(root.join("logs/filter"))?;
+    fs::create_dir_all(root.join("logs/proxy_errors_dev"))?;
 
     let raw_appender = tracing_appender::rolling::daily(root.join("logs"), "krakenwaf.log");
     let json_appender = tracing_appender::rolling::daily(root.join("logs/json"), "krakenwaf.jsonl");

@@ -156,8 +156,9 @@ pub struct Cli {
     /// `--upstream-timeout-secs`, `--allow-private-upstream`,
     /// `--internal-header-name`, `--real-ip-header`, `--trusted-proxy-cidrs`,
     /// `--sni-map`, `--no-tls`, `--header-protection-injection`, `--blockmsg`)
-    /// are loaded from the file. An explicitly-passed CLI flag still wins; an
-    /// empty field in the file leaves the WAF's built-in default in place.
+    /// and `--debug-proxy-dev` are loaded from the file. An explicitly-passed
+    /// CLI flag still wins; an empty field in the file leaves the WAF's
+    /// built-in default in place.
     #[arg(
         long = "external-proxy-conf",
         num_args = 0..=1,
@@ -174,6 +175,14 @@ pub struct Cli {
 
     #[arg(long, action = ArgAction::SetTrue)]
     pub allow_private_upstream: bool,
+
+    /// Persist developer-grade proxy diagnostic events under
+    /// `logs/proxy_errors_dev/proxy_errors.jsonl`. Critical proxy failures are
+    /// still persisted when this is false; this switch controls noisier events
+    /// such as malformed forwarding headers from trusted proxies. Also settable
+    /// via `debug-proxy-dev` in `conf/proxy.yaml`.
+    #[arg(long = "debug-proxy-dev", action = ArgAction::SetTrue, default_value_t = false)]
+    pub debug_proxy_dev: bool,
 
     /// Path to a PEM certificate (or bundle) to trust as an additional root CA
     /// when connecting to a TLS upstream. The certificate is *added* to the
@@ -280,7 +289,7 @@ pub struct Cli {
 
     /// Per-request wall-clock cap on WAF inspection (milliseconds).
     /// 0 = unlimited (default). When exceeded the inspection stops and the
-    /// request is allowed to proceed with whatever findings were produced.
+    /// request is blocked fail-closed with a deadline finding and JSONL event.
     /// Overrides the `Max_inspection_ms` field under `global-options` in the
     /// CMC config file (`--cmc-load`). When absent the effective value is
     /// taken from the CMC file or defaults to 0 (disabled).

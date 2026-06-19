@@ -11,6 +11,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
+use chrono::Utc;
 use http::{
     header::{CONNECTION, COOKIE, HOST, LOCATION, UPGRADE},
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
@@ -30,6 +31,9 @@ use rustls_pki_types::{pem::PemObject, CertificateDer};
 use std::{
     collections::VecDeque,
     convert::Infallible,
+    fs::{self, OpenOptions},
+    io::Write as _,
+    path::Path,
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -41,6 +45,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info, warn};
 use url::{Host, Url};
 use uuid::Uuid;
+
+const PROXY_ERROR_DEV_LOG: &str = "logs/proxy_errors_dev/proxy_errors.jsonl";
 
 /// RAII guard that tracks bytes buffered during body inspection and releases
 /// the global + per-IP in-flight byte counters on drop.
@@ -2366,6 +2372,60 @@ fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Optio
         .map(str::to_owned)
 }
 
+#[track_caller]
+fn write_proxy_error_dev(
+    debug_proxy_dev: bool,
+    always_save: bool,
+    function: &str,
+    code: &str,
+    message: &str,
+    fields: &serde_json::Value,
+) {
+    let severity = if always_save { "critical" } else { "diagnostic" };
+    if !debug_proxy_dev && !always_save {
+        tracing::debug!(
+            target: "krakenwaf",
+            function,
+            code,
+            message,
+            "diagnostic proxy dev event suppressed; enable debug-proxy-dev to persist it"
+        );
+        return;
+    }
+
+    let location = std::panic::Location::caller();
+    let event = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "severity": severity,
+        "debug_proxy_dev": debug_proxy_dev,
+        "function": function,
+        "file": location.file(),
+        "line": location.line(),
+        "code": code,
+        "message": message,
+        "fields": fields,
+    });
+    if let Err(err) = append_proxy_error_dev_event(&event) {
+        warn!(
+            target: "krakenwaf",
+            error = %err,
+            path = PROXY_ERROR_DEV_LOG,
+            function,
+            code,
+            "failed to write proxy error dev event"
+        );
+    }
+}
+
+fn append_proxy_error_dev_event(event: &serde_json::Value) -> std::io::Result<()> {
+    let path = Path::new(PROXY_ERROR_DEV_LOG);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{event}")
+}
+
 /// Parse the RFC 7239 `Forwarded:` header chain and return the rightmost
 /// `for=` value whose IP does **not** belong to a trusted proxy CIDR.
 ///
@@ -2373,7 +2433,11 @@ fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Optio
 /// do. The rightmost untrusted value is therefore the real client. Returns
 /// `None` when the header is absent, malformed, or every value resolves to
 /// a trusted hop.
-fn forwarded_header_real_ip(headers: &http::HeaderMap, trusted: &[ipnet::IpNet]) -> Option<String> {
+fn forwarded_header_real_ip(
+    headers: &http::HeaderMap,
+    trusted: &[ipnet::IpNet],
+    debug_proxy_dev: bool,
+) -> Option<String> {
     use std::net::IpAddr;
     let raw = header_value_case_insensitive(headers, "forwarded")?;
     let elements: Vec<&str> = raw.split(',').collect();
@@ -2391,14 +2455,48 @@ fn forwarded_header_real_ip(headers: &http::HeaderMap, trusted: &[ipnet::IpNet])
             let stripped = v.trim().trim_matches('"');
             // Strip an optional port and surrounding `[]` for IPv6.
             let host_only = if let Some(rest) = stripped.strip_prefix('[') {
-                rest.split(']').next().unwrap_or("")
+                let Some((host, _suffix)) = rest.split_once(']') else {
+                    write_proxy_error_dev(
+                        debug_proxy_dev,
+                        false,
+                        "forwarded_header_real_ip",
+                        "malformed_forwarded_ipv6",
+                        "Forwarded for= value starts with '[' but has no closing ']'",
+                        &serde_json::json!({
+                            "raw_header": raw,
+                            "element": element,
+                            "value": stripped,
+                        }),
+                    );
+                    continue;
+                };
+                host
             } else if stripped.matches(':').count() == 1 {
                 // `host:port` for IPv4.
-                stripped.split(':').next().unwrap_or(stripped)
+                if let Some((host, _port)) = stripped.split_once(':') {
+                    host
+                } else {
+                    stripped
+                }
             } else {
                 stripped
             };
             let Ok(parsed) = host_only.parse::<IpAddr>() else {
+                if !host_only.starts_with('_') {
+                    write_proxy_error_dev(
+                        debug_proxy_dev,
+                        false,
+                        "forwarded_header_real_ip",
+                        "invalid_forwarded_for_ip",
+                        "Forwarded for= value could not be parsed as an IP address",
+                        &serde_json::json!({
+                            "raw_header": raw,
+                            "element": element,
+                            "value": stripped,
+                            "host_only": host_only,
+                        }),
+                    );
+                }
                 continue;
             };
             if !trusted.iter().any(|net| net.contains(&parsed)) {
@@ -2431,7 +2529,7 @@ pub(crate) fn effective_client_ip(
     // proxies (HAProxy 2.x, recent nginx with the realip module) emit it
     // instead of `X-Forwarded-For`. We walk the chain right-to-left and pick
     // the first `for=` value whose IP is *not* one of our trusted proxies.
-    if let Some(ip) = forwarded_header_real_ip(headers, trusted_nets) {
+    if let Some(ip) = forwarded_header_real_ip(headers, trusted_nets, state.cli.debug_proxy_dev) {
         return ip;
     }
 

@@ -23,6 +23,7 @@ upstream : https://127.0.0.1:8080 # host defined by the user
 upstream-timeout-secs: # when empty, defaults to a value defined by the WAF
 upstream-ca: # empty -> trusts only public CAs; PEM path to trust a private upstream CA
 allow-private-upstream: false # disabled
+debug-proxy-dev: false # true -> persist diagnostic proxy errors in logs/proxy_errors_dev/proxy_errors.jsonl
 internal-header-name: # empty: disabled by default
 real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 127.0.0.1/32

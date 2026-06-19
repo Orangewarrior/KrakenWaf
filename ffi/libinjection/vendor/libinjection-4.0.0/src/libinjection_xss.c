@@ -928,9 +928,8 @@ static int htmlencode_startswith(const char *a, const char *b, size_t n) {
             continue;
         }
 
-        if (cb == 10) {
-            /* always ignore vertical tab characters in user input */
-            /* who allows this?? */
+        if (cb == 9 || cb == 10 || cb == 13) {
+            /* ignore ASCII tab, line feed, and carriage return in user input */
             continue;
         }
 

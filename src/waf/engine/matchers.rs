@@ -1,7 +1,10 @@
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
-use anyhow::Result;
+use anyhow::{Context as _, Result};
 use chrono::Utc;
 use ipnet::IpNet;
+use std::time::Instant;
+#[cfg(feature = "vectorscan-engine")]
+use tracing::warn;
 #[cfg(feature = "vectorscan-engine")]
 use vectorscan::{BlockDatabase, Flag, Pattern, Scan};
 
@@ -32,6 +35,21 @@ pub(super) struct EngineMatchers {
     pub(super) req_vectorscan: Option<VectorscanMatcher>,
     #[cfg(feature = "vectorscan-engine")]
     pub(super) resp_vectorscan: Option<VectorscanMatcher>,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct RegexDeadline {
+    pub(super) rule_id: String,
+    pub(super) title: String,
+    pub(super) rule_match: String,
+    pub(super) rule_line_match: String,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum RegexScanResult {
+    Match(Finding),
+    DeadlineExceeded(RegexDeadline),
+    NoMatch,
 }
 
 #[cfg(feature = "vectorscan-engine")]
@@ -78,6 +96,15 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
         .filter(resp_filter)
         .cloned()
         .collect();
+    let blocked_ip_nets = rules
+        .blocked_ip_prefixes
+        .iter()
+        .map(|entry| {
+            parse_ip_net(entry).with_context(|| {
+                format!("invalid blocked_ip_prefixes entry '{entry}' while building WAF matchers")
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
 
     #[cfg(feature = "vectorscan-engine")]
     let (req_vs_rules, resp_vs_rules): (Vec<_>, Vec<_>) = {
@@ -102,11 +129,7 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
         req_body: build_keyword_matcher(&req_body_rules)?,
         resp_headers: build_keyword_matcher(&resp_hdr_rules)?,
         resp_body: build_keyword_matcher(&resp_body_rules)?,
-        blocked_ip_nets: rules
-            .blocked_ip_prefixes
-            .iter()
-            .filter_map(|entry| parse_ip_net(entry))
-            .collect(),
+        blocked_ip_nets,
         #[cfg(feature = "vectorscan-engine")]
         req_vectorscan: if vectorscan_enabled && !req_vs_rules.is_empty() {
             Some(build_vectorscan_matcher(&req_vs_rules)?)
@@ -207,7 +230,15 @@ pub(super) fn keyword_match_accumulate(
 ) -> Option<Finding> {
     let matcher = matcher?;
     for mat in matcher.ac.find_iter(haystack) {
-        let rule = matcher.rules.get(mat.pattern().as_usize())?;
+        let Some(rule) = matcher.rules.get(mat.pattern().as_usize()) else {
+            tracing::warn!(
+                target: "krakenwaf",
+                pattern_index = mat.pattern().as_usize(),
+                rule_count = matcher.rules.len(),
+                "keyword matcher returned a pattern index without rule metadata; skipping"
+            );
+            continue;
+        };
         if score_allows_block_threshold(rule, sum_score, threshold) {
             return Some(super::finding::rule_to_finding(rule, original_payload));
         }
@@ -243,14 +274,54 @@ pub(super) fn regex_match_phase_scored_threshold(
     threshold: u32,
     sum_score: &mut u32,
 ) -> Option<Finding> {
-    rules
-        .iter()
-        .filter(|r| &r.meta.http_action == phase)
-        .filter(|rule| rule.compiled.is_match(haystack))
-        .find_map(|rule| {
-            score_allows_block_threshold(&rule.meta, sum_score, threshold)
-                .then(|| super::finding::rule_to_finding(&rule.meta, original_payload))
-        })
+    match regex_match_phase_scored_threshold_deadline(
+        rules,
+        haystack,
+        original_payload,
+        phase,
+        threshold,
+        sum_score,
+        None,
+    ) {
+        RegexScanResult::Match(finding) => Some(finding),
+        RegexScanResult::DeadlineExceeded(_) | RegexScanResult::NoMatch => None,
+    }
+}
+
+pub(super) fn regex_match_phase_scored_threshold_deadline(
+    rules: &[CompiledDetectionRule],
+    haystack: &str,
+    original_payload: &str,
+    phase: &HttpAction,
+    threshold: u32,
+    sum_score: &mut u32,
+    deadline: Option<Instant>,
+) -> RegexScanResult {
+    for rule in rules.iter().filter(|r| &r.meta.http_action == phase) {
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return RegexScanResult::DeadlineExceeded(regex_deadline(&rule.meta));
+        }
+        let matched = rule.compiled.is_match(haystack);
+        if deadline.is_some_and(|d| Instant::now() >= d) {
+            return RegexScanResult::DeadlineExceeded(regex_deadline(&rule.meta));
+        }
+        if matched && score_allows_block_threshold(&rule.meta, sum_score, threshold) {
+            return RegexScanResult::Match(super::finding::rule_to_finding(
+                &rule.meta,
+                original_payload,
+            ));
+        }
+    }
+    RegexScanResult::NoMatch
+}
+
+fn regex_deadline(rule: &DetectionRule) -> RegexDeadline {
+    RegexDeadline {
+        rule_id: rule.id.clone(),
+        title: rule.title.clone(),
+        rule_match: rule.rule_match.clone(),
+        rule_line_match: format!("{}:{}", rule.source, rule.line),
+    }
 }
 
 pub(super) fn libinjection_match(
@@ -386,12 +457,30 @@ pub(super) fn vectorscan_match_scored(
     normalized_haystack: &str,
     original_payload: &str,
 ) -> Option<Finding> {
-    let mut scanner = matcher.db.create_scanner().ok()?;
+    let mut scanner = match matcher.db.create_scanner() {
+        Ok(scanner) => scanner,
+        Err(err) => {
+            warn!(
+                target: "krakenwaf",
+                error = %err,
+                "Vectorscan scanner creation failed; skipping Vectorscan match for this payload"
+            );
+            return None;
+        }
+    };
     let mut matched_indexes: Vec<usize> = Vec::new();
-    let _ = scanner.scan(normalized_haystack.as_bytes(), |id, _from, _to, _flags| {
+    if let Err(err) = scanner.scan(normalized_haystack.as_bytes(), |id, _from, _to, _flags| {
         matched_indexes.push(id as usize);
         Scan::Continue
-    });
+    }) {
+        warn!(
+            target: "krakenwaf",
+            error = %err,
+            haystack_len = normalized_haystack.len(),
+            "Vectorscan scan failed; skipping Vectorscan match for this payload"
+        );
+        return None;
+    }
     matched_indexes.sort_unstable();
     matched_indexes.dedup();
 
@@ -403,4 +492,25 @@ pub(super) fn vectorscan_match_scored(
             score_allows_block(rule, &mut sum_score)
                 .then(|| super::finding::rule_to_finding(rule, original_payload))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_matchers;
+    use crate::rules::RuleSet;
+
+    #[test]
+    fn build_matchers_rejects_invalid_blocked_ip_prefix() {
+        let rules = RuleSet {
+            blocked_ip_prefixes: vec!["not-a-cidr".to_string()],
+            ..RuleSet::default()
+        };
+
+        let err = build_matchers(&rules, false).expect_err("invalid CIDR must fail matcher build");
+        assert!(
+            err.to_string()
+                .contains("invalid blocked_ip_prefixes entry"),
+            "unexpected error: {err}"
+        );
+    }
 }

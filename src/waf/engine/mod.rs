@@ -19,16 +19,21 @@ use crate::{
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use chrono::Utc;
-use std::{path::Path, sync::Arc};
+use std::{
+    fs::{self, OpenOptions},
+    io::Write as _,
+    path::Path,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use ip_filter::{canonical_ip, extract_header_value};
 use matchers::{
     build_matchers, keyword_match, keyword_match_accumulate, libinjection_match,
-    regex_match_phase_scored, regex_match_phase_scored_threshold, EngineMatchers,
-    SCORE_BLOCK_THRESHOLD,
+    regex_match_phase_scored, regex_match_phase_scored_threshold_deadline, EngineMatchers,
+    RegexDeadline, RegexScanResult, SCORE_BLOCK_THRESHOLD,
 };
 use normalize::{as_latin1, inspection_views, normalize_request_bytes};
-use std::time::{Duration, Instant};
 
 #[cfg(feature = "vectorscan-engine")]
 use matchers::vectorscan_match_scored;
@@ -146,6 +151,53 @@ pub struct WafEngine {
 struct SpamhausDqsConfig {
     token: String,
     zones: Vec<String>,
+}
+
+const FILTER_DEADLINE_LOG: &str = "logs/filter/deadline.jsonl";
+
+#[derive(Debug, Clone, Copy)]
+struct InspectionDeadline {
+    started_at: Instant,
+    expires_at: Instant,
+    max_ms: u64,
+}
+
+impl InspectionDeadline {
+    fn new(max_ms: u64) -> Self {
+        let started_at = Instant::now();
+        let duration = Duration::from_millis(max_ms);
+        let expires_at = if let Some(expires_at) = started_at.checked_add(duration) {
+            expires_at
+        } else {
+            tracing::warn!(
+                target: "krakenwaf",
+                max_ms,
+                "max_inspection_ms overflowed Instant; treating inspection budget as already expired"
+            );
+            started_at
+        };
+        Self {
+            started_at,
+            expires_at,
+            max_ms,
+        }
+    }
+
+    fn expired(self) -> bool {
+        Instant::now() >= self.expires_at
+    }
+
+    fn elapsed_ms(self) -> u128 {
+        self.started_at.elapsed().as_millis()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct DeadlineMetadata<'a> {
+    id: Option<&'a str>,
+    title: Option<&'a str>,
+    match_text: Option<&'a str>,
+    line_match: Option<&'a str>,
 }
 
 impl WafEngine {
@@ -411,7 +463,7 @@ impl WafEngine {
         let deadline = if self.max_inspection_ms == 0 {
             None
         } else {
-            Some(Instant::now() + Duration::from_millis(self.max_inspection_ms))
+            Some(InspectionDeadline::new(self.max_inspection_ms))
         };
         self.inspect_payload_inner(payload, method_hint, deadline)
     }
@@ -421,7 +473,7 @@ impl WafEngine {
         &self,
         payload: &[u8],
         _method_hint: Option<&str>,
-        deadline: Option<Instant>,
+        deadline: Option<InspectionDeadline>,
     ) -> Decision {
         let snap = self.snapshot.load_full();
         let rules = &snap.rules;
@@ -431,11 +483,29 @@ impl WafEngine {
         let normalized_bytes = normalize_request_bytes(payload);
         let original_text = String::from_utf8_lossy(payload);
         let normalized_text = String::from_utf8_lossy(normalized_bytes.as_ref());
+        if let Some(decision) = Self::deadline_decision(
+            deadline,
+            "normalize_request_bytes",
+            payload,
+            Some(normalized_text.as_ref()),
+            DeadlineMetadata::default(),
+        ) {
+            return decision;
+        }
 
         {
             let cmc_lower = normalized_text.to_ascii_lowercase();
             if let Some(finding) = self.cmc_manager.inspect(&cmc_lower) {
                 return Decision::Block(Box::new(finding));
+            }
+            if let Some(decision) = Self::deadline_decision(
+                deadline,
+                "cmc::inspect(normalized)",
+                payload,
+                Some(cmc_lower.as_str()),
+                DeadlineMetadata::default(),
+            ) {
+                return decision;
             }
 
             if normalized_bytes.as_ref() != payload {
@@ -443,6 +513,15 @@ impl WafEngine {
                 if original_lower != cmc_lower {
                     if let Some(finding) = self.cmc_manager.inspect(&original_lower) {
                         return Decision::Block(Box::new(finding));
+                    }
+                    if let Some(decision) = Self::deadline_decision(
+                        deadline,
+                        "cmc::inspect(original)",
+                        payload,
+                        Some(original_lower.as_str()),
+                        DeadlineMetadata::default(),
+                    ) {
+                        return decision;
                     }
                 }
             }
@@ -457,6 +536,15 @@ impl WafEngine {
         {
             return Decision::Block(Box::new(cmc_finding));
         }
+        if let Some(decision) = Self::deadline_decision(
+            deadline,
+            "cmc::inspect_java_deser",
+            payload,
+            Some(original_text.as_ref()),
+            DeadlineMetadata::default(),
+        ) {
+            return decision;
+        }
 
         if self.libinjection_sqli_enabled || self.libinjection_xss_enabled {
             if let Some(finding) = libinjection_match(
@@ -466,6 +554,15 @@ impl WafEngine {
                 self.libinjection_xss_enabled,
             ) {
                 return Decision::Block(Box::new(finding));
+            }
+            if let Some(decision) = Self::deadline_decision(
+                deadline,
+                "libinjection",
+                payload,
+                Some(normalized_text.as_ref()),
+                DeadlineMetadata::default(),
+            ) {
+                return decision;
             }
         }
 
@@ -479,6 +576,15 @@ impl WafEngine {
                         original_text.as_ref(),
                     ) {
                         return Decision::Block(Box::new(finding));
+                    }
+                    if let Some(decision) = Self::deadline_decision(
+                        deadline,
+                        "vectorscan::request",
+                        payload,
+                        Some(normalized_text.as_ref()),
+                        DeadlineMetadata::default(),
+                    ) {
+                        return decision;
                     }
                 }
             }
@@ -526,10 +632,14 @@ impl WafEngine {
             .filter(move |view| seen_views.insert(*view));
 
         for view in all_views {
-            if let Some(d) = deadline {
-                if Instant::now() >= d {
-                    break;
-                }
+            if let Some(decision) = Self::deadline_decision(
+                deadline,
+                "signature_view_start",
+                payload,
+                Some(view),
+                DeadlineMetadata::default(),
+            ) {
+                return decision;
             }
 
             // Each view is an independent inspection unit. The full-payload
@@ -549,6 +659,15 @@ impl WafEngine {
             ) {
                 return Decision::Block(Box::new(finding));
             }
+            if let Some(decision) = Self::deadline_decision(
+                deadline,
+                "keyword:req_uri",
+                payload,
+                Some(view),
+                DeadlineMetadata::default(),
+            ) {
+                return decision;
+            }
             if let Some(finding) = keyword_match_accumulate(
                 matchers.req_headers.as_ref(),
                 view,
@@ -557,6 +676,15 @@ impl WafEngine {
                 &mut sum_score,
             ) {
                 return Decision::Block(Box::new(finding));
+            }
+            if let Some(decision) = Self::deadline_decision(
+                deadline,
+                "keyword:req_headers",
+                payload,
+                Some(view),
+                DeadlineMetadata::default(),
+            ) {
+                return decision;
             }
             if let Some(finding) = keyword_match_accumulate(
                 matchers.req_body.as_ref(),
@@ -567,36 +695,78 @@ impl WafEngine {
             ) {
                 return Decision::Block(Box::new(finding));
             }
+            if let Some(decision) = Self::deadline_decision(
+                deadline,
+                "keyword:req_body",
+                payload,
+                Some(view),
+                DeadlineMetadata::default(),
+            ) {
+                return decision;
+            }
 
-            if let Some(finding) = regex_match_phase_scored_threshold(
+            match regex_match_phase_scored_threshold_deadline(
                 &rules.path_regex,
                 view,
                 original_text.as_ref(),
                 &HttpAction::Request,
                 threshold,
                 &mut sum_score,
+                deadline.map(|d| d.expires_at),
             ) {
-                return Decision::Block(Box::new(finding));
+                RegexScanResult::Match(finding) => return Decision::Block(Box::new(finding)),
+                RegexScanResult::DeadlineExceeded(rule) => {
+                    return Self::deadline_block_decision(
+                        deadline,
+                        "regex:path_regex",
+                        payload,
+                        Some(view),
+                        deadline_metadata_from_regex(&rule),
+                    );
+                }
+                RegexScanResult::NoMatch => {}
             }
-            if let Some(finding) = regex_match_phase_scored_threshold(
+            match regex_match_phase_scored_threshold_deadline(
                 &rules.header_regex,
                 view,
                 original_text.as_ref(),
                 &HttpAction::Request,
                 threshold,
                 &mut sum_score,
+                deadline.map(|d| d.expires_at),
             ) {
-                return Decision::Block(Box::new(finding));
+                RegexScanResult::Match(finding) => return Decision::Block(Box::new(finding)),
+                RegexScanResult::DeadlineExceeded(rule) => {
+                    return Self::deadline_block_decision(
+                        deadline,
+                        "regex:header_regex",
+                        payload,
+                        Some(view),
+                        deadline_metadata_from_regex(&rule),
+                    );
+                }
+                RegexScanResult::NoMatch => {}
             }
-            if let Some(finding) = regex_match_phase_scored_threshold(
+            match regex_match_phase_scored_threshold_deadline(
                 &rules.body_regex,
                 view,
                 original_text.as_ref(),
                 &HttpAction::Request,
                 threshold,
                 &mut sum_score,
+                deadline.map(|d| d.expires_at),
             ) {
-                return Decision::Block(Box::new(finding));
+                RegexScanResult::Match(finding) => return Decision::Block(Box::new(finding)),
+                RegexScanResult::DeadlineExceeded(rule) => {
+                    return Self::deadline_block_decision(
+                        deadline,
+                        "regex:body_regex",
+                        payload,
+                        Some(view),
+                        deadline_metadata_from_regex(&rule),
+                    );
+                }
+                RegexScanResult::NoMatch => {}
             }
         }
 
@@ -708,6 +878,162 @@ impl WafEngine {
         Decision::Allow
     }
 
+    fn deadline_decision(
+        deadline: Option<InspectionDeadline>,
+        stage: &str,
+        payload: &[u8],
+        view: Option<&str>,
+        metadata: DeadlineMetadata<'_>,
+    ) -> Option<Decision> {
+        let deadline = deadline?;
+        deadline
+            .expired()
+            .then(|| Self::deadline_block_decision(Some(deadline), stage, payload, view, metadata))
+    }
+
+    fn deadline_block_decision(
+        deadline: Option<InspectionDeadline>,
+        stage: &str,
+        payload: &[u8],
+        view: Option<&str>,
+        metadata: DeadlineMetadata<'_>,
+    ) -> Decision {
+        let deadline = if let Some(deadline) = deadline {
+            deadline
+        } else {
+            tracing::error!(
+                target: "krakenwaf",
+                stage,
+                "internal error: deadline block requested without an inspection deadline"
+            );
+            InspectionDeadline::new(0)
+        };
+        let finding = Self::deadline_finding(deadline, stage, payload, metadata);
+        Self::write_filter_deadline_event(deadline, stage, payload, view, metadata, &finding);
+        Decision::Block(Box::new(finding))
+    }
+
+    fn deadline_finding(
+        deadline: InspectionDeadline,
+        stage: &str,
+        payload: &[u8],
+        metadata: DeadlineMetadata<'_>,
+    ) -> Finding {
+        let payload_text = String::from_utf8_lossy(payload);
+        let rule_match = if let Some(rule_match) = metadata.match_text {
+            format!("deadline::{stage}:rule={rule_match}")
+        } else {
+            tracing::debug!(
+                target: "krakenwaf",
+                stage,
+                "filter deadline finding has no rule_match metadata"
+            );
+            format!("deadline::{stage}")
+        };
+        let rule_line_match = if let Some(line) = metadata.line_match {
+            format!("deadline/{line}")
+        } else {
+            tracing::debug!(
+                target: "krakenwaf",
+                stage,
+                "filter deadline finding has no rule_line_match metadata"
+            );
+            format!("deadline/{stage}")
+        };
+        let rule_id = metadata.id.unwrap_or_else(|| {
+            tracing::debug!(
+                target: "krakenwaf",
+                stage,
+                "filter deadline finding has no rule_id metadata; using synthetic rule id"
+            );
+            "00000"
+        });
+        let title = metadata.title.unwrap_or_else(|| {
+            tracing::debug!(
+                target: "krakenwaf",
+                stage,
+                "filter deadline finding has no rule title metadata; using generic title"
+            );
+            "WAF inspection deadline exceeded"
+        });
+        Finding {
+            rule_id: rule_id.to_string(),
+            title: title.to_string(),
+            severity: Severity::High,
+            cwe: "CWE-400".to_string(),
+            description: format!(
+                "WAF inspection exceeded the configured {}ms budget during stage '{stage}' after {}ms; request was blocked fail-closed.",
+                deadline.max_ms,
+                deadline.elapsed_ms()
+            ),
+            reference_url: "https://cwe.mitre.org/data/definitions/400.html".to_string(),
+            rule_match,
+            rule_line_match,
+            request_payload: finding::truncate_payload(payload_text.as_ref()).into_owned(),
+            timestamp: Utc::now().to_rfc3339(),
+        }
+    }
+
+    fn write_filter_deadline_event(
+        deadline: InspectionDeadline,
+        stage: &str,
+        payload: &[u8],
+        view: Option<&str>,
+        metadata: DeadlineMetadata<'_>,
+        finding: &Finding,
+    ) {
+        let view_sample = view.map(|value| finding::truncate_payload(value).into_owned());
+        let rule_id = metadata.id.unwrap_or_else(|| {
+            tracing::debug!(
+                target: "krakenwaf",
+                stage,
+                "filter deadline log event has no rule_id metadata"
+            );
+            "no-rule-id"
+        });
+        let rule_line_match = metadata.line_match.unwrap_or_else(|| {
+            tracing::debug!(
+                target: "krakenwaf",
+                stage,
+                "filter deadline log event has no rule_line_match metadata"
+            );
+            "no-rule-line"
+        });
+        let event = serde_json::json!({
+            "timestamp": finding.timestamp,
+            "stage": stage,
+            "budget_ms": deadline.max_ms,
+            "elapsed_ms": deadline.elapsed_ms(),
+            "payload_len": payload.len(),
+            "view_len": view.map(str::len),
+            "rule_id": metadata.id,
+            "rule_title": metadata.title,
+            "rule_match": metadata.match_text,
+            "rule_line_match": metadata.line_match,
+            "finding_title": finding.title,
+            "finding_rule_match": finding.rule_match,
+            "payload_sample": finding.request_payload,
+            "view_sample": view_sample,
+        });
+        tracing::warn!(
+            target: "krakenwaf",
+            stage,
+            budget_ms = deadline.max_ms,
+            elapsed_ms = deadline.elapsed_ms(),
+            rule_id,
+            rule_line_match,
+            "WAF inspection deadline exceeded; blocking fail-closed and recording filter deadline event"
+        );
+        if let Err(err) = append_filter_deadline_event(&event) {
+            tracing::warn!(
+                target: "krakenwaf",
+                error = %err,
+                path = FILTER_DEADLINE_LOG,
+                "failed to write filter deadline event"
+            );
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     #[allow(clippy::unused_self)]
     fn simple_finding(
@@ -758,6 +1084,24 @@ fn addr_list_match<'a>(
     client: &std::net::IpAddr,
 ) -> Option<&'a AddrListEntry> {
     entries.iter().find(|entry| entry.contains(client))
+}
+
+fn deadline_metadata_from_regex(rule: &RegexDeadline) -> DeadlineMetadata<'_> {
+    DeadlineMetadata {
+        id: Some(rule.rule_id.as_str()),
+        title: Some(rule.title.as_str()),
+        match_text: Some(rule.rule_match.as_str()),
+        line_match: Some(rule.rule_line_match.as_str()),
+    }
+}
+
+fn append_filter_deadline_event(event: &serde_json::Value) -> std::io::Result<()> {
+    let path = Path::new(FILTER_DEADLINE_LOG);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{event}")
 }
 
 fn addr_list_finding(entry: &AddrListEntry, ctx: &InspectionContext) -> Finding {

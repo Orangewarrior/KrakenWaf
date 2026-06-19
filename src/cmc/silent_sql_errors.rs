@@ -75,7 +75,7 @@ impl SilentSqlErrorsDetector {
 
         let patterns: Vec<String> = content
             .lines()
-            .map(str::trim_end)
+            .map(str::trim)
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(String::from)
             .collect();

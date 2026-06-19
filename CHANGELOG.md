@@ -1,4 +1,75 @@
 
+## [2.43.0] - 2026-06-19
+
+> **CodeRabbit Rust/AppSec and WAF/proxy remediation release.** Adds gated
+> developer proxy diagnostics, fail-closed inspection deadline events, stronger
+> error context in proxy/filter paths, and fixes the confirmed findings from the
+> Rust/AppSec source audit.
+
+### Added
+
+- **`debug-proxy-dev` in `conf/proxy.yaml` and `--debug-proxy-dev`.** When
+  enabled, diagnostic proxy parsing errors are persisted as JSONL under
+  `logs/proxy_errors_dev/proxy_errors.jsonl`. When disabled, noisy diagnostic
+  events are suppressed while critical proxy failures remain eligible for
+  persistence.
+- **Filter deadline JSONL events.** Inspection deadlines now write structured
+  events to `logs/filter/deadline.jsonl` with timestamp, stage, budget,
+  elapsed time, payload/view samples, and regex rule metadata when available.
+- **`docs/proxy_diagnostics.md`.** Documents proxy diagnostic logging, the new
+  `debug-proxy-dev` switch, and the separation between proxy diagnostics and
+  fail-closed filter deadline logs.
+
+### Fixed
+
+- **WebSocket per-IP session cap race.** `WebSocketControl::try_acquire` now
+  uses an atomic check-and-increment via `fetch_update`, preventing concurrent
+  upgrades from temporarily exceeding `max_connections_per_ip`.
+- **Open Redirect/RFI encoded separator bypass.** Parameter extraction now runs
+  a second pass over the normalized location so `%26` and `%3D` surface as real
+  separators before hot-parameter classification.
+- **Spamhaus DQS IPv6 query construction.** IPv6 DNSBL names now reverse the
+  full nibble sequence correctly.
+- **XXE `/etc/passwd` detection typo.** Replaced the ineffective
+  `etc/password` marker with `etc/passwd` and updated payload coverage.
+- **Body-limit prefix determinism.** `body_limit_for_path` now chooses the
+  longest matching normalized prefix instead of depending on `HashMap`
+  iteration order.
+- **HTTP parser case handling in CMC detectors.** CRLF request/header framing
+  accepts uppercase methods/header names, and the Socket.IO polling exception
+  in request-smuggling detection is case-insensitive for the request line.
+- **Vectorscan literal handling in `Anti_passwd_leak`.** Literal passwd/shadow
+  markers are escaped before Vectorscan compilation so regex metacharacters do
+  not change match semantics.
+- **Keyword matcher robustness.** A missing keyword rule index is logged and
+  skipped instead of aborting later matches in the same payload.
+- **Rorschach secret-file creation.** Secret files are written through
+  restrictive temporary files and atomically renamed, avoiding the post-create
+  permission window from `std::fs::write`.
+- **libinjection FFI/vendor hardening.** Fingerprint byte conversion no longer
+  relies on `c_char::cast_unsigned`; the vendored XSS scheme check ignores tab
+  and carriage return like other ignorable controls; `sql_keywords_sz` is now
+  derived with `sizeof`.
+- **Fuzz/test hygiene.** Fuzz targets no longer panic on tempfile/write setup
+  failures, the URL normalization fuzzer reuses its CMC manager, and tests that
+  do not need SQLite persistence use stable temporary Postcard snapshots instead
+  of dropping a SQLite `TempDir` before the engine is done.
+- **Address-list and SQL-error parsing.** Address-list comments are stripped
+  sequentially and `Silent_sql_errors` trims leading whitespace from pattern
+  lines.
+
+### Changed
+
+- **Inspection deadline behavior is documented and enforced fail-closed.**
+  `--max-inspection-ms` now blocks with a `CWE-400` finding when exceeded,
+  rather than silently allowing an under-inspected request. Documentation in
+  `README.md`, `docs/max_inspection_ms.md`, and `docs/cmc/schema.md` was
+  updated to match.
+- **Geo/proxy/filter error defaults are explicit.** Hidden empty fallbacks in
+  GeoIP names, `Forwarded:` parsing, and deadline metadata now use explicit
+  `if let` / `let else` / `unwrap_or_else` branches with useful tracing or JSONL
+  context.
+
 ## [2.42.0] - 2026-06-17
 
 > **Real-time regex / keyword / scanner rule editing on the rule-management

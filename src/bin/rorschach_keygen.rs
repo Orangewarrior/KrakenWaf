@@ -23,8 +23,11 @@
 #![allow(clippy::single_match_else)]
 
 use std::{
+    fs::{self, File, OpenOptions},
+    io::Write as _,
     path::{Path, PathBuf},
     process::ExitCode,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -102,26 +105,74 @@ fn generate_secret() -> String {
 }
 
 fn write_secret_files(directory: &Path, secrets: &[(&str, String)]) -> std::io::Result<()> {
-    std::fs::create_dir_all(directory)?;
+    create_secret_dir(directory)?;
     restrict_directory(directory)?;
     for (name, value) in secrets {
         let path = directory.join(name);
-        std::fs::write(&path, value)?;
-        restrict_file(&path)?;
+        write_secret_file_atomically(directory, name, &path, value)?;
     }
     Ok(())
+}
+
+fn create_secret_dir(directory: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt as _;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o750)
+            .create(directory)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(directory)
+    }
+}
+
+fn write_secret_file_atomically(
+    directory: &Path,
+    name: &str,
+    path: &Path,
+    value: &str,
+) -> std::io::Result<()> {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_nanos());
+    let tmp = directory.join(format!(".{name}.{}.{}.tmp", std::process::id(), unique));
+    let result = (|| {
+        let mut file = create_secret_file(&tmp)?;
+        file.write_all(value.as_bytes())?;
+        file.sync_all()?;
+        restrict_file(&tmp)?;
+        fs::rename(&tmp, path)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    result
+}
+
+fn create_secret_file(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o600);
+    }
+    options.open(path)
 }
 
 #[cfg(unix)]
 fn restrict_directory(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o750))
+    fs::set_permissions(path, fs::Permissions::from_mode(0o750))
 }
 
 #[cfg(unix)]
 fn restrict_file(path: &Path) -> std::io::Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o440))
+    fs::set_permissions(path, fs::Permissions::from_mode(0o440))
 }
 
 #[cfg(not(unix))]

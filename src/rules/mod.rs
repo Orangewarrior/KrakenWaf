@@ -117,7 +117,13 @@ impl RuleSet {
         let normalized = normalize_url_path(path);
         self.body_limits
             .iter()
-            .find(|(prefix, _)| normalized.starts_with(&normalize_url_path(prefix)))
+            .filter_map(|(prefix, limit)| {
+                let normalized_prefix = normalize_url_path(prefix);
+                normalized
+                    .starts_with(&normalized_prefix)
+                    .then_some((normalized_prefix.len(), limit))
+            })
+            .max_by_key(|(prefix_len, _)| *prefix_len)
             .map_or(1024 * 1024, |(_, limit)| *limit)
     }
 

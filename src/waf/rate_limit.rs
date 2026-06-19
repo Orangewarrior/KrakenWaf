@@ -613,7 +613,8 @@ impl RedisRateLimiter {
     async fn check(&self, ip: &str) -> bool {
         use fred::prelude::*;
 
-        let key = format!("{}:{}", self.key_prefix, ip);
+        let ip_key = canonical_rate_limit_ip_key(ip);
+        let key = format!("{}:{ip_key}", self.key_prefix);
         // Wrap the EVAL in a per-call timeout: a hung Redis (network blip, GC
         // pause, evictions) must not stall the WAF request path. On error or
         // timeout we apply the configured fail mode (`fail_open`) and record it
@@ -742,12 +743,7 @@ fn hash_ip(ip: &str) -> u64 {
     const OFFSET: u64 = 14_695_981_039_346_656_037;
     const PRIME: u64 = 1_099_511_628_211;
     let mut h: u64 = OFFSET;
-    if let Ok(parsed) = ip.parse::<IpAddr>() {
-        let canonical = match parsed {
-            // IPv4-mapped IPv6 (`::ffff:a.b.c.d`) collapses to its IPv4 form.
-            IpAddr::V6(v6) => v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4),
-            IpAddr::V4(_) => parsed,
-        };
+    if let Some(canonical) = canonical_rate_limit_ip(ip) {
         match canonical {
             IpAddr::V4(v4) => {
                 for b in v4.octets() {
@@ -763,6 +759,18 @@ fn hash_ip(ip: &str) -> u64 {
         return h;
     }
     ip.bytes().fold(OFFSET, |h, b| (h ^ u64::from(b)).wrapping_mul(PRIME))
+}
+
+fn canonical_rate_limit_ip(input: &str) -> Option<IpAddr> {
+    match input.trim().parse::<IpAddr>() {
+        Ok(IpAddr::V6(v6)) => Some(v6.to_ipv4_mapped().map_or(IpAddr::V6(v6), IpAddr::V4)),
+        Ok(ip @ IpAddr::V4(_)) => Some(ip),
+        Err(_) => None,
+    }
+}
+
+fn canonical_rate_limit_ip_key(input: &str) -> String {
+    canonical_rate_limit_ip(input).map_or_else(|| input.trim().to_string(), |ip| ip.to_string())
 }
 
 /// Monotonic clock anchor — captured once at startup. The rate-limiter hot
@@ -859,6 +867,19 @@ mod tests {
         assert_eq!(hash_ip("2001:db8::1"), hash_ip("2001:0db8:0000:0000:0000:0000:0000:0001"));
         // Distinct addresses must not collide.
         assert_ne!(hash_ip("10.0.0.1"), hash_ip("10.0.0.2"));
+    }
+
+    #[test]
+    fn redis_key_ip_canonicalises_textual_forms() {
+        assert_eq!(canonical_rate_limit_ip_key("::ffff:1.2.3.4"), "1.2.3.4");
+        assert_eq!(
+            canonical_rate_limit_ip_key("2001:0db8:0000:0000:0000:0000:0000:0001"),
+            "2001:db8::1"
+        );
+        assert_eq!(
+            canonical_rate_limit_ip_key(" synthetic-client "),
+            "synthetic-client"
+        );
     }
 
     #[test]

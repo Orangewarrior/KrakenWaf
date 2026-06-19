@@ -369,14 +369,10 @@ fn extract_addr_list_title(content: &str) -> Option<String> {
 }
 
 fn normalize_addr_list_line(raw: &str) -> Option<&str> {
-    let without_comment = raw
-        .split_once(';')
-        .map_or(raw, |(value, _)| value)
+    let without_semicolon = raw.split_once(';').map_or(raw, |(value, _)| value);
+    let without_comment = without_semicolon
         .split_once('#')
-        .map_or_else(
-            || raw.split_once(';').map_or(raw, |(value, _)| value),
-            |(value, _)| value,
-        )
+        .map_or(without_semicolon, |(value, _)| value)
         .trim();
     (!without_comment.is_empty()).then_some(without_comment)
 }
@@ -517,5 +513,17 @@ mod tests {
             "valid rule should still load even when a sibling rule has bad regex"
         );
         assert_eq!(rules[0].meta.id, "good-001");
+    }
+
+    #[test]
+    fn address_list_comments_are_stripped_sequentially() {
+        assert_eq!(
+            super::normalize_addr_list_line("203.0.113.7 ; semicolon # hash"),
+            Some("203.0.113.7")
+        );
+        assert_eq!(
+            super::normalize_addr_list_line("203.0.113.8 # hash ; semicolon"),
+            Some("203.0.113.8")
+        );
     }
 }

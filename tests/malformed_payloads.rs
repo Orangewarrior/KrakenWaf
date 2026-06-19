@@ -12,14 +12,15 @@ fn empty_cmc_manager() -> Arc<krakenwaf::cmc::CmcController> {
 }
 
 fn make_test_rl() -> Arc<RateLimiter> {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let path = dir.path().join("rate_limit.db");
-    let rl = Arc::new(
-        RateLimiter::new(60, std::time::Duration::from_mins(1), &path, PersistenceMode::Sqlite)
+    let path = tempfile::NamedTempFile::new()
+        .expect("tempfile")
+        .into_temp_path()
+        .keep()
+        .expect("keep tempfile path");
+    Arc::new(
+        RateLimiter::new(60, std::time::Duration::from_mins(1), &path, PersistenceMode::Postcard)
             .expect("rate limiter"),
-    );
-    drop(dir);
-    rl
+    )
 }
 
 #[test]

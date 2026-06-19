@@ -228,9 +228,12 @@ impl WebSocketControl {
             .entry(ip.to_string())
             .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
             .clone();
-        let prev = counter.fetch_add(1, Ordering::Relaxed);
-        if prev >= limit {
-            counter.fetch_sub(1, Ordering::Relaxed);
+        let acquired = counter
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                (current < limit).then_some(current + 1)
+            })
+            .is_ok();
+        if !acquired {
             return None;
         }
         Some(WsConnGuard { counter: Some(counter) })
@@ -253,7 +256,7 @@ pub struct WsConnGuard {
 impl Drop for WsConnGuard {
     fn drop(&mut self) {
         if let Some(counter) = &self.counter {
-            counter.fetch_sub(1, Ordering::Relaxed);
+            counter.fetch_sub(1, Ordering::AcqRel);
         }
     }
 }

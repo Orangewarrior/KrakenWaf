@@ -263,6 +263,17 @@ fn builds_spamhaus_dqs_queries_for_supported_zones() {
     .expect("test");
     assert_eq!(query, "2.0.0.127.test-key.authbl.dq.spamhaus.net");
 
+    let query = build_spamhaus_dqs_query(
+        "2001:db8::1".parse::<IpAddr>().expect("test"),
+        "test-key",
+        "sbl",
+    )
+    .expect("test");
+    assert_eq!(
+        query,
+        "1.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.0.8.b.d.0.1.0.0.2.test-key.sbl.dq.spamhaus.net"
+    );
+
     let zones = normalized_dqs_zones(&[
         "xbl".to_string(),
         "authbl".to_string(),

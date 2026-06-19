@@ -32,6 +32,7 @@ pub struct ProxyConfig {
     pub upstream_timeout_secs: Option<u64>,
     pub upstream_ca: Option<String>,
     pub allow_private_upstream: Option<bool>,
+    pub debug_proxy_dev: Option<bool>,
     pub internal_header_name: Option<String>,
     pub real_ip_header: Option<String>,
     pub trusted_proxy_cidrs: Option<Vec<String>>,
@@ -128,6 +129,11 @@ impl ProxyConfig {
                 "allow-private-upstream" => {
                     if set {
                         cfg.allow_private_upstream = Some(parse_bool(value, lineno)?);
+                    }
+                }
+                "debug-proxy-dev" => {
+                    if set {
+                        cfg.debug_proxy_dev = Some(parse_bool(value, lineno)?);
                     }
                 }
                 "internal-header-name" => {
@@ -285,6 +291,11 @@ impl ProxyConfig {
                 cli.allow_private_upstream = allow;
             }
         }
+        if let Some(debug) = self.debug_proxy_dev {
+            if !is_explicit("debug-proxy-dev") {
+                cli.debug_proxy_dev = debug;
+            }
+        }
         if let Some(name) = &self.internal_header_name {
             if !is_explicit("internal-header-name") {
                 cli.internal_header_name.clone_from(name);
@@ -378,6 +389,7 @@ upstream : https://127.0.0.1:8080 # host defined by the user
 upstream-timeout-secs: # when empty, defaults to a value defined by the WAF
 upstream-ca: # empty -> trusts only public CAs
 allow-private-upstream: false # disabled
+debug-proxy-dev: false # diagnostic proxy JSONL disabled by default
 internal-header-name: # empty: disabled by default
 real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 127.0.0.1/32
@@ -399,6 +411,7 @@ rule_management_port: 4342
         assert_eq!(cfg.upstream_timeout_secs, None);
         assert_eq!(cfg.upstream_ca, None);
         assert_eq!(cfg.allow_private_upstream, Some(false));
+        assert_eq!(cfg.debug_proxy_dev, Some(false));
         // `# empty…` directly after the colon is a comment → field stays unset.
         assert_eq!(cfg.internal_header_name, None);
         assert_eq!(cfg.real_ip_header.as_deref(), Some("X-Forwarded-For"));
@@ -438,6 +451,20 @@ rule_management_port: 4342
             ..Default::default()
         };
         assert!(cfg.validate().is_err());
+    }
+
+    #[test]
+    fn debug_proxy_dev_parses_and_merges() {
+        let cfg = ProxyConfig::parse("debug-proxy-dev: true\n").expect("parses");
+        assert_eq!(cfg.debug_proxy_dev, Some(true));
+
+        let mut cli = base_cli();
+        cfg.merge_into(&mut cli, &|_| false);
+        assert!(cli.debug_proxy_dev);
+
+        let mut cli2 = base_cli();
+        cfg.merge_into(&mut cli2, &|f| f == "debug-proxy-dev");
+        assert!(!cli2.debug_proxy_dev);
     }
 
     #[test]
@@ -570,6 +597,7 @@ rule_management_port: 4342
         assert_eq!(cli.upstream, "https://127.0.0.1:8080");
         // Empty YAML field → WAF default preserved (clap default 15 s).
         assert_eq!(cli.upstream_timeout_secs, 15);
+        assert!(!cli.debug_proxy_dev);
         // Empty internal-header-name → stays disabled ("").
         assert_eq!(cli.internal_header_name, "");
         assert_eq!(cli.real_ip_header.as_deref(), Some("X-Forwarded-For"));

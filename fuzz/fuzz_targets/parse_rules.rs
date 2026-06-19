@@ -13,8 +13,15 @@ fuzz_target!(|data: &[u8]| {
     // CmcConfig::from_file requires a filesystem path, so we write to a tempfile.
     if let Ok(text) = std::str::from_utf8(data) {
         use std::io::Write;
-        let mut tmp = tempfile::NamedTempFile::new().unwrap();
-        let _ = tmp.write_all(text.as_bytes());
+        let Ok(mut tmp) = tempfile::NamedTempFile::new() else {
+            return;
+        };
+        if tmp.write_all(text.as_bytes()).is_err() {
+            return;
+        }
+        if tmp.flush().is_err() {
+            return;
+        }
         // from_file is fallible — panics are the bug, Err results are expected.
         let _ = krakenwaf::cmc::CmcConfig::from_file(tmp.path());
     }

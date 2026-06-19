@@ -313,11 +313,11 @@ impl OpenRedirectRfiDetector {
     #[must_use]
     pub fn detect(&self, raw_location: &str) -> Option<OpenRedirectRfiMatch> {
         for (key_raw, value_raw) in extract_pairs(raw_location) {
-            let key_norm = normalize_str(key_raw).to_ascii_lowercase();
+            let key_norm = normalize_str(&key_raw).to_ascii_lowercase();
             let Some(token) = self.matched_token(&key_norm) else {
                 continue;
             };
-            if let Some((kind, marker)) = classify_value(value_raw) {
+            if let Some((kind, marker)) = classify_value(&value_raw) {
                 return Some(OpenRedirectRfiMatch {
                     kind,
                     parameter: key_norm,
@@ -360,21 +360,25 @@ impl OpenRedirectRfiDetector {
 /// split of the fully **normalized** location (which surfaces `%26`/`%3D`-
 /// encoded separators). Each segment is split on its first `=`; a segment with
 /// no `=` contributes its whole text as a key with an empty value.
-fn extract_pairs(raw_location: &str) -> Vec<(&str, &str)> {
-    fn split_into<'a>(location: &'a str, out: &mut Vec<(&'a str, &'a str)>) {
+fn extract_pairs(raw_location: &str) -> Vec<(String, String)> {
+    fn split_into(location: &str, out: &mut Vec<(String, String)>) {
         for segment in location.split('&') {
             if segment.is_empty() {
                 continue;
             }
             match segment.split_once('=') {
-                Some((k, v)) => out.push((k, v)),
-                None => out.push((segment, "")),
+                Some((k, v)) => out.push((k.to_string(), v.to_string())),
+                None => out.push((segment.to_string(), String::new())),
             }
         }
     }
 
-    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    let mut pairs: Vec<(String, String)> = Vec::new();
     split_into(raw_location, &mut pairs);
+    let normalized = normalize_str(raw_location);
+    if normalized != raw_location {
+        split_into(&normalized, &mut pairs);
+    }
     pairs
 }
 
@@ -524,6 +528,15 @@ mod tests {
             .detect("next=%2f%2fevil.example%2fpath")
             .expect("match");
         assert_eq!(m.kind(), VulnKind::OpenRedirect);
+    }
+
+    #[test]
+    fn encoded_parameter_separator_is_split_after_normalization() {
+        let m = detector()
+            .detect("safe=1%26next%3dhttps%3a%2f%2fevil.example%2flogin")
+            .expect("normalized separator should expose hot parameter");
+        assert_eq!(m.kind(), VulnKind::OpenRedirect);
+        assert_eq!(m.parameter(), "next");
     }
 
     #[test]

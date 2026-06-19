@@ -22,7 +22,10 @@ fn collect_fingerprint(buf: &[core::ffi::c_char]) -> Option<String> {
     if null_pos == 0 {
         return None;
     }
-    let bytes: Vec<u8> = buf[..null_pos].iter().map(|&c| c.cast_unsigned()).collect();
+    let bytes: Vec<u8> = buf[..null_pos]
+        .iter()
+        .map(|&c| c.to_ne_bytes()[0])
+        .collect();
     let s = String::from_utf8_lossy(&bytes);
     let trimmed = s.trim();
     (!trimmed.is_empty()).then_some(trimmed.to_string())
