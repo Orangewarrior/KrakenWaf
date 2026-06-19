@@ -473,6 +473,13 @@ impl WafEngine {
 
     /// Insert a Spamhaus DQS verdict into the TTL cache, reaping expired entries
     /// first if the cache has hit its size cap.
+    ///
+    /// If the cap is still reached after reaping (an IP-rotating flood churning
+    /// through fresh IPs faster than their TTLs expire), the insert is skipped
+    /// rather than letting the cache grow without bound. The new verdict is still
+    /// returned to the caller — only its caching is dropped — and the incumbent
+    /// entries (which are absorbing repeat lookups) are preserved, mirroring the
+    /// rate-limiter's admission control.
     fn cache_spamhaus_dqs(
         &self,
         ip: IpAddr,
@@ -484,6 +491,10 @@ impl WafEngine {
             let now = Instant::now();
             self.spamhaus_dqs_cache
                 .retain(|_, entry| entry.expires_at > now);
+            // Still full after reaping live entries: bound memory by skipping.
+            if self.spamhaus_dqs_cache.len() >= SPAMHAUS_DQS_CACHE_MAX {
+                return;
+            }
         }
         self.spamhaus_dqs_cache
             .insert(ip, SpamhausDqsCacheEntry { expires_at, hit });
