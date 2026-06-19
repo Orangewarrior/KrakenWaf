@@ -1,24 +1,21 @@
 use crate::{
     allowpaths::PathDecision,
     app::AppState,
-    body_decode::{decompress_body_for_inspection, parse_content_encoding},
     cli::WafMode,
     error::KrakenError,
     geo::GeoIpResult,
     logging::{write_critical, SecurityEvent},
-    multipart_extract::{extract_boundary, parse_parts, MultipartPart},
-    waf::{Decision, Finding, InspectionContext, ResponseContext},
+    waf::{Decision, InspectionContext, ResponseContext},
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
-use chrono::Utc;
 use http::{
     header::{CONNECTION, COOKIE, HOST, LOCATION, UPGRADE},
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
 };
 use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full};
 use hyper::{
-    body::{Body, Frame, Incoming, SizeHint},
+    body::{Frame, Incoming},
     upgrade,
 };
 use hyper_rustls::HttpsConnectorBuilder;
@@ -28,67 +25,32 @@ use hyper_util::{
 };
 use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::{pem::PemObject, CertificateDer};
-use std::{
-    collections::VecDeque,
-    convert::Infallible,
-    fs::{self, OpenOptions},
-    io::Write as _,
-    path::Path,
-    pin::Pin,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
-    task::{Context as TaskContext, Poll},
-};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use std::collections::VecDeque;
+use tokio::io::AsyncWriteExt;
 use tracing::{error, info, warn};
 use url::{Host, Url};
 use uuid::Uuid;
 
-const PROXY_ERROR_DEV_LOG: &str = "logs/proxy_errors_dev/proxy_errors.jsonl";
+mod body;
+mod client_ip;
+mod diagnostics;
+mod response;
+mod websocket;
 
-/// RAII guard that tracks bytes buffered during body inspection and releases
-/// the global + per-IP in-flight byte counters on drop.
-struct BodyTracker {
-    global: Arc<AtomicUsize>,
-    ip: Arc<AtomicUsize>,
-    bytes: usize,
-}
-
-impl BodyTracker {
-    fn new(global: Arc<AtomicUsize>, ip: Arc<AtomicUsize>) -> Self {
-        Self {
-            global,
-            ip,
-            bytes: 0,
-        }
-    }
-
-    fn add(&mut self, n: usize) {
-        self.global.fetch_add(n, Ordering::Relaxed);
-        self.ip.fetch_add(n, Ordering::Relaxed);
-        self.bytes += n;
-    }
-}
-
-impl Drop for BodyTracker {
-    fn drop(&mut self) {
-        if self.bytes > 0 {
-            self.global.fetch_sub(self.bytes, Ordering::Relaxed);
-            self.ip.fetch_sub(self.bytes, Ordering::Relaxed);
-        }
-    }
-}
-
-/// Bytes carried between adjacent body chunks when streaming-inspecting the body.
-/// Sized to be larger than any realistic detection pattern so attackers cannot
-/// reliably split a payload across TCP frames to evade the keyword/regex matchers.
-/// 2.24.0: the body pipeline now buffers and inspects once, so this constant
-/// is only a fallback for the (legacy) per-chunk streaming path. It remains
-/// here as a lower bound on the streaming-inspection-window cap.
-#[allow(dead_code)]
-const STREAM_OVERLAP_BYTES: usize = 16 * 1024;
+pub use client_ip::{parse_trusted_proxy_cidr, parse_trusted_proxy_cidrs};
+pub(crate) use body::format_request_prefix_bytes;
+pub(crate) use client_ip::effective_client_ip;
+pub(crate) use response::full_body;
+use body::{build_event, build_response_event, consume_and_inspect_body, BodyInspectionError};
+use client_ip::{build_traceparent, host_port};
+use diagnostics::write_proxy_critical;
+use response::{
+    adjust_streaming_content_length, content_length, ensure_advertised_length_within_limit,
+    limited_body, read_response_prefix, response_mode, ResponseMode,
+};
+use websocket::{
+    build_upstream_websocket_request, is_websocket_upgrade, read_upstream_websocket_response,
+};
 
 /// Hard ceiling on the number of headers forwarded upstream and embedded into the
 /// inspection prefix. Defends against header-amplification `DoS` and request smuggling
@@ -98,127 +60,11 @@ const MAX_FORWARDED_HEADERS: usize = 100;
 /// Hard ceiling on the cumulative bytes of forwarded headers (name + value sum).
 const MAX_FORWARDED_HEADER_BYTES: usize = 32 * 1024;
 
-/// Maximum wall-clock time we wait for a single body frame from the client. Bounds the
-/// memory + connection cost of a slowloris-style streaming body that trickles bytes to
-/// keep the inspection loop alive indefinitely.
-const BODY_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
 type UpstreamConnector = hyper_rustls::HttpsConnector<HttpConnector>;
 type UpstreamClient = Client<UpstreamConnector, Full<Bytes>>;
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 pub type WafBody = UnsyncBoxBody<Bytes, BoxError>;
 pub type WafResponse = Response<WafBody>;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResponseMode {
-    InspectBuffered {
-        max_bytes: usize,
-    },
-    StreamOnly {
-        max_bytes: usize,
-    },
-    TeePrefix {
-        inspect_prefix_bytes: usize,
-        max_bytes: usize,
-    },
-}
-
-struct LimitedResponseBody {
-    initial: VecDeque<Frame<Bytes>>,
-    inner: Pin<Box<Incoming>>,
-    seen: usize,
-    max_bytes: usize,
-    done: bool,
-}
-
-impl LimitedResponseBody {
-    fn new(
-        initial: VecDeque<Frame<Bytes>>,
-        inner: Incoming,
-        seen: usize,
-        max_bytes: usize,
-    ) -> Self {
-        Self {
-            initial,
-            inner: Box::pin(inner),
-            seen,
-            max_bytes,
-            done: false,
-        }
-    }
-}
-
-impl Body for LimitedResponseBody {
-    type Data = Bytes;
-    type Error = BoxError;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.get_mut();
-        if this.done {
-            return Poll::Ready(None);
-        }
-        if let Some(frame) = this.initial.pop_front() {
-            return Poll::Ready(Some(Ok(frame)));
-        }
-        match this.inner.as_mut().poll_frame(cx) {
-            Poll::Ready(Some(Ok(frame))) => {
-                if let Some(data) = frame.data_ref() {
-                    let Some(total) = this.seen.checked_add(data.len()) else {
-                        this.done = true;
-                        return Poll::Ready(Some(Err(response_limit_error(this.max_bytes))));
-                    };
-                    if total > this.max_bytes {
-                        this.done = true;
-                        return Poll::Ready(Some(Err(response_limit_error(this.max_bytes))));
-                    }
-                    this.seen = total;
-                }
-                Poll::Ready(Some(Ok(frame)))
-            }
-            Poll::Ready(Some(Err(error))) => {
-                this.done = true;
-                Poll::Ready(Some(Err(Box::new(error))))
-            }
-            Poll::Ready(None) => {
-                this.done = true;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.done || (self.initial.is_empty() && self.inner.is_end_stream())
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
-    }
-}
-
-fn response_limit_error(max_bytes: usize) -> BoxError {
-    Box::new(std::io::Error::other(format!(
-        "upstream response exceeded streaming limit of {max_bytes} bytes"
-    )))
-}
-
-pub(crate) fn full_body(bytes: Bytes) -> WafBody {
-    Full::new(bytes)
-        .map_err(|never: Infallible| match never {})
-        .boxed_unsync()
-}
-
-fn limited_body(
-    initial: VecDeque<Frame<Bytes>>,
-    inner: Incoming,
-    seen: usize,
-    max_bytes: usize,
-) -> WafBody {
-    LimitedResponseBody::new(initial, inner, seen, max_bytes).boxed_unsync()
-}
 
 pub struct ProxyClient {
     client: UpstreamClient,
@@ -267,38 +113,6 @@ impl ForwardedOrigin {
         }
     }
 }
-
-#[derive(Debug)]
-enum BodyInspectionError {
-    TooLarge {
-        limit: usize,
-    },
-    Blocked {
-        finding: Box<Finding>,
-        partial_body: Bytes,
-    },
-    Timeout,
-    Other(anyhow::Error),
-}
-
-impl std::fmt::Display for BodyInspectionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::TooLarge { limit } => {
-                write!(f, "request body exceeded route limit of {limit} bytes")
-            }
-            Self::Blocked { .. } => write!(f, "request blocked during streaming inspection"),
-            Self::Timeout => write!(
-                f,
-                "request body frame did not arrive within {} seconds",
-                BODY_FRAME_TIMEOUT.as_secs()
-            ),
-            Self::Other(err) => write!(f, "{err}"),
-        }
-    }
-}
-
-impl std::error::Error for BodyInspectionError {}
 
 fn build_upstream_client(upstream_ca: Option<&str>) -> Result<UpstreamClient> {
     let tls_config = build_upstream_tls_config(upstream_ca)?;
@@ -375,6 +189,12 @@ impl ProxyClient {
         })
     }
 
+    /// Handle a request. `client_ip` is the TCP peer address; the effective
+    /// client IP (honouring trusted-proxy `Forwarded:` / `X-Forwarded-For` /
+    /// `X-Real-IP`) is derived from it in `dispatch` and used as the key for
+    /// every per-IP subsystem (rate limit, body-byte backpressure, engine), so
+    /// they all share one identity. The peer is retained so the upstream
+    /// `X-Forwarded-For` can be sanitised based on whether the peer is trusted.
     pub async fn handle(
         &self,
         state: &AppState,
@@ -427,6 +247,12 @@ impl ProxyClient {
     ) -> WafResponse {
         let method = req.method().clone();
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
+        // The peer is a trusted reverse proxy when its address falls inside a
+        // configured trusted-proxy CIDR. This gates whether an inbound
+        // `X-Forwarded-For` chain may be preserved when forwarding upstream.
+        let peer_is_trusted = client_ip
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|peer| state.trusted_proxy_nets.iter().any(|net| net.contains(&peer)));
         let uri = req.uri().clone();
         let path = crate::rules::normalize_url_path(uri.path());
         // Reject oversize header sets BEFORE materialising any flattened representation
@@ -593,8 +419,21 @@ impl ProxyClient {
                 .await;
         }
 
-        let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut(), &client_ip)
-            .await
+        // Single body pipeline: buffer the body (with backpressure accounting
+        // keyed on the effective client IP), then — unless this is an
+        // allow-listed path — decode any `Content-Encoding`, and run multipart,
+        // HPP, Open-Redirect/RFI and the full-request signature inspection
+        // **once** on the decoded view. Allow-listed paths skip all inspection
+        // here (they already returned before `inspect_early`), so they no longer
+        // pay the cost of an inspection whose verdict was discarded.
+        let body_bytes = match consume_and_inspect_body(
+            state,
+            &context,
+            req.body_mut(),
+            &effective_ip,
+            skip_inspection,
+        )
+        .await
         {
             Ok(bytes) => bytes,
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
@@ -608,13 +447,13 @@ impl ProxyClient {
                 finding,
                 partial_body,
             }) => {
-                if !skip_inspection {
-                    let event = build_event(&context, &finding, Some(&partial_body));
-                    if let Some(response) = self.log_and_enforce(state, event).await {
-                        return response;
-                    }
+                // `consume_and_inspect_body` only inspects when `!skip_inspection`,
+                // so a `Blocked` outcome always warrants enforcement.
+                let event = build_event(&context, &finding, Some(&partial_body));
+                if let Some(response) = self.log_and_enforce(state, event).await {
+                    return response;
                 }
-                // Silent mode or allowlisted path: forward whatever body was accumulated.
+                // Silent / DetectOnly mode: forward whatever body was accumulated.
                 partial_body
             }
             Err(BodyInspectionError::Timeout) => {
@@ -626,6 +465,17 @@ impl ProxyClient {
             }
             Err(BodyInspectionError::Other(err)) => {
                 warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
+                write_proxy_critical(
+                    "dispatch",
+                    "body_inspection_failed",
+                    "request body could not be inspected; rejected with 400",
+                    &serde_json::json!({
+                        "request_id": context.request_id,
+                        "method": context.method,
+                        "uri": context.uri,
+                        "error": err.to_string(),
+                    }),
+                );
                 return block_content_response(
                     state,
                     StatusCode::BAD_REQUEST,
@@ -633,15 +483,6 @@ impl ProxyClient {
                 );
             }
         };
-
-        if !skip_inspection {
-            if let Some(response) = self
-                .inspect_buffered_request_body(state, &context, &body_bytes)
-                .await
-            {
-                return response;
-            }
-        }
 
         let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
 
@@ -655,60 +496,27 @@ impl ProxyClient {
                 request_id,
                 traceparent,
                 &forwarded_origin,
+                &effective_ip,
+                peer_is_trusted,
             )
             .await
         {
             Ok(response) => response,
             Err(err) => {
                 error!(target: "krakenwaf", "upstream proxy failure: {err:#}");
+                write_proxy_critical(
+                    "dispatch",
+                    "upstream_failure",
+                    "upstream request failed; returned 502 to client",
+                    &serde_json::json!({
+                        "request_id": request_id,
+                        "error": format!("{err:#}"),
+                    }),
+                );
                 let mut response =
                     plain_response(StatusCode::BAD_GATEWAY, "KrakenWaf upstream failure");
                 apply_response_policy(state, &mut response);
                 response
-            }
-        }
-    }
-
-    async fn inspect_buffered_request_body(
-        &self,
-        state: &AppState,
-        context: &InspectionContext,
-        body_bytes: &Bytes,
-    ) -> Option<WafResponse> {
-        let body_for_inspection = request_body_for_text_inspection(context, body_bytes);
-
-        // HTTP Parameter Pollution check (HPP_detect CMC module): inspect the
-        // raw query string and the request body for a duplicated parameter
-        // name. Runs once the body is available so both locations are covered.
-        let query = context.uri.split_once('?').map_or("", |(_, q)| q);
-        let body_text = String::from_utf8_lossy(&body_for_inspection);
-        if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
-            let event = build_event(context, &finding, Some(body_bytes));
-            if let Some(response) = self.log_and_enforce(state, event).await {
-                return Some(response);
-            }
-        }
-
-        // Open Redirect / RFI check (Open_redirect_n_RFI_detect CMC module):
-        // inspect the raw query string (GET) and request body (POST) for a
-        // hot redirect/inclusion parameter whose value resolves to an external
-        // URL, dangerous scheme, or inclusion wrapper.
-        if let Decision::Block(finding) = state.waf.inspect_open_redirect_rfi(query, &body_text) {
-            let event = build_event(context, &finding, Some(body_bytes));
-            if let Some(response) = self.log_and_enforce(state, event).await {
-                return Some(response);
-            }
-        }
-
-        let full_request = format_full_request_bytes(context, Some(&body_for_inspection));
-        match state
-            .waf
-            .inspect_complete_payload_with_context(&full_request, Some(&context.method))
-        {
-            Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
-            Decision::Block(finding) => {
-                let event = build_event(context, &finding, Some(body_bytes));
-                self.log_and_enforce(state, event).await
             }
         }
     }
@@ -888,6 +696,8 @@ impl ProxyClient {
         request_id: &str,
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
+        effective_ip: &str,
+        peer_is_trusted: bool,
     ) -> Result<WafResponse> {
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
@@ -909,9 +719,17 @@ impl ProxyClient {
         let mut forwarded_bytes: usize = 0;
         let cookie_header = combine_request_cookie_headers(headers);
         for (name, value) in headers {
+            // `x-forwarded-for` is always dropped here and re-emitted below as a
+            // sanitised value. An inbound RFC 7239 `Forwarded:` header is dropped
+            // when the peer is NOT a trusted proxy, since a direct client could
+            // otherwise spoof a proxy chain the backend would trust.
+            let is_xff = name.as_str().eq_ignore_ascii_case("x-forwarded-for");
+            let is_forwarded = name.as_str().eq_ignore_ascii_case("forwarded");
             if is_hop_by_hop(name)
                 || name == HOST
                 || name == COOKIE
+                || is_xff
+                || (is_forwarded && !peer_is_trusted)
                 || connection_hop.iter().any(|hop| hop == name)
             {
                 continue;
@@ -946,6 +764,20 @@ impl ProxyClient {
             request_builder.header("x-forwarded-host", forwarded_origin.host.as_str());
         if let Some(port) = forwarded_origin.port {
             request_builder = request_builder.header("x-forwarded-port", port.to_string());
+        }
+        // Sanitised `X-Forwarded-For`: a trusted-proxy chain is preserved and the
+        // effective client IP appended; an untrusted (direct) client's spoofed
+        // chain is discarded and replaced with the effective IP alone.
+        if let Some(xff) = build_forwarded_for(headers, effective_ip, peer_is_trusted) {
+            forwarded_count += 1;
+            forwarded_bytes += "x-forwarded-for".len() + xff.as_bytes().len();
+            if forwarded_count > MAX_FORWARDED_HEADERS || forwarded_bytes > MAX_FORWARDED_HEADER_BYTES
+            {
+                anyhow::bail!(
+                    "request rejected: forwarded headers exceed limits (count<={MAX_FORWARDED_HEADERS}, bytes<={MAX_FORWARDED_HEADER_BYTES})"
+                );
+            }
+            request_builder = request_builder.header("x-forwarded-for", xff);
         }
         request_builder = request_builder.header("x-request-id", request_id);
         request_builder = request_builder.header("traceparent", traceparent);
@@ -1211,455 +1043,6 @@ impl ProxyClient {
 /// Reads frames from `body` into a contiguous buffer, enforcing per-request,
 /// global-inflight, and per-IP size limits, plus a per-frame timeout.
 /// The RAII `BodyTracker` releases both counters on return in all paths.
-async fn accumulate_body_frames(
-    state: &AppState,
-    ctx: &InspectionContext,
-    body: &mut Incoming,
-    client_ip: &str,
-) -> std::result::Result<Bytes, BodyInspectionError> {
-    let ip_counter: Arc<AtomicUsize> = state
-        .ip_body_bytes
-        .entry(client_ip.to_string())
-        .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
-        .clone();
-    let mut tracker = BodyTracker::new(Arc::clone(&state.inflight_body_bytes), ip_counter);
-    let frame_timeout = if state.body_frame_timeout_secs > 0 {
-        std::time::Duration::from_secs(state.body_frame_timeout_secs)
-    } else {
-        BODY_FRAME_TIMEOUT
-    };
-    let mut acc = BytesMut::new();
-    loop {
-        let frame = match tokio::time::timeout(frame_timeout, body.frame()).await {
-            Ok(Some(frame)) => frame.map_err(|err| BodyInspectionError::Other(err.into()))?,
-            Ok(None) => break,
-            Err(_) => return Err(BodyInspectionError::Timeout),
-        };
-        if let Some(chunk) = frame.data_ref() {
-            if acc.len() + chunk.len() > ctx.body_limit {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: ctx.body_limit,
-                });
-            }
-            if state.max_inflight_body_bytes > 0
-                && state.inflight_body_bytes.load(Ordering::Relaxed) + chunk.len()
-                    > state.max_inflight_body_bytes
-            {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_inflight_body_bytes,
-                });
-            }
-            if state.max_per_ip_body_bytes > 0
-                && tracker.ip.load(Ordering::Relaxed) + chunk.len() > state.max_per_ip_body_bytes
-            {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_per_ip_body_bytes,
-                });
-            }
-            tracker.add(chunk.len());
-            acc.extend_from_slice(chunk);
-        }
-    }
-    Ok(acc.freeze())
-}
-
-async fn consume_and_inspect_body(
-    state: &AppState,
-    ctx: &InspectionContext,
-    body: &mut Incoming,
-    client_ip: &str,
-) -> std::result::Result<Bytes, BodyInspectionError> {
-    let raw_body = accumulate_body_frames(state, ctx, body, client_ip).await?;
-    if raw_body.is_empty() {
-        return Ok(raw_body);
-    }
-
-    let decoded_body = decode_body_for_inspection(state, ctx, &raw_body)?;
-    inspect_multipart_parts(state, ctx, &decoded_body, &raw_body)?;
-    inspect_decoded_body(state, ctx, &decoded_body, raw_body)
-}
-
-fn decode_body_for_inspection(
-    state: &AppState,
-    ctx: &InspectionContext,
-    raw_body: &Bytes,
-) -> std::result::Result<Bytes, BodyInspectionError> {
-    let encodings = match ctx_header(ctx, "content-encoding") {
-        Some(v) => parse_content_encoding(&v),
-        None => Vec::new(),
-    };
-    if encodings.is_empty() {
-        return Ok(raw_body.clone());
-    }
-
-    decompress_body_for_inspection(
-        raw_body,
-        &encodings,
-        ctx.body_limit,
-        state.memory_limits.max_decompress_ratio,
-    )
-    .map_err(|err| {
-        tracing::warn!(
-            target: "krakenwaf",
-            request_id = %ctx.request_id,
-            error = %err,
-            "request body decompression failed; rejecting"
-        );
-        BodyInspectionError::Other(anyhow::anyhow!("body decompression rejected: {err}"))
-    })
-}
-
-fn inspect_multipart_parts(
-    state: &AppState,
-    ctx: &InspectionContext,
-    decoded_body: &Bytes,
-    raw_body: &Bytes,
-) -> std::result::Result<(), BodyInspectionError> {
-    // Multipart extraction: scan each part's inspectable view independently.
-    if let Some(ct) = ctx_header(ctx, "content-type") {
-        if let Some(boundary) = extract_boundary(&ct) {
-            let parts = parse_parts(decoded_body, &boundary);
-            for part in &parts {
-                let part_view = multipart_part_for_text_inspection(part);
-                if part_view.is_empty() {
-                    continue;
-                }
-                let part_payload = format_full_request_bytes(ctx, Some(&part_view));
-                match state
-                    .waf
-                    .inspect_complete_payload_with_context(&part_payload, Some(&ctx.method))
-                {
-                    Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
-                    Decision::Block(finding) => {
-                        return Err(BodyInspectionError::Blocked {
-                            finding,
-                            partial_body: raw_body.clone(),
-                        });
-                    }
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn inspect_decoded_body(
-    state: &AppState,
-    ctx: &InspectionContext,
-    decoded_body: &Bytes,
-    raw_body: Bytes,
-) -> std::result::Result<Bytes, BodyInspectionError> {
-    // Single full-body inspection on the cleartext view.
-    let body_for_inspection = request_body_for_text_inspection(ctx, decoded_body);
-    let full = format_full_request_bytes(ctx, Some(&body_for_inspection));
-    match state
-        .waf
-        .inspect_complete_payload_with_context(&full, Some(&ctx.method))
-    {
-        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => Ok(raw_body),
-        Decision::Block(finding) => Err(BodyInspectionError::Blocked {
-            finding,
-            partial_body: raw_body,
-        }),
-    }
-}
-
-/// Convenience accessor used only by `consume_and_inspect_body` to pull a
-/// header value out of the flattened headers stored on the context.
-/// The flattened representation is one `Name: value` per line.
-fn ctx_header(ctx: &InspectionContext, target: &str) -> Option<String> {
-    for line in ctx.headers.lines() {
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.trim().eq_ignore_ascii_case(target) {
-            return Some(value.trim().to_string());
-        }
-    }
-    None
-}
-
-fn request_body_for_text_inspection(ctx: &InspectionContext, body: &Bytes) -> Bytes {
-    let Some(ct) = ctx_header(ctx, "content-type") else {
-        return body.clone();
-    };
-    let Some(boundary) = extract_boundary(&ct) else {
-        return body.clone();
-    };
-    let parts = parse_parts(body, &boundary);
-    if parts.is_empty() {
-        return body.clone();
-    }
-
-    let mut out = Vec::with_capacity(body.len().min(64 * 1024));
-    for part in &parts {
-        out.extend_from_slice(&part.headers);
-        out.extend_from_slice(b"\n\n");
-        if multipart_part_body_should_be_inspected(part) {
-            out.extend_from_slice(&part.body);
-        }
-        out.push(b'\n');
-    }
-    Bytes::from(out)
-}
-
-fn multipart_part_for_text_inspection(part: &MultipartPart) -> Bytes {
-    let mut out = Vec::with_capacity(part.headers.len() + part.body.len().min(8 * 1024) + 2);
-    out.extend_from_slice(&part.headers);
-    out.extend_from_slice(b"\n\n");
-    if multipart_part_body_should_be_inspected(part) {
-        out.extend_from_slice(&part.body);
-    }
-    Bytes::from(out)
-}
-
-fn multipart_part_body_should_be_inspected(part: &MultipartPart) -> bool {
-    if part.body.is_empty() {
-        return false;
-    }
-    if let Some(content_type) = &part.content_type {
-        if media_type_is_textual(content_type) {
-            return true;
-        }
-        if media_type_is_binary(content_type) {
-            return false;
-        }
-    }
-    looks_like_text(&part.body)
-}
-
-fn media_type_is_textual(value: &str) -> bool {
-    let media_type = value
-        .split(';')
-        .next()
-        .unwrap_or(value)
-        .trim()
-        .to_ascii_lowercase();
-    media_type.starts_with("text/")
-        || media_type == "application/json"
-        || media_type == "application/xml"
-        || media_type == "application/xhtml+xml"
-        || media_type == "application/javascript"
-        || media_type == "application/x-javascript"
-        || media_type == "application/x-www-form-urlencoded"
-        || media_type == "application/yaml"
-        || media_type == "application/graphql"
-        || media_type.ends_with("+json")
-        || media_type.ends_with("+xml")
-        || media_type == "image/svg+xml"
-}
-
-fn media_type_is_binary(value: &str) -> bool {
-    let media_type = value
-        .split(';')
-        .next()
-        .unwrap_or(value)
-        .trim()
-        .to_ascii_lowercase();
-    media_type.starts_with("image/")
-        || media_type.starts_with("video/")
-        || media_type.starts_with("audio/")
-        || media_type == "application/octet-stream"
-        || media_type == "application/pdf"
-        || media_type == "application/zip"
-        || media_type == "application/gzip"
-        || media_type == "application/x-7z-compressed"
-        || media_type == "application/x-rar-compressed"
-}
-
-fn looks_like_text(bytes: &[u8]) -> bool {
-    let sample_len = bytes.len().min(4096);
-    if sample_len == 0 {
-        return false;
-    }
-    let sample = &bytes[..sample_len];
-    if sample.contains(&0) {
-        return false;
-    }
-    let suspicious = sample
-        .iter()
-        .filter(|&&b| !(b == b'\n' || b == b'\r' || b == b'\t' || (0x20..=0x7e).contains(&b)))
-        .count();
-    suspicious * 100 <= sample_len * 10
-}
-
-fn build_event(ctx: &InspectionContext, finding: &Finding, body: Option<&Bytes>) -> SecurityEvent {
-    let request_payload = format_full_request(ctx, body, &finding.request_payload);
-    SecurityEvent::from_finding(finding, ctx, request_payload)
-}
-
-/// Build a `SecurityEvent` for a **response-phase** finding (rules with
-/// `http_action: Response`). The response pipeline has no request
-/// `InspectionContext`, so it synthesises a minimal one carrying just the
-/// method, URI, and request-id for correlation. Shared by the `Block`,
-/// `Monitor`, and `SilentReplace` arms of `inspect_upstream_response`.
-fn build_response_event(
-    finding: &Finding,
-    method: &str,
-    uri: &Uri,
-    request_id: &str,
-) -> SecurityEvent {
-    let ctx = InspectionContext {
-        client_ip: String::new(),
-        method: method.to_string(),
-        uri: uri.to_string(),
-        path: uri.path().to_string(),
-        headers: String::new(),
-        body_limit: 0,
-        request_id: request_id.to_string(),
-        country: String::new(),
-        continent_name: String::new(),
-    };
-    SecurityEvent::from_finding(finding, &ctx, finding.request_payload.clone())
-}
-
-pub(crate) fn format_request_prefix_bytes(ctx: &InspectionContext) -> Vec<u8> {
-    let mut out =
-        Vec::with_capacity(ctx.method.len() + 1 + ctx.uri.len() + 10 + ctx.headers.len() + 4);
-    out.extend_from_slice(ctx.method.as_bytes());
-    out.push(b' ');
-    out.extend_from_slice(ctx.uri.as_bytes());
-    out.extend_from_slice(b" HTTP/1.1\n");
-    if !ctx.headers.is_empty() {
-        out.extend_from_slice(ctx.headers.as_bytes());
-        if !ctx.headers.ends_with('\n') {
-            out.push(b'\n');
-        }
-    }
-    out.push(b'\n');
-    out
-}
-
-#[allow(dead_code)]
-fn format_full_request_window_bytes(ctx: &InspectionContext, body_window: &[u8]) -> Vec<u8> {
-    let mut out = format_request_prefix_bytes(ctx);
-    out.extend_from_slice(body_window);
-    out
-}
-
-fn format_full_request_bytes(ctx: &InspectionContext, body: Option<&Bytes>) -> Vec<u8> {
-    let mut out = format_request_prefix_bytes(ctx);
-    if let Some(bytes) = body {
-        out.extend_from_slice(bytes);
-    }
-    out
-}
-
-fn format_full_request(
-    ctx: &InspectionContext,
-    body: Option<&Bytes>,
-    matched_payload: &str,
-) -> String {
-    let mut out = String::new();
-    out.push_str(&ctx.method);
-    out.push(' ');
-    out.push_str(&ctx.uri);
-    out.push_str(" HTTP/1.1\n");
-    if !ctx.headers.is_empty() {
-        out.push_str(&ctx.headers);
-        if !ctx.headers.ends_with('\n') {
-            out.push('\n');
-        }
-    }
-    out.push('\n');
-    match body {
-        Some(bytes) if !bytes.is_empty() => out.push_str(&String::from_utf8_lossy(bytes)),
-        _ if !matched_payload.is_empty() => out.push_str(matched_payload),
-        _ => {}
-    }
-    out
-}
-
-/// Parse a single `--trusted-proxy-cidrs` / `proxy.yaml` entry. Accepts either
-/// CIDR notation (`10.0.0.0/8`, `2001:db8::/32`) or a bare IP literal
-/// (`192.0.2.1`, treated as a `/32`; `2001:db8::1` as a `/128`). Surrounding
-/// whitespace is trimmed.
-///
-/// # Errors
-/// Returns an error when `entry` is neither a valid IP nor a valid CIDR.
-pub fn parse_trusted_proxy_cidr(entry: &str) -> Result<ipnet::IpNet> {
-    let trimmed = entry.trim();
-    if let Ok(net) = trimmed.parse::<ipnet::IpNet>() {
-        return Ok(net);
-    }
-    let ip = trimmed.parse::<std::net::IpAddr>().map_err(|_| {
-        anyhow::anyhow!(
-            "'{entry}' is not a valid IP address or CIDR (e.g. 10.0.0.0/8 or 192.0.2.1)"
-        )
-    })?;
-    let prefix = if ip.is_ipv4() { 32 } else { 128 };
-    ipnet::IpNet::new(ip, prefix)
-        .with_context(|| format!("failed to build a host network for '{entry}'"))
-}
-
-/// Parse every trusted-proxy entry once, failing on the first malformed value.
-/// Empty entries are skipped. Done eagerly at startup so a typo fails fast
-/// instead of being silently dropped on every request — a dropped entry would
-/// make the proxy's own IP look like the client and break rate-limit, ban, and
-/// blocklist keying.
-///
-/// # Errors
-/// Returns an error if any entry is neither a valid IP nor a valid CIDR.
-pub fn parse_trusted_proxy_cidrs(entries: &[String]) -> Result<Vec<ipnet::IpNet>> {
-    entries
-        .iter()
-        .map(|entry| entry.trim())
-        .filter(|entry| !entry.is_empty())
-        .map(parse_trusted_proxy_cidr)
-        .collect()
-}
-
-#[cfg(test)]
-mod trusted_proxy_cidr_tests {
-    use super::{parse_trusted_proxy_cidr, parse_trusted_proxy_cidrs};
-
-    #[test]
-    fn accepts_cidr_and_bare_ip() {
-        // CIDR notation passes through unchanged.
-        assert_eq!(
-            parse_trusted_proxy_cidr("10.0.0.0/8").expect("cidr").to_string(),
-            "10.0.0.0/8"
-        );
-        // A bare IPv4 becomes a /32 host network.
-        assert_eq!(
-            parse_trusted_proxy_cidr("192.0.2.1").expect("v4 host").to_string(),
-            "192.0.2.1/32"
-        );
-        // A bare IPv6 becomes a /128 host network.
-        assert_eq!(
-            parse_trusted_proxy_cidr("2001:db8::1").expect("v6 host").to_string(),
-            "2001:db8::1/128"
-        );
-        // Surrounding whitespace is tolerated.
-        assert!(parse_trusted_proxy_cidr("  127.0.0.1/32  ").is_ok());
-    }
-
-    #[test]
-    fn rejects_malformed_entry() {
-        // A typo no longer fails silently — it is a hard error at parse time.
-        assert!(parse_trusted_proxy_cidr("999.0.0.0/8").is_err());
-        assert!(parse_trusted_proxy_cidr("not-an-ip").is_err());
-        assert!(parse_trusted_proxy_cidr("10.0.0.0/40").is_err());
-    }
-
-    #[test]
-    fn parses_list_skipping_blanks_and_fails_on_first_bad() {
-        let nets = parse_trusted_proxy_cidrs(&[
-            "127.0.0.1/32".to_string(),
-            "  ".to_string(),
-            "10.0.0.0/8".to_string(),
-        ])
-        .expect("all valid");
-        assert_eq!(nets.len(), 2, "blank entries are skipped");
-
-        let err = parse_trusted_proxy_cidrs(&[
-            "127.0.0.1/32".to_string(),
-            "bogus".to_string(),
-        ]);
-        assert!(err.is_err(), "one malformed entry fails the whole parse");
-    }
-}
-
 fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()> {
     if !matches!(upstream.scheme(), "http" | "https") {
         anyhow::bail!("upstream must use http or https");
@@ -1794,19 +1177,6 @@ fn build_upstream_target(upstream: &Url, uri: &Uri) -> Url {
     target
 }
 
-fn host_port(host: &str) -> Option<u16> {
-    let trimmed = host.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Some(rest) = trimmed.strip_prefix('[') {
-        let (_, port) = rest.rsplit_once("]:")?;
-        return port.parse().ok();
-    }
-    let (_, port) = trimmed.rsplit_once(':')?;
-    port.parse().ok()
-}
-
 fn upstream_authority_matches(location: &Url, upstream: &Url) -> bool {
     location.scheme() == upstream.scheme()
         && location.host_str() == upstream.host_str()
@@ -1827,419 +1197,6 @@ fn rewrite_upstream_location(
     parsed.set_host(Some(origin.host_without_port())).ok()?;
     parsed.set_port(origin.public_port_for_url()).ok()?;
     HeaderValue::from_str(parsed.as_str()).ok()
-}
-
-fn is_websocket_upgrade(headers: &HeaderMap) -> bool {
-    headers
-        .get(UPGRADE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.eq_ignore_ascii_case("websocket"))
-        && headers
-            .get(CONNECTION)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|value| {
-                value
-                    .split(',')
-                    .any(|token| token.trim().eq_ignore_ascii_case("upgrade"))
-            })
-}
-
-fn build_upstream_websocket_request(
-    upstream: &Url,
-    req: &Request<Incoming>,
-    request_id: &str,
-    traceparent: &str,
-    origin: &ForwardedOrigin,
-) -> Result<Vec<u8>> {
-    let target = build_upstream_target(upstream, req.uri());
-    let path = if let Some(query) = target.query() {
-        format!("{}?{}", target.path(), query)
-    } else {
-        target.path().to_string()
-    };
-
-    let authority = target
-        .host_str()
-        .map(|host| match target.port() {
-            Some(port) => format!("{host}:{port}"),
-            None => host.to_string(),
-        })
-        .ok_or_else(|| anyhow::anyhow!("upstream host is missing"))?;
-
-    let mut out = Vec::with_capacity(1024);
-    out.extend_from_slice(req.method().as_str().as_bytes());
-    out.push(b' ');
-    out.extend_from_slice(path.as_bytes());
-    out.extend_from_slice(b" HTTP/1.1\r\n");
-    out.extend_from_slice(b"Host: ");
-    out.extend_from_slice(authority.as_bytes());
-    out.extend_from_slice(b"\r\n");
-
-    let connection_hop = connection_listed_headers(req.headers());
-    for (name, value) in req.headers() {
-        if name == HOST
-            || connection_hop
-                .iter()
-                .any(|hop| hop == name && hop != UPGRADE)
-        {
-            continue;
-        }
-        // Defence-in-depth: this request line is serialised by hand into a raw
-        // byte buffer, so a header value carrying a bare CR/LF would inject
-        // additional headers (or a smuggled request) into the upstream
-        // handshake. hyper's HeaderValue rejects CR/LF on construction, but we
-        // re-check here so the manual serialiser cannot be the weak link if that
-        // invariant ever changes. A value that violates it is dropped.
-        if header_value_has_control_break(value.as_bytes()) {
-            continue;
-        }
-        out.extend_from_slice(name.as_str().as_bytes());
-        out.extend_from_slice(b": ");
-        out.extend_from_slice(value.as_bytes());
-        out.extend_from_slice(b"\r\n");
-    }
-
-    append_header_line(&mut out, "x-forwarded-proto", origin.proto.as_str());
-    append_header_line(&mut out, "x-forwarded-host", origin.host.as_str());
-    if let Some(port) = origin.port {
-        append_header_line(&mut out, "x-forwarded-port", &port.to_string());
-    }
-    append_header_line(&mut out, "x-request-id", request_id);
-    append_header_line(&mut out, "traceparent", traceparent);
-    out.extend_from_slice(b"\r\n");
-    Ok(out)
-}
-
-/// True when `value` contains a raw CR or LF byte. Such a value must never be
-/// written into a hand-serialised HTTP header block: it would terminate the
-/// current header line early and let the remainder be parsed as a separate
-/// header (CRLF / header injection).
-fn header_value_has_control_break(value: &[u8]) -> bool {
-    value.iter().any(|&b| b == b'\r' || b == b'\n')
-}
-
-fn append_header_line(out: &mut Vec<u8>, name: &str, value: &str) {
-    out.extend_from_slice(name.as_bytes());
-    out.extend_from_slice(b": ");
-    out.extend_from_slice(value.as_bytes());
-    out.extend_from_slice(b"\r\n");
-}
-
-async fn read_upstream_websocket_response(
-    stream: &mut tokio::net::TcpStream,
-) -> Result<(WafResponse, Bytes)> {
-    const MAX_WS_HANDSHAKE_BYTES: usize = 32 * 1024;
-
-    let mut buf = Vec::with_capacity(1024);
-    let header_end = loop {
-        if buf.len() > MAX_WS_HANDSHAKE_BYTES {
-            anyhow::bail!("upstream websocket handshake exceeded {MAX_WS_HANDSHAKE_BYTES} bytes");
-        }
-
-        let mut chunk = [0u8; 1024];
-        let n = stream.read(&mut chunk).await?;
-        if n == 0 {
-            anyhow::bail!("upstream closed during websocket handshake");
-        }
-        buf.extend_from_slice(&chunk[..n]);
-
-        if let Some(idx) = find_header_terminator(&buf) {
-            break idx;
-        }
-    };
-
-    let headers = &buf[..header_end];
-    let leftover = Bytes::copy_from_slice(&buf[header_end + 4..]);
-    let text = std::str::from_utf8(headers)?;
-    let mut lines = text.split("\r\n");
-    let status_line = lines
-        .next()
-        .ok_or_else(|| anyhow::anyhow!("upstream websocket response missing status line"))?;
-    let status = parse_http_status(status_line)?;
-    let mut builder = Response::builder().status(status);
-
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        builder = builder.header(name.trim(), value.trim());
-    }
-
-    let response = builder
-        .body(full_body(Bytes::new()))
-        .map_err(|err| anyhow::anyhow!("failed to build websocket response: {err}"))?;
-    Ok((response, leftover))
-}
-
-fn find_header_terminator(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(4).position(|window| window == b"\r\n\r\n")
-}
-
-fn parse_http_status(status_line: &str) -> Result<StatusCode> {
-    let code = status_line
-        .split_whitespace()
-        .nth(1)
-        .ok_or_else(|| anyhow::anyhow!("bad upstream websocket status line: {status_line}"))?
-        .parse::<u16>()?;
-    StatusCode::from_u16(code)
-        .map_err(|err| anyhow::anyhow!("bad upstream websocket status code {code}: {err}"))
-}
-
-fn response_mode(
-    headers: &HeaderMap,
-    buffered_max_bytes: usize,
-    streamed_max_bytes: usize,
-    inspect_prefix_bytes: usize,
-) -> ResponseMode {
-    let inspect_prefix_bytes = inspect_prefix_bytes.min(streamed_max_bytes);
-    let content_type = headers
-        .get(http::header::CONTENT_TYPE)
-        .and_then(|value| value.to_str().ok())
-        .map(|value| {
-            value
-                .split(';')
-                .next()
-                .unwrap_or(value)
-                .trim()
-                .to_ascii_lowercase()
-        });
-
-    let Some(content_type) = content_type else {
-        return ResponseMode::TeePrefix {
-            inspect_prefix_bytes,
-            max_bytes: streamed_max_bytes,
-        };
-    };
-
-    if content_type.starts_with("text/")
-        || content_type == "application/json"
-        || content_type.ends_with("+json")
-        || content_type == "application/xml"
-        || content_type.ends_with("+xml")
-        || content_type == "application/xhtml+xml"
-        || content_type == "application/javascript"
-        || content_type == "application/x-www-form-urlencoded"
-        || content_type == "application/yaml"
-        || content_type == "application/graphql"
-    {
-        return ResponseMode::InspectBuffered {
-            max_bytes: buffered_max_bytes,
-        };
-    }
-
-    if content_type.starts_with("image/")
-        || content_type.starts_with("video/")
-        || content_type.starts_with("audio/")
-        || content_type.starts_with("font/")
-        || matches!(
-            content_type.as_str(),
-            "application/pdf"
-                | "application/zip"
-                | "application/x-zip-compressed"
-                | "application/gzip"
-                | "application/x-gzip"
-                | "application/x-7z-compressed"
-                | "application/vnd.rar"
-                | "application/x-rar-compressed"
-                | "application/wasm"
-        )
-    {
-        return ResponseMode::StreamOnly {
-            max_bytes: streamed_max_bytes,
-        };
-    }
-
-    ResponseMode::TeePrefix {
-        inspect_prefix_bytes,
-        max_bytes: streamed_max_bytes,
-    }
-}
-
-#[cfg(test)]
-mod response_mode_tests {
-    use super::{response_mode, ResponseMode};
-    use http::{header::CONTENT_TYPE, HeaderMap, HeaderValue};
-
-    const BUFFERED_MAX: usize = 8 * 1024 * 1024;
-    const STREAMED_MAX: usize = 1024 * 1024 * 1024;
-    const PREFIX: usize = 64 * 1024;
-
-    fn headers(content_type: &str) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        headers.insert(
-            CONTENT_TYPE,
-            HeaderValue::from_str(content_type).expect("valid content type"),
-        );
-        headers
-    }
-
-    #[test]
-    fn text_and_structured_text_are_buffered_for_complete_inspection() {
-        for content_type in [
-            "text/html; charset=utf-8",
-            "application/json",
-            "application/problem+json",
-            "application/xml",
-        ] {
-            assert_eq!(
-                response_mode(&headers(content_type), BUFFERED_MAX, STREAMED_MAX, PREFIX),
-                ResponseMode::InspectBuffered {
-                    max_bytes: BUFFERED_MAX
-                },
-                "{content_type}"
-            );
-        }
-    }
-
-    #[test]
-    fn known_binary_media_are_streamed_without_buffering() {
-        for content_type in [
-            "image/png",
-            "video/mp4",
-            "application/pdf",
-            "application/zip",
-        ] {
-            assert_eq!(
-                response_mode(&headers(content_type), BUFFERED_MAX, STREAMED_MAX, PREFIX),
-                ResponseMode::StreamOnly {
-                    max_bytes: STREAMED_MAX
-                },
-                "{content_type}"
-            );
-        }
-    }
-
-    #[test]
-    fn generic_binary_and_missing_content_type_use_prefix_inspection() {
-        let expected = ResponseMode::TeePrefix {
-            inspect_prefix_bytes: PREFIX,
-            max_bytes: STREAMED_MAX,
-        };
-        assert_eq!(
-            response_mode(
-                &headers("application/octet-stream"),
-                BUFFERED_MAX,
-                STREAMED_MAX,
-                PREFIX
-            ),
-            expected
-        );
-        assert_eq!(
-            response_mode(&HeaderMap::new(), BUFFERED_MAX, STREAMED_MAX, PREFIX),
-            expected
-        );
-    }
-
-    #[test]
-    fn prefix_never_exceeds_the_total_stream_limit() {
-        assert_eq!(
-            response_mode(
-                &headers("application/octet-stream"),
-                BUFFERED_MAX,
-                1024,
-                PREFIX
-            ),
-            ResponseMode::TeePrefix {
-                inspect_prefix_bytes: 1024,
-                max_bytes: 1024
-            }
-        );
-    }
-}
-
-fn content_length(headers: &HeaderMap) -> Option<usize> {
-    headers
-        .get(http::header::CONTENT_LENGTH)?
-        .to_str()
-        .ok()?
-        .parse()
-        .ok()
-}
-
-fn ensure_advertised_length_within_limit(
-    advertised_length: Option<usize>,
-    max_bytes: usize,
-) -> Result<()> {
-    if advertised_length.is_some_and(|length| length > max_bytes) {
-        anyhow::bail!("upstream response Content-Length exceeds limit of {max_bytes} bytes");
-    }
-    Ok(())
-}
-
-async fn read_response_prefix(
-    mut body: Incoming,
-    prefix_limit: usize,
-    max_bytes: usize,
-) -> Result<(Bytes, VecDeque<Frame<Bytes>>, Incoming, usize)> {
-    let mut prefix = BytesMut::with_capacity(prefix_limit.min(64 * 1024));
-    let mut remainder = VecDeque::new();
-    let mut seen = 0usize;
-
-    while prefix.len() < prefix_limit {
-        let Some(frame) = body
-            .frame()
-            .await
-            .transpose()
-            .map_err(|error| KrakenError::Upstream(error.to_string()))?
-        else {
-            break;
-        };
-        match frame.into_data() {
-            Ok(mut chunk) => {
-                seen = seen
-                    .checked_add(chunk.len())
-                    .ok_or_else(|| anyhow::anyhow!("upstream response byte counter overflow"))?;
-                if seen > max_bytes {
-                    return Err(anyhow::anyhow!(
-                        "upstream response exceeded streaming limit of {max_bytes} bytes"
-                    ));
-                }
-                let needed = prefix_limit - prefix.len();
-                if chunk.len() <= needed {
-                    prefix.extend_from_slice(&chunk);
-                } else {
-                    let inspected = chunk.split_to(needed);
-                    prefix.extend_from_slice(&inspected);
-                    remainder.push_back(Frame::data(chunk));
-                }
-            }
-            Err(frame) => {
-                remainder.push_back(frame);
-                break;
-            }
-        }
-    }
-
-    Ok((prefix.freeze(), remainder, body, seen))
-}
-
-fn adjust_streaming_content_length(
-    response_builder: &mut http::response::Builder,
-    advertised_length: Option<usize>,
-    original_prefix_len: usize,
-    forwarded_prefix_len: usize,
-) {
-    if original_prefix_len == forwarded_prefix_len {
-        return;
-    }
-    let Some(headers) = response_builder.headers_mut() else {
-        return;
-    };
-    let Some(original_length) = advertised_length else {
-        headers.remove(http::header::CONTENT_LENGTH);
-        return;
-    };
-    let adjusted = original_length
-        .saturating_sub(original_prefix_len)
-        .saturating_add(forwarded_prefix_len);
-    if let Ok(value) = HeaderValue::from_str(&adjusted.to_string()) {
-        headers.insert(http::header::CONTENT_LENGTH, value);
-    } else {
-        headers.remove(http::header::CONTENT_LENGTH);
-    }
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {
@@ -2315,6 +1272,45 @@ fn combine_request_cookie_headers(headers: &HeaderMap) -> Option<HeaderValue> {
     HeaderValue::from_str(&combined).ok()
 }
 
+/// Build the sanitised `X-Forwarded-For` value forwarded upstream.
+///
+/// * When the peer is a **trusted proxy**, its inbound `X-Forwarded-For` chain
+///   is legitimate, so it is preserved and the effective client IP appended
+///   (standard reverse-proxy append semantics).
+/// * When the peer is **untrusted** (a direct client), any inbound chain is
+///   attacker-controlled and is discarded; the value becomes the effective IP
+///   alone (which equals the peer in this case).
+///
+/// Returns `None` only if the resulting value cannot be encoded as a header
+/// (e.g. a non-ASCII effective IP, which cannot happen for a parsed `IpAddr`).
+fn build_forwarded_for(
+    headers: &HeaderMap,
+    effective_ip: &str,
+    peer_is_trusted: bool,
+) -> Option<HeaderValue> {
+    let mut chain = String::new();
+    if peer_is_trusted {
+        for value in headers.get_all("x-forwarded-for") {
+            let Ok(raw) = value.to_str() else {
+                continue;
+            };
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            if !chain.is_empty() {
+                chain.push_str(", ");
+            }
+            chain.push_str(raw);
+        }
+    }
+    if !chain.is_empty() {
+        chain.push_str(", ");
+    }
+    chain.push_str(effective_ip);
+    HeaderValue::from_str(&chain).ok()
+}
+
 fn apply_response_policy<B>(state: &AppState, response: &mut Response<B>) {
     let is_websocket_upgrade = response.status() == StatusCode::SWITCHING_PROTOCOLS
         || response.headers().contains_key(UPGRADE)
@@ -2362,251 +1358,6 @@ pub fn plain_response(status: StatusCode, message: &str) -> WafResponse {
             *resp.status_mut() = status;
             resp
         })
-}
-
-fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Option<String> {
-    headers
-        .iter()
-        .find(|(k, _)| k.as_str().eq_ignore_ascii_case(name))
-        .and_then(|(_, v)| v.to_str().ok())
-        .map(str::to_owned)
-}
-
-#[track_caller]
-fn write_proxy_error_dev(
-    debug_proxy_dev: bool,
-    always_save: bool,
-    function: &str,
-    code: &str,
-    message: &str,
-    fields: &serde_json::Value,
-) {
-    let severity = if always_save { "critical" } else { "diagnostic" };
-    if !debug_proxy_dev && !always_save {
-        tracing::debug!(
-            target: "krakenwaf",
-            function,
-            code,
-            message,
-            "diagnostic proxy dev event suppressed; enable debug-proxy-dev to persist it"
-        );
-        return;
-    }
-
-    let location = std::panic::Location::caller();
-    let event = serde_json::json!({
-        "timestamp": Utc::now().to_rfc3339(),
-        "severity": severity,
-        "debug_proxy_dev": debug_proxy_dev,
-        "function": function,
-        "file": location.file(),
-        "line": location.line(),
-        "code": code,
-        "message": message,
-        "fields": fields,
-    });
-    if let Err(err) = append_proxy_error_dev_event(&event) {
-        warn!(
-            target: "krakenwaf",
-            error = %err,
-            path = PROXY_ERROR_DEV_LOG,
-            function,
-            code,
-            "failed to write proxy error dev event"
-        );
-    }
-}
-
-fn append_proxy_error_dev_event(event: &serde_json::Value) -> std::io::Result<()> {
-    let path = Path::new(PROXY_ERROR_DEV_LOG);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{event}")
-}
-
-/// Parse the RFC 7239 `Forwarded:` header chain and return the rightmost
-/// `for=` value whose IP does **not** belong to a trusted proxy CIDR.
-///
-/// Browsers / users do not send `Forwarded:` directly; only intermediaries
-/// do. The rightmost untrusted value is therefore the real client. Returns
-/// `None` when the header is absent, malformed, or every value resolves to
-/// a trusted hop.
-fn forwarded_header_real_ip(
-    headers: &http::HeaderMap,
-    trusted: &[ipnet::IpNet],
-    debug_proxy_dev: bool,
-) -> Option<String> {
-    use std::net::IpAddr;
-    let raw = header_value_case_insensitive(headers, "forwarded")?;
-    let elements: Vec<&str> = raw.split(',').collect();
-    for element in elements.iter().rev() {
-        for kv in element.split(';') {
-            let kv = kv.trim();
-            let Some((k, v)) = kv.split_once('=') else {
-                continue;
-            };
-            if !k.eq_ignore_ascii_case("for") {
-                continue;
-            }
-            // Allowed forms: `for=192.0.2.1`, `for="192.0.2.1:4711"`,
-            // `for="[2001:db8::1]"`, `for="_obfuscated"`.
-            let stripped = v.trim().trim_matches('"');
-            // Strip an optional port and surrounding `[]` for IPv6.
-            let host_only = if let Some(rest) = stripped.strip_prefix('[') {
-                let Some((host, _suffix)) = rest.split_once(']') else {
-                    write_proxy_error_dev(
-                        debug_proxy_dev,
-                        false,
-                        "forwarded_header_real_ip",
-                        "malformed_forwarded_ipv6",
-                        "Forwarded for= value starts with '[' but has no closing ']'",
-                        &serde_json::json!({
-                            "raw_header": raw,
-                            "element": element,
-                            "value": stripped,
-                        }),
-                    );
-                    continue;
-                };
-                host
-            } else if stripped.matches(':').count() == 1 {
-                // `host:port` for IPv4.
-                if let Some((host, _port)) = stripped.split_once(':') {
-                    host
-                } else {
-                    stripped
-                }
-            } else {
-                stripped
-            };
-            let Ok(parsed) = host_only.parse::<IpAddr>() else {
-                if !host_only.starts_with('_') {
-                    write_proxy_error_dev(
-                        debug_proxy_dev,
-                        false,
-                        "forwarded_header_real_ip",
-                        "invalid_forwarded_for_ip",
-                        "Forwarded for= value could not be parsed as an IP address",
-                        &serde_json::json!({
-                            "raw_header": raw,
-                            "element": element,
-                            "value": stripped,
-                            "host_only": host_only,
-                        }),
-                    );
-                }
-                continue;
-            };
-            if !trusted.iter().any(|net| net.contains(&parsed)) {
-                return Some(host_only.to_string());
-            }
-        }
-    }
-    None
-}
-
-pub(crate) fn effective_client_ip(
-    peer_ip: &str,
-    headers: &http::HeaderMap,
-    state: &AppState,
-) -> String {
-    use std::net::IpAddr;
-    let Ok(peer) = peer_ip.parse::<IpAddr>() else {
-        return peer_ip.to_string();
-    };
-    // Trusted-proxy CIDRs are parsed and validated once at startup
-    // (see `parse_trusted_proxy_cidrs`), so the request path is a cheap slice
-    // scan instead of re-parsing strings — and a malformed entry can no longer
-    // be silently dropped here (it fails the process at boot instead).
-    let trusted_nets = state.trusted_proxy_nets.as_slice();
-    if !trusted_nets.iter().any(|net| net.contains(&peer)) {
-        return peer_ip.to_string();
-    }
-
-    // RFC 7239 `Forwarded:` header takes precedence when present — modern
-    // proxies (HAProxy 2.x, recent nginx with the realip module) emit it
-    // instead of `X-Forwarded-For`. We walk the chain right-to-left and pick
-    // the first `for=` value whose IP is *not* one of our trusted proxies.
-    if let Some(ip) = forwarded_header_real_ip(headers, trusted_nets, state.cli.debug_proxy_dev) {
-        return ip;
-    }
-
-    let header_name = match state.cli.real_ip_header.as_deref() {
-        Some(h) if !h.trim().is_empty() => h.trim(),
-        // Even without an explicit --real-ip-header we still honour the
-        // de-facto standard `X-Real-IP` if the peer is a trusted proxy.
-        _ => "x-real-ip",
-    };
-    let Some(raw) = header_value_case_insensitive(headers, header_name) else {
-        return peer_ip.to_string();
-    };
-    let candidate = if header_name.eq_ignore_ascii_case("x-forwarded-for") {
-        // Rightmost-trusted algorithm (RFC 7239 §5.3): walk right-to-left, skip IPs that
-        // belong to a trusted proxy CIDR, and pick the first one that does not. Using the
-        // leftmost value (split(',').next()) is client-controlled and trivially bypassable —
-        // an attacker can prepend any IP to spoof past blocklist and rate-limit checks.
-        raw.split(',')
-            .rev()
-            .map(str::trim)
-            .find(|s| {
-                !s.parse::<IpAddr>()
-                    .ok()
-                    .is_some_and(|ip| trusted_nets.iter().any(|net| net.contains(&ip)))
-            })
-            .unwrap_or(peer_ip)
-            .to_string()
-    } else {
-        raw.trim().to_string()
-    };
-    if candidate.parse::<IpAddr>().is_ok() {
-        candidate
-    } else {
-        peer_ip.to_string()
-    }
-}
-
-/// Build or propagate a W3C traceparent header value.
-///
-/// Rules:
-/// - If the incoming value is present and has a valid 32-hex trace-id in field[1],
-///   the trace-id is preserved and a new parent-id span is generated.
-/// - Otherwise (absent or malformed) both trace-id and parent-id are freshly
-///   generated from UUID v4.
-fn build_traceparent(incoming: Option<&str>, metrics: &crate::metrics::WafMetrics) -> String {
-    fn new_parent_id() -> String {
-        let parent_bytes = *Uuid::new_v4().as_bytes();
-        format!(
-            "{:016x}",
-            u64::from_be_bytes([
-                parent_bytes[0],
-                parent_bytes[1],
-                parent_bytes[2],
-                parent_bytes[3],
-                parent_bytes[4],
-                parent_bytes[5],
-                parent_bytes[6],
-                parent_bytes[7],
-            ])
-        )
-    }
-
-    if let Some(tp) = incoming {
-        let parts: Vec<&str> = tp.splitn(4, '-').collect();
-        if parts.len() >= 3
-            && parts[1].len() == 32
-            && parts[1].chars().all(|c| c.is_ascii_hexdigit())
-        {
-            let trace_id = parts[1];
-            metrics.inc_traceparent_forwarded();
-            return format!("00-{trace_id}-{}-01", new_parent_id());
-        }
-    }
-    // No valid incoming — generate fresh traceparent.
-    let trace_id = format!("{:032x}", Uuid::new_v4().as_u128());
-    metrics.inc_traceparent_generated();
-    format!("00-{trace_id}-{}-01", new_parent_id())
 }
 
 /// Classify a block event so the BAN-list manager knows whether the
@@ -2705,21 +1456,50 @@ mod module_label_tests {
 }
 
 #[cfg(test)]
+mod forwarded_for_tests {
+    use super::build_forwarded_for;
+    use http::{HeaderMap, HeaderValue};
+
+    fn headers_with_xff(values: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for v in values {
+            headers.append("x-forwarded-for", HeaderValue::from_str(v).expect("valid"));
+        }
+        headers
+    }
+
+    #[test]
+    fn untrusted_peer_discards_inbound_chain_and_uses_effective_ip() {
+        // A direct (untrusted) client could spoof the chain; it must be dropped
+        // and replaced with the effective IP alone.
+        let headers = headers_with_xff(&["1.1.1.1", "2.2.2.2"]);
+        let xff = build_forwarded_for(&headers, "203.0.113.7", false).expect("value");
+        assert_eq!(xff, HeaderValue::from_static("203.0.113.7"));
+    }
+
+    #[test]
+    fn trusted_peer_preserves_chain_and_appends_effective_ip() {
+        let headers = headers_with_xff(&["1.1.1.1", "2.2.2.2"]);
+        let xff = build_forwarded_for(&headers, "203.0.113.7", true).expect("value");
+        assert_eq!(
+            xff,
+            HeaderValue::from_static("1.1.1.1, 2.2.2.2, 203.0.113.7")
+        );
+    }
+
+    #[test]
+    fn no_inbound_chain_yields_just_effective_ip() {
+        let headers = HeaderMap::new();
+        let xff = build_forwarded_for(&headers, "198.51.100.9", true).expect("value");
+        assert_eq!(xff, HeaderValue::from_static("198.51.100.9"));
+    }
+}
+
+#[cfg(test)]
 mod redirect_tests {
     use super::{combine_request_cookie_headers, rewrite_upstream_location, ForwardedOrigin};
     use http::{header::COOKIE, HeaderMap, HeaderValue};
     use url::Url;
-
-    #[test]
-    fn header_value_control_break_guard_flags_crlf() {
-        assert!(super::header_value_has_control_break(
-            b"value\r\nset-cookie: x"
-        ));
-        assert!(super::header_value_has_control_break(b"value\ninjected"));
-        assert!(super::header_value_has_control_break(b"value\rinjected"));
-        assert!(!super::header_value_has_control_break(b"normal-value 123"));
-        assert!(!super::header_value_has_control_break(b""));
-    }
 
     #[test]
     fn rewrites_absolute_upstream_location_to_public_origin() {
@@ -2785,68 +1565,6 @@ mod redirect_tests {
             combined,
             HeaderValue::from_static("PHPSESSID=abc; security=low")
         );
-    }
-}
-
-#[cfg(test)]
-mod multipart_request_inspection_tests {
-    use super::{looks_like_text, media_type_is_textual, request_body_for_text_inspection};
-    use crate::waf::InspectionContext;
-    use bytes::Bytes;
-
-    fn ctx(boundary: &str) -> InspectionContext {
-        InspectionContext {
-            client_ip: "127.0.0.1".into(),
-            method: "POST".into(),
-            uri: "/profile/image/file".into(),
-            path: "/profile/image/file".into(),
-            headers: format!(
-                "host: localhost\ncontent-type: multipart/form-data; boundary={boundary}"
-            ),
-            body_limit: 1024 * 1024,
-            request_id: "test".into(),
-            country: String::new(),
-            continent_name: String::new(),
-        }
-    }
-
-    #[test]
-    fn multipart_image_body_is_removed_from_textual_inspection_view() {
-        let boundary = "kw-boundary";
-        let mut body = format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n"
-        )
-        .into_bytes();
-        body.extend_from_slice(b"\x89PNG\r\n../<script onload=alert(1)>\r\n");
-        body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
-        let body = Bytes::from(body);
-
-        let view = request_body_for_text_inspection(&ctx(boundary), &body);
-        let text = String::from_utf8_lossy(&view);
-
-        assert!(text.contains("filename=\"avatar.png\""));
-        assert!(text.contains("Content-Type: image/png"));
-        assert!(!text.contains("../<script"));
-    }
-
-    #[test]
-    fn multipart_text_field_stays_in_textual_inspection_view() {
-        let boundary = "kw-boundary";
-        let body = Bytes::from(format!(
-            "--{boundary}\r\nContent-Disposition: form-data; name=\"comment\"\r\n\r\n<script>alert(1)</script>\r\n--{boundary}--\r\n"
-        ));
-
-        let view = request_body_for_text_inspection(&ctx(boundary), &body);
-        let text = String::from_utf8_lossy(&view);
-
-        assert!(text.contains("name=\"comment\""));
-        assert!(text.contains("<script>alert(1)</script>"));
-    }
-
-    #[test]
-    fn svg_file_body_is_still_textually_inspected() {
-        assert!(media_type_is_textual("image/svg+xml"));
-        assert!(looks_like_text(br#"<svg onload="alert(1)"></svg>"#));
     }
 }
 

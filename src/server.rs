@@ -822,8 +822,15 @@ async fn handle(
     // proxies, then reject *any* request from a currently-banned IP before
     // touching concurrency gates, backpressure accounting, the WAF engine,
     // or the upstream. The block is logged at Low severity.
+    // Resolve the effective client IP once (honouring trusted-proxy
+    // `Forwarded:` / `X-Forwarded-For` / `X-Real-IP`) so every per-IP gate below
+    // — ban check, concurrency, and body-byte backpressure — keys on the same
+    // identity the WAF engine and rate limiter use. Keying these on the raw TCP
+    // peer collapsed per-client fairness behind a reverse proxy (all clients
+    // share the proxy's address).
+    let effective_ip = effective_client_ip(&client_ip, req.headers(), &state);
+
     if state.ban_manager.enabled() {
-        let effective_ip = effective_client_ip(&client_ip, req.headers(), &state);
         if let Some(banned_until) = state.ban_manager.check(&effective_ip).await {
             log_banned_request(
                 &state,
@@ -842,7 +849,7 @@ async fn handle(
     let _conn_guard = if state.max_coroutines_per_ip > 0 {
         let counter = state
             .ip_connections
-            .entry(client_ip.clone())
+            .entry(effective_ip.clone())
             .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
             .clone();
 
@@ -851,7 +858,7 @@ async fn handle(
             counter.fetch_sub(1, Ordering::Relaxed);
             warn!(
                 target: "krakenwaf",
-                ip = %client_ip,
+                ip = %effective_ip,
                 limit = state.max_coroutines_per_ip,
                 "per-IP concurrency limit exceeded"
             );
@@ -893,18 +900,19 @@ async fn handle(
         }
     }
 
-    // Memory backpressure gate (per-IP).
+    // Memory backpressure gate (per-IP). Keyed on the effective IP so it shares
+    // the counter the proxy's body accumulator increments under the same key.
     if state.max_per_ip_body_bytes > 0 {
         let ip_current = state
             .ip_body_bytes
-            .get(&client_ip)
+            .get(&effective_ip)
             .map_or(0, |v| v.load(Ordering::Relaxed));
         if ip_current >= state.max_per_ip_body_bytes {
             warn!(
                 target: "krakenwaf",
                 current_bytes = ip_current,
                 limit = state.max_per_ip_body_bytes,
-                ip = %client_ip,
+                ip = %effective_ip,
                 "per-IP body-bytes backpressure limit reached"
             );
             state.metrics.inc_rate_limit_hits();

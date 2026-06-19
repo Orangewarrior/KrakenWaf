@@ -2,6 +2,8 @@ use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use anyhow::{Context as _, Result};
 use chrono::Utc;
 use ipnet::IpNet;
+use std::collections::HashSet;
+use std::net::IpAddr;
 use std::time::Instant;
 #[cfg(feature = "vectorscan-engine")]
 use tracing::warn;
@@ -12,7 +14,7 @@ use crate::ffi::libinjection;
 use crate::rules::{CompiledDetectionRule, DetectionRule, HttpAction, RuleSet, Severity};
 
 use super::finding::{truncate_payload, Finding};
-use super::ip_filter::parse_ip_net;
+use super::ip_filter::{canonical_ip, parse_ip_net};
 
 pub(super) const SCORE_BLOCK_THRESHOLD: u32 = 600;
 
@@ -31,6 +33,10 @@ pub(super) struct EngineMatchers {
     pub(super) resp_headers: Option<KeywordMatcher>,
     pub(super) resp_body: Option<KeywordMatcher>,
     pub(super) blocked_ip_nets: Vec<IpNet>,
+    /// Exact-match IP blocklist, canonicalised once at build time. Replaces the
+    /// former per-request linear scan + per-entry `canonical_ip` parse over
+    /// `rules.blocked_ips`, which was O(n) with an allocation on every request.
+    pub(super) blocked_ips_canon: HashSet<IpAddr>,
     #[cfg(feature = "vectorscan-engine")]
     pub(super) req_vectorscan: Option<VectorscanMatcher>,
     #[cfg(feature = "vectorscan-engine")]
@@ -105,6 +111,11 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let blocked_ips_canon: HashSet<IpAddr> = rules
+        .blocked_ips
+        .iter()
+        .filter_map(|ip| canonical_ip(ip))
+        .collect();
 
     #[cfg(feature = "vectorscan-engine")]
     let (req_vs_rules, resp_vs_rules): (Vec<_>, Vec<_>) = {
@@ -130,6 +141,7 @@ pub(super) fn build_matchers(rules: &RuleSet, vectorscan_enabled: bool) -> Resul
         resp_headers: build_keyword_matcher(&resp_hdr_rules)?,
         resp_body: build_keyword_matcher(&resp_body_rules)?,
         blocked_ip_nets,
+        blocked_ips_canon,
         #[cfg(feature = "vectorscan-engine")]
         req_vectorscan: if vectorscan_enabled && !req_vs_rules.is_empty() {
             Some(build_vectorscan_matcher(&req_vs_rules)?)
@@ -163,33 +175,6 @@ pub(super) fn build_keyword_matcher(rules: &[DetectionRule]) -> Result<Option<Ke
     }))
 }
 
-pub(super) fn keyword_match(
-    matcher: Option<&KeywordMatcher>,
-    haystack: &str,
-    original_payload: &str,
-) -> Option<Finding> {
-    let matcher = matcher?;
-    // Walk every match (not just the leftmost) so additive score-only rules
-    // accumulate properly. Previously the leftmost match short-circuited the
-    // walk, which meant a payload that hit 3 score-200 keywords would never
-    // exceed the score-block threshold even though every detector fired.
-    let mut sum_score = 0u32;
-    for mat in matcher.ac.find_iter(haystack) {
-        let Some(rule) = matcher.rules.get(mat.pattern().as_usize()) else {
-            continue;
-        };
-        // A single keyword whose score is already at/above the block threshold
-        // is sufficient — fire immediately.
-        if rule.score >= SCORE_BLOCK_THRESHOLD {
-            return Some(super::finding::rule_to_finding(rule, original_payload));
-        }
-        sum_score = sum_score.saturating_add(rule.score);
-        if sum_score >= SCORE_BLOCK_THRESHOLD {
-            return Some(super::finding::rule_to_finding(rule, original_payload));
-        }
-    }
-    None
-}
 
 /// Returns `true` when the rule's score alone or the accumulated `sum_score`
 /// reaches `SCORE_BLOCK_THRESHOLD`. Resets `sum_score` to zero on a block so
@@ -244,24 +229,6 @@ pub(super) fn keyword_match_accumulate(
         }
     }
     None
-}
-
-/// Regex match filtered by `http_action` phase using the default threshold.
-pub(super) fn regex_match_phase_scored(
-    rules: &[CompiledDetectionRule],
-    haystack: &str,
-    original_payload: &str,
-    phase: &HttpAction,
-) -> Option<Finding> {
-    let mut sum_score = 0u32;
-    regex_match_phase_scored_threshold(
-        rules,
-        haystack,
-        original_payload,
-        phase,
-        SCORE_BLOCK_THRESHOLD,
-        &mut sum_score,
-    )
 }
 
 /// Configurable-threshold regex match. The caller threads `sum_score` across
