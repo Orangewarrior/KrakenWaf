@@ -13,15 +13,17 @@ use crate::update::{
 };
 use crate::{
     metrics::WafMetrics,
-    rules::{AddrListEntry, HttpAction, RuleSet, Severity},
+    rules::{AddrListEntry, CompiledDetectionRule, HttpAction, RuleSet, Severity},
     waf::rate_limit::RateLimiter,
 };
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use chrono::Utc;
+use dashmap::DashMap;
 use std::{
     fs::{self, OpenOptions},
     io::Write as _,
+    net::IpAddr,
     path::Path,
     sync::Arc,
     time::{Duration, Instant},
@@ -29,9 +31,9 @@ use std::{
 
 use ip_filter::{canonical_ip, extract_header_value};
 use matchers::{
-    build_matchers, keyword_match, keyword_match_accumulate, libinjection_match,
-    regex_match_phase_scored, regex_match_phase_scored_threshold_deadline, EngineMatchers,
-    RegexDeadline, RegexScanResult, SCORE_BLOCK_THRESHOLD,
+    build_matchers, keyword_match_accumulate, libinjection_match,
+    regex_match_phase_scored_threshold, regex_match_phase_scored_threshold_deadline,
+    EngineMatchers, KeywordMatcher, RegexDeadline, RegexScanResult, SCORE_BLOCK_THRESHOLD,
 };
 use normalize::{as_latin1, inspection_views, normalize_request_bytes};
 
@@ -143,6 +145,12 @@ pub struct WafEngine {
     metrics: Arc<WafMetrics>,
     cmc_manager: Arc<CmcController>,
     spamhaus_dqs: Option<SpamhausDqsConfig>,
+    /// Per-IP TTL cache of Spamhaus DQS verdicts. Without it `inspect_early`
+    /// performed a DNS round trip for **every** request — adding tail latency
+    /// and turning the WAF into an external-DNS amplifier (an attacker hammering
+    /// one IP forced one lookup per request). Positive and negative verdicts are
+    /// cached with independent TTLs; transient lookup errors are never cached.
+    spamhaus_dqs_cache: DashMap<IpAddr, SpamhausDqsCacheEntry>,
     anomaly_threshold: u32,
     max_inspection_ms: u64,
 }
@@ -151,6 +159,28 @@ pub struct WafEngine {
 struct SpamhausDqsConfig {
     token: String,
     zones: Vec<String>,
+}
+
+/// TTL for a positive (listed) Spamhaus DQS verdict.
+const SPAMHAUS_DQS_HIT_TTL: Duration = Duration::from_secs(3600);
+/// TTL for a negative (clean) Spamhaus DQS verdict. Shorter so a freshly-listed
+/// IP starts being blocked promptly.
+const SPAMHAUS_DQS_MISS_TTL: Duration = Duration::from_secs(600);
+/// Hard cap on cache entries so an IP-rotating flood cannot grow it without
+/// bound. On overflow, expired entries are reaped before inserting.
+const SPAMHAUS_DQS_CACHE_MAX: usize = 100_000;
+
+#[derive(Debug, Clone)]
+struct SpamhausDqsCacheEntry {
+    expires_at: Instant,
+    /// `Some` = listed (block), `None` = clean.
+    hit: Option<SpamhausDqsCachedHit>,
+}
+
+#[derive(Debug, Clone)]
+struct SpamhausDqsCachedHit {
+    zone: String,
+    response: IpAddr,
 }
 
 const FILTER_DEADLINE_LOG: &str = "logs/filter/deadline.jsonl";
@@ -227,6 +257,7 @@ impl WafEngine {
             metrics: cfg.metrics,
             cmc_manager: cfg.cmc_manager,
             spamhaus_dqs,
+            spamhaus_dqs_cache: DashMap::new(),
             anomaly_threshold,
             max_inspection_ms: cfg.max_inspection_ms,
         })
@@ -288,12 +319,7 @@ impl WafEngine {
 
         if self.blocklist_ip_enabled {
             if let Some(client) = canonical_ip(&ctx.client_ip) {
-                if rules
-                    .blocked_ips
-                    .iter()
-                    .filter_map(|ip| canonical_ip(ip))
-                    .any(|blocked| blocked == client)
-                {
+                if matchers.blocked_ips_canon.contains(&client) {
                     return Decision::Block(Box::new(self.simple_finding(
                         "Blocked source IP",
                         Severity::High,
@@ -392,15 +418,36 @@ impl WafEngine {
 
     async fn spamhaus_dqs_finding(
         &self,
-        client: &std::net::IpAddr,
+        client: &IpAddr,
         ctx: &InspectionContext,
     ) -> Option<Finding> {
         let config = self.spamhaus_dqs.as_ref()?;
+
+        // Cache fast-path: a fresh verdict for this IP avoids the per-request
+        // DNS round trip entirely.
+        if let Some(entry) = self.spamhaus_dqs_cache.get(client) {
+            if entry.expires_at > Instant::now() {
+                return entry
+                    .hit
+                    .as_ref()
+                    .map(|hit| spamhaus_dqs_finding(&hit.zone, hit.response, ctx));
+            }
+        }
+
+        let mut found: Option<SpamhausDqsCachedHit> = None;
+        let mut had_error = false;
         for zone in &config.zones {
             match query_spamhaus_dqs(&client.to_string(), &config.token, zone).await {
-                Ok(Some(hit)) => return Some(spamhaus_dqs_finding(&hit.zone, hit.response, ctx)),
+                Ok(Some(hit)) => {
+                    found = Some(SpamhausDqsCachedHit {
+                        zone: hit.zone,
+                        response: hit.response,
+                    });
+                    break;
+                }
                 Ok(None) => {}
                 Err(err) => {
+                    had_error = true;
                     tracing::warn!(
                         target: "krakenwaf",
                         ip = %client,
@@ -411,12 +458,35 @@ impl WafEngine {
                 }
             }
         }
-        None
+
+        // Cache the verdict: positive results always; a clean result only when
+        // every zone answered without error (so a transient DNS failure is not
+        // frozen in as "clean"). An uncertain (error-only) outcome is not cached.
+        match (&found, had_error) {
+            (Some(hit), _) => self.cache_spamhaus_dqs(*client, Some(hit.clone()), SPAMHAUS_DQS_HIT_TTL),
+            (None, false) => self.cache_spamhaus_dqs(*client, None, SPAMHAUS_DQS_MISS_TTL),
+            (None, true) => {}
+        }
+
+        found.map(|hit| spamhaus_dqs_finding(&hit.zone, hit.response, ctx))
     }
 
-    #[allow(dead_code)]
-    pub fn inspect_body_chunk(&self, chunk: &[u8]) -> Decision {
-        self.inspect_complete_payload(chunk)
+    /// Insert a Spamhaus DQS verdict into the TTL cache, reaping expired entries
+    /// first if the cache has hit its size cap.
+    fn cache_spamhaus_dqs(
+        &self,
+        ip: IpAddr,
+        hit: Option<SpamhausDqsCachedHit>,
+        ttl: Duration,
+    ) {
+        let expires_at = Instant::now().checked_add(ttl).unwrap_or_else(Instant::now);
+        if self.spamhaus_dqs_cache.len() >= SPAMHAUS_DQS_CACHE_MAX {
+            let now = Instant::now();
+            self.spamhaus_dqs_cache
+                .retain(|_, entry| entry.expires_at > now);
+        }
+        self.spamhaus_dqs_cache
+            .insert(ip, SpamhausDqsCacheEntry { expires_at, hit });
     }
 
     /// Inspect a request's query string and body for HTTP Parameter Pollution
@@ -448,10 +518,6 @@ impl WafEngine {
             Some(finding) => Decision::Block(Box::new(finding)),
             None => Decision::Allow,
         }
-    }
-
-    pub fn inspect_complete_payload(&self, payload: &[u8]) -> Decision {
-        self.inspect_complete_payload_with_context(payload, None)
     }
 
     /// Inspect a request payload. Only rules with `http_action: Request` fire here.
@@ -774,6 +840,42 @@ impl WafEngine {
     }
 
     /// Inspect the upstream HTTP response. Only rules with `http_action: Response` fire here.
+    /// Run the keyword + regex matchers for one response section (headers or
+    /// body) across its inspection views, threading `sum_score` per view and
+    /// honouring the configured anomaly threshold. Returns the first finding.
+    fn inspect_response_section(
+        &self,
+        keyword_matcher: Option<&KeywordMatcher>,
+        regex_rules: &[CompiledDetectionRule],
+        normalized_text: &str,
+        original_text: &str,
+    ) -> Option<Finding> {
+        let threshold = self.anomaly_threshold;
+        for view in inspection_views(normalized_text) {
+            let mut sum_score = 0u32;
+            if let Some(finding) = keyword_match_accumulate(
+                keyword_matcher,
+                view,
+                original_text,
+                threshold,
+                &mut sum_score,
+            ) {
+                return Some(finding);
+            }
+            if let Some(finding) = regex_match_phase_scored_threshold(
+                regex_rules,
+                view,
+                original_text,
+                &HttpAction::Response,
+                threshold,
+                &mut sum_score,
+            ) {
+                return Some(finding);
+            }
+        }
+        None
+    }
+
     pub fn inspect_response(&self, ctx: &ResponseContext) -> Decision {
         let snap = self.snapshot.load_full();
         let rules = &snap.rules;
@@ -812,38 +914,25 @@ impl WafEngine {
             }
         }
 
-        for view in inspection_views(header_normalized_text.as_ref()) {
-            if let Some(finding) = keyword_match(
-                matchers.resp_headers.as_ref(),
-                view,
-                header_original.as_ref(),
-            ) {
-                return Decision::Block(Box::new(finding));
-            }
-            if let Some(finding) = regex_match_phase_scored(
-                &rules.header_regex,
-                view,
-                header_original.as_ref(),
-                &HttpAction::Response,
-            ) {
-                return Decision::Block(Box::new(finding));
-            }
+        // Response-phase inspection now honours the operator-configured
+        // `--anomaly-threshold` exactly like the request phase (see
+        // `inspect_response_section`), instead of the hard-coded
+        // `SCORE_BLOCK_THRESHOLD`.
+        if let Some(finding) = self.inspect_response_section(
+            matchers.resp_headers.as_ref(),
+            &rules.header_regex,
+            header_normalized_text.as_ref(),
+            header_original.as_ref(),
+        ) {
+            return Decision::Block(Box::new(finding));
         }
-
-        for view in inspection_views(body_normalized_text.as_ref()) {
-            if let Some(finding) =
-                keyword_match(matchers.resp_body.as_ref(), view, body_original.as_ref())
-            {
-                return Decision::Block(Box::new(finding));
-            }
-            if let Some(finding) = regex_match_phase_scored(
-                &rules.body_regex,
-                view,
-                body_original.as_ref(),
-                &HttpAction::Response,
-            ) {
-                return Decision::Block(Box::new(finding));
-            }
+        if let Some(finding) = self.inspect_response_section(
+            matchers.resp_body.as_ref(),
+            &rules.body_regex,
+            body_normalized_text.as_ref(),
+            body_original.as_ref(),
+        ) {
+            return Decision::Block(Box::new(finding));
         }
 
         // CMC response-body scan: passwd/shadow leak + DB error detection.

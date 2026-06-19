@@ -65,10 +65,29 @@ impl BodyTracker {
         }
     }
 
-    fn add(&mut self, n: usize) {
-        self.global.fetch_add(n, Ordering::Relaxed);
-        self.ip.fetch_add(n, Ordering::Relaxed);
+    /// Atomically reserve `n` bytes against the global and per-IP counters.
+    ///
+    /// Replaces the previous load-then-add pattern, which was a TOCTOU race:
+    /// concurrent requests could each observe the counter below the cap, then
+    /// all add, overshooting it. Here each counter is bumped with a single
+    /// `fetch_add`; if the post-increment total exceeds its cap the reservation
+    /// is rolled back (and the global is rolled back too if the per-IP check
+    /// fails after the global one passed). `0` means the corresponding cap is
+    /// disabled. Returns `Err(limit)` identifying the cap that was hit.
+    fn try_reserve(&mut self, n: usize, global_max: usize, ip_max: usize) -> Result<(), usize> {
+        let prev_global = self.global.fetch_add(n, Ordering::Relaxed);
+        if global_max > 0 && prev_global.saturating_add(n) > global_max {
+            self.global.fetch_sub(n, Ordering::Relaxed);
+            return Err(global_max);
+        }
+        let prev_ip = self.ip.fetch_add(n, Ordering::Relaxed);
+        if ip_max > 0 && prev_ip.saturating_add(n) > ip_max {
+            self.ip.fetch_sub(n, Ordering::Relaxed);
+            self.global.fetch_sub(n, Ordering::Relaxed);
+            return Err(ip_max);
+        }
         self.bytes += n;
+        Ok(())
     }
 }
 
@@ -80,15 +99,6 @@ impl Drop for BodyTracker {
         }
     }
 }
-
-/// Bytes carried between adjacent body chunks when streaming-inspecting the body.
-/// Sized to be larger than any realistic detection pattern so attackers cannot
-/// reliably split a payload across TCP frames to evade the keyword/regex matchers.
-/// 2.24.0: the body pipeline now buffers and inspects once, so this constant
-/// is only a fallback for the (legacy) per-chunk streaming path. It remains
-/// here as a lower bound on the streaming-inspection-window cap.
-#[allow(dead_code)]
-const STREAM_OVERLAP_BYTES: usize = 16 * 1024;
 
 /// Hard ceiling on the number of headers forwarded upstream and embedded into the
 /// inspection prefix. Defends against header-amplification `DoS` and request smuggling
@@ -375,6 +385,12 @@ impl ProxyClient {
         })
     }
 
+    /// Handle a request. `client_ip` is the TCP peer address; the effective
+    /// client IP (honouring trusted-proxy `Forwarded:` / `X-Forwarded-For` /
+    /// `X-Real-IP`) is derived from it in `dispatch` and used as the key for
+    /// every per-IP subsystem (rate limit, body-byte backpressure, engine), so
+    /// they all share one identity. The peer is retained so the upstream
+    /// `X-Forwarded-For` can be sanitised based on whether the peer is trusted.
     pub async fn handle(
         &self,
         state: &AppState,
@@ -427,6 +443,12 @@ impl ProxyClient {
     ) -> WafResponse {
         let method = req.method().clone();
         let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
+        // The peer is a trusted reverse proxy when its address falls inside a
+        // configured trusted-proxy CIDR. This gates whether an inbound
+        // `X-Forwarded-For` chain may be preserved when forwarding upstream.
+        let peer_is_trusted = client_ip
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|peer| state.trusted_proxy_nets.iter().any(|net| net.contains(&peer)));
         let uri = req.uri().clone();
         let path = crate::rules::normalize_url_path(uri.path());
         // Reject oversize header sets BEFORE materialising any flattened representation
@@ -593,8 +615,21 @@ impl ProxyClient {
                 .await;
         }
 
-        let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut(), &client_ip)
-            .await
+        // Single body pipeline: buffer the body (with backpressure accounting
+        // keyed on the effective client IP), then — unless this is an
+        // allow-listed path — decode any `Content-Encoding`, and run multipart,
+        // HPP, Open-Redirect/RFI and the full-request signature inspection
+        // **once** on the decoded view. Allow-listed paths skip all inspection
+        // here (they already returned before `inspect_early`), so they no longer
+        // pay the cost of an inspection whose verdict was discarded.
+        let body_bytes = match consume_and_inspect_body(
+            state,
+            &context,
+            req.body_mut(),
+            &effective_ip,
+            skip_inspection,
+        )
+        .await
         {
             Ok(bytes) => bytes,
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
@@ -608,13 +643,13 @@ impl ProxyClient {
                 finding,
                 partial_body,
             }) => {
-                if !skip_inspection {
-                    let event = build_event(&context, &finding, Some(&partial_body));
-                    if let Some(response) = self.log_and_enforce(state, event).await {
-                        return response;
-                    }
+                // `consume_and_inspect_body` only inspects when `!skip_inspection`,
+                // so a `Blocked` outcome always warrants enforcement.
+                let event = build_event(&context, &finding, Some(&partial_body));
+                if let Some(response) = self.log_and_enforce(state, event).await {
+                    return response;
                 }
-                // Silent mode or allowlisted path: forward whatever body was accumulated.
+                // Silent / DetectOnly mode: forward whatever body was accumulated.
                 partial_body
             }
             Err(BodyInspectionError::Timeout) => {
@@ -626,6 +661,17 @@ impl ProxyClient {
             }
             Err(BodyInspectionError::Other(err)) => {
                 warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
+                write_proxy_critical(
+                    "dispatch",
+                    "body_inspection_failed",
+                    "request body could not be inspected; rejected with 400",
+                    &serde_json::json!({
+                        "request_id": context.request_id,
+                        "method": context.method,
+                        "uri": context.uri,
+                        "error": err.to_string(),
+                    }),
+                );
                 return block_content_response(
                     state,
                     StatusCode::BAD_REQUEST,
@@ -633,15 +679,6 @@ impl ProxyClient {
                 );
             }
         };
-
-        if !skip_inspection {
-            if let Some(response) = self
-                .inspect_buffered_request_body(state, &context, &body_bytes)
-                .await
-            {
-                return response;
-            }
-        }
 
         let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
 
@@ -655,60 +692,27 @@ impl ProxyClient {
                 request_id,
                 traceparent,
                 &forwarded_origin,
+                &effective_ip,
+                peer_is_trusted,
             )
             .await
         {
             Ok(response) => response,
             Err(err) => {
                 error!(target: "krakenwaf", "upstream proxy failure: {err:#}");
+                write_proxy_critical(
+                    "dispatch",
+                    "upstream_failure",
+                    "upstream request failed; returned 502 to client",
+                    &serde_json::json!({
+                        "request_id": request_id,
+                        "error": format!("{err:#}"),
+                    }),
+                );
                 let mut response =
                     plain_response(StatusCode::BAD_GATEWAY, "KrakenWaf upstream failure");
                 apply_response_policy(state, &mut response);
                 response
-            }
-        }
-    }
-
-    async fn inspect_buffered_request_body(
-        &self,
-        state: &AppState,
-        context: &InspectionContext,
-        body_bytes: &Bytes,
-    ) -> Option<WafResponse> {
-        let body_for_inspection = request_body_for_text_inspection(context, body_bytes);
-
-        // HTTP Parameter Pollution check (HPP_detect CMC module): inspect the
-        // raw query string and the request body for a duplicated parameter
-        // name. Runs once the body is available so both locations are covered.
-        let query = context.uri.split_once('?').map_or("", |(_, q)| q);
-        let body_text = String::from_utf8_lossy(&body_for_inspection);
-        if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
-            let event = build_event(context, &finding, Some(body_bytes));
-            if let Some(response) = self.log_and_enforce(state, event).await {
-                return Some(response);
-            }
-        }
-
-        // Open Redirect / RFI check (Open_redirect_n_RFI_detect CMC module):
-        // inspect the raw query string (GET) and request body (POST) for a
-        // hot redirect/inclusion parameter whose value resolves to an external
-        // URL, dangerous scheme, or inclusion wrapper.
-        if let Decision::Block(finding) = state.waf.inspect_open_redirect_rfi(query, &body_text) {
-            let event = build_event(context, &finding, Some(body_bytes));
-            if let Some(response) = self.log_and_enforce(state, event).await {
-                return Some(response);
-            }
-        }
-
-        let full_request = format_full_request_bytes(context, Some(&body_for_inspection));
-        match state
-            .waf
-            .inspect_complete_payload_with_context(&full_request, Some(&context.method))
-        {
-            Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
-            Decision::Block(finding) => {
-                let event = build_event(context, &finding, Some(body_bytes));
-                self.log_and_enforce(state, event).await
             }
         }
     }
@@ -888,6 +892,8 @@ impl ProxyClient {
         request_id: &str,
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
+        effective_ip: &str,
+        peer_is_trusted: bool,
     ) -> Result<WafResponse> {
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
@@ -909,9 +915,17 @@ impl ProxyClient {
         let mut forwarded_bytes: usize = 0;
         let cookie_header = combine_request_cookie_headers(headers);
         for (name, value) in headers {
+            // `x-forwarded-for` is always dropped here and re-emitted below as a
+            // sanitised value. An inbound RFC 7239 `Forwarded:` header is dropped
+            // when the peer is NOT a trusted proxy, since a direct client could
+            // otherwise spoof a proxy chain the backend would trust.
+            let is_xff = name.as_str().eq_ignore_ascii_case("x-forwarded-for");
+            let is_forwarded = name.as_str().eq_ignore_ascii_case("forwarded");
             if is_hop_by_hop(name)
                 || name == HOST
                 || name == COOKIE
+                || is_xff
+                || (is_forwarded && !peer_is_trusted)
                 || connection_hop.iter().any(|hop| hop == name)
             {
                 continue;
@@ -946,6 +960,20 @@ impl ProxyClient {
             request_builder.header("x-forwarded-host", forwarded_origin.host.as_str());
         if let Some(port) = forwarded_origin.port {
             request_builder = request_builder.header("x-forwarded-port", port.to_string());
+        }
+        // Sanitised `X-Forwarded-For`: a trusted-proxy chain is preserved and the
+        // effective client IP appended; an untrusted (direct) client's spoofed
+        // chain is discarded and replaced with the effective IP alone.
+        if let Some(xff) = build_forwarded_for(headers, effective_ip, peer_is_trusted) {
+            forwarded_count += 1;
+            forwarded_bytes += "x-forwarded-for".len() + xff.as_bytes().len();
+            if forwarded_count > MAX_FORWARDED_HEADERS || forwarded_bytes > MAX_FORWARDED_HEADER_BYTES
+            {
+                anyhow::bail!(
+                    "request rejected: forwarded headers exceed limits (count<={MAX_FORWARDED_HEADERS}, bytes<={MAX_FORWARDED_HEADER_BYTES})"
+                );
+            }
+            request_builder = request_builder.header("x-forwarded-for", xff);
         }
         request_builder = request_builder.header("x-request-id", request_id);
         request_builder = request_builder.header("traceparent", traceparent);
@@ -1236,27 +1264,21 @@ async fn accumulate_body_frames(
             Err(_) => return Err(BodyInspectionError::Timeout),
         };
         if let Some(chunk) = frame.data_ref() {
+            // Per-request cap: this loop owns `acc`, so a plain check is race-free.
             if acc.len() + chunk.len() > ctx.body_limit {
                 return Err(BodyInspectionError::TooLarge {
                     limit: ctx.body_limit,
                 });
             }
-            if state.max_inflight_body_bytes > 0
-                && state.inflight_body_bytes.load(Ordering::Relaxed) + chunk.len()
-                    > state.max_inflight_body_bytes
-            {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_inflight_body_bytes,
-                });
-            }
-            if state.max_per_ip_body_bytes > 0
-                && tracker.ip.load(Ordering::Relaxed) + chunk.len() > state.max_per_ip_body_bytes
-            {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_per_ip_body_bytes,
-                });
-            }
-            tracker.add(chunk.len());
+            // Global + per-IP caps: reserve atomically so concurrent requests
+            // cannot each pass a stale read and collectively overshoot the cap.
+            tracker
+                .try_reserve(
+                    chunk.len(),
+                    state.max_inflight_body_bytes,
+                    state.max_per_ip_body_bytes,
+                )
+                .map_err(|limit| BodyInspectionError::TooLarge { limit })?;
             acc.extend_from_slice(chunk);
         }
     }
@@ -1268,14 +1290,24 @@ async fn consume_and_inspect_body(
     ctx: &InspectionContext,
     body: &mut Incoming,
     client_ip: &str,
+    skip_inspection: bool,
 ) -> std::result::Result<Bytes, BodyInspectionError> {
     let raw_body = accumulate_body_frames(state, ctx, body, client_ip).await?;
-    if raw_body.is_empty() {
+    // Allow-listed paths buffered the body for backpressure accounting only.
+    if skip_inspection {
         return Ok(raw_body);
     }
 
-    let decoded_body = decode_body_for_inspection(state, ctx, &raw_body)?;
-    inspect_multipart_parts(state, ctx, &decoded_body, &raw_body)?;
+    // Decode `Content-Encoding` only when there are bytes to decode; an empty
+    // body still flows through `inspect_decoded_body` so query-string HPP /
+    // Open-Redirect-RFI run for bodyless (GET) requests.
+    let decoded_body = if raw_body.is_empty() {
+        raw_body.clone()
+    } else {
+        let decoded = decode_body_for_inspection(state, ctx, &raw_body)?;
+        inspect_multipart_parts(state, ctx, &decoded, &raw_body)?;
+        decoded
+    };
     inspect_decoded_body(state, ctx, &decoded_body, raw_body)
 }
 
@@ -1349,8 +1381,35 @@ fn inspect_decoded_body(
     decoded_body: &Bytes,
     raw_body: Bytes,
 ) -> std::result::Result<Bytes, BodyInspectionError> {
-    // Single full-body inspection on the cleartext view.
     let body_for_inspection = request_body_for_text_inspection(ctx, decoded_body);
+
+    // HPP and Open-Redirect/RFI inspect the query string AND the *decoded* body
+    // text. Running them on the decoded view closes the evasion where a
+    // `Content-Encoding: gzip|br|deflate|zstd` wrapper hid a duplicated
+    // parameter or a hot redirect/inclusion value from these CMC modules. The
+    // query is always inspected, so bodyless GET requests are still covered.
+    let query = ctx.uri.split_once('?').map_or("", |(_, q)| q);
+    let body_text = String::from_utf8_lossy(&body_for_inspection);
+    if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
+        return Err(BodyInspectionError::Blocked {
+            finding,
+            partial_body: raw_body,
+        });
+    }
+    if let Decision::Block(finding) = state.waf.inspect_open_redirect_rfi(query, &body_text) {
+        return Err(BodyInspectionError::Blocked {
+            finding,
+            partial_body: raw_body,
+        });
+    }
+    drop(body_text);
+
+    // The full-request signature pass is only meaningful when there is a body:
+    // the bodyless request prefix was already inspected by `inspect_early`, so
+    // re-running it here would double-inspect every request.
+    if body_for_inspection.is_empty() {
+        return Ok(raw_body);
+    }
     let full = format_full_request_bytes(ctx, Some(&body_for_inspection));
     match state
         .waf
@@ -1527,13 +1586,6 @@ pub(crate) fn format_request_prefix_bytes(ctx: &InspectionContext) -> Vec<u8> {
         }
     }
     out.push(b'\n');
-    out
-}
-
-#[allow(dead_code)]
-fn format_full_request_window_bytes(ctx: &InspectionContext, body_window: &[u8]) -> Vec<u8> {
-    let mut out = format_request_prefix_bytes(ctx);
-    out.extend_from_slice(body_window);
     out
 }
 
@@ -2315,6 +2367,45 @@ fn combine_request_cookie_headers(headers: &HeaderMap) -> Option<HeaderValue> {
     HeaderValue::from_str(&combined).ok()
 }
 
+/// Build the sanitised `X-Forwarded-For` value forwarded upstream.
+///
+/// * When the peer is a **trusted proxy**, its inbound `X-Forwarded-For` chain
+///   is legitimate, so it is preserved and the effective client IP appended
+///   (standard reverse-proxy append semantics).
+/// * When the peer is **untrusted** (a direct client), any inbound chain is
+///   attacker-controlled and is discarded; the value becomes the effective IP
+///   alone (which equals the peer in this case).
+///
+/// Returns `None` only if the resulting value cannot be encoded as a header
+/// (e.g. a non-ASCII effective IP, which cannot happen for a parsed `IpAddr`).
+fn build_forwarded_for(
+    headers: &HeaderMap,
+    effective_ip: &str,
+    peer_is_trusted: bool,
+) -> Option<HeaderValue> {
+    let mut chain = String::new();
+    if peer_is_trusted {
+        for value in headers.get_all("x-forwarded-for") {
+            let Ok(raw) = value.to_str() else {
+                continue;
+            };
+            let raw = raw.trim();
+            if raw.is_empty() {
+                continue;
+            }
+            if !chain.is_empty() {
+                chain.push_str(", ");
+            }
+            chain.push_str(raw);
+        }
+    }
+    if !chain.is_empty() {
+        chain.push_str(", ");
+    }
+    chain.push_str(effective_ip);
+    HeaderValue::from_str(&chain).ok()
+}
+
 fn apply_response_policy<B>(state: &AppState, response: &mut Response<B>) {
     let is_websocket_upgrade = response.status() == StatusCode::SWITCHING_PROTOCOLS
         || response.headers().contains_key(UPGRADE)
@@ -2424,6 +2515,44 @@ fn append_proxy_error_dev_event(event: &serde_json::Value) -> std::io::Result<()
     }
     let mut file = OpenOptions::new().create(true).append(true).open(path)?;
     writeln!(file, "{event}")
+}
+
+const PROXY_CRITICAL_LOG: &str = "logs/proxy/critical.jsonl";
+
+/// Persist a critical proxy event to `logs/proxy/critical.jsonl`, creating the
+/// directory if it does not exist. Unlike [`write_proxy_error_dev`] (which is
+/// gated behind `--debug-proxy-dev`), these events are always persisted: they
+/// represent failures that produced an error response to the client (upstream
+/// failure, un-inspectable body) and must be auditable even if the tracing sink
+/// is unavailable.
+fn write_proxy_critical(function: &str, code: &str, message: &str, fields: &serde_json::Value) {
+    let event = serde_json::json!({
+        "timestamp": Utc::now().to_rfc3339(),
+        "severity": "critical",
+        "component": "proxy",
+        "function": function,
+        "code": code,
+        "message": message,
+        "fields": fields,
+    });
+    let path = Path::new(PROXY_CRITICAL_LOG);
+    let result = (|| -> std::io::Result<()> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        writeln!(file, "{event}")
+    })();
+    if let Err(err) = result {
+        warn!(
+            target: "krakenwaf",
+            error = %err,
+            path = PROXY_CRITICAL_LOG,
+            function,
+            code,
+            "failed to persist critical proxy event"
+        );
+    }
 }
 
 /// Parse the RFC 7239 `Forwarded:` header chain and return the rightmost
@@ -2701,6 +2830,46 @@ mod module_label_tests {
             ),
             "Shell downloader body, ID 00003:Regex rule"
         );
+    }
+}
+
+#[cfg(test)]
+mod forwarded_for_tests {
+    use super::build_forwarded_for;
+    use http::{HeaderMap, HeaderValue};
+
+    fn headers_with_xff(values: &[&str]) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        for v in values {
+            headers.append("x-forwarded-for", HeaderValue::from_str(v).expect("valid"));
+        }
+        headers
+    }
+
+    #[test]
+    fn untrusted_peer_discards_inbound_chain_and_uses_effective_ip() {
+        // A direct (untrusted) client could spoof the chain; it must be dropped
+        // and replaced with the effective IP alone.
+        let headers = headers_with_xff(&["1.1.1.1", "2.2.2.2"]);
+        let xff = build_forwarded_for(&headers, "203.0.113.7", false).expect("value");
+        assert_eq!(xff, HeaderValue::from_static("203.0.113.7"));
+    }
+
+    #[test]
+    fn trusted_peer_preserves_chain_and_appends_effective_ip() {
+        let headers = headers_with_xff(&["1.1.1.1", "2.2.2.2"]);
+        let xff = build_forwarded_for(&headers, "203.0.113.7", true).expect("value");
+        assert_eq!(
+            xff,
+            HeaderValue::from_static("1.1.1.1, 2.2.2.2, 203.0.113.7")
+        );
+    }
+
+    #[test]
+    fn no_inbound_chain_yields_just_effective_ip() {
+        let headers = HeaderMap::new();
+        let xff = build_forwarded_for(&headers, "198.51.100.9", true).expect("value");
+        assert_eq!(xff, HeaderValue::from_static("198.51.100.9"));
     }
 }
 

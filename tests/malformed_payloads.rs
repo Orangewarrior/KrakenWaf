@@ -67,7 +67,7 @@ fn blocks_malformed_traversal_payload() {
         max_inspection_ms: 0,
     })
     .expect("test");
-    let decision = engine.inspect_body_chunk(br"../../../../etc/passwd");
+    let decision = engine.inspect_complete_payload_with_context(br"../../../../etc/passwd", None);
     assert!(matches!(decision, Decision::Block(_)));
 }
 
@@ -118,7 +118,7 @@ fn blocks_regex_based_rce_pattern() {
         max_inspection_ms: 0,
     })
     .expect("test");
-    let decision = engine.inspect_body_chunk(br"powershell -enc AAAA");
+    let decision = engine.inspect_complete_payload_with_context(br"powershell -enc AAAA", None);
     assert!(matches!(decision, Decision::Block(_)));
 }
 
@@ -203,12 +203,12 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
     .expect("test");
 
     assert!(matches!(
-        engine.inspect_body_chunk(b"payload_test=kwaf-score-low-a"),
+        engine.inspect_complete_payload_with_context(b"payload_test=kwaf-score-low-a", None),
         Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. }
     ));
     assert!(matches!(
         engine
-            .inspect_body_chunk(b"payload_test=kwaf-score-low-a kwaf-score-low-b kwaf-score-low-c"),
+            .inspect_complete_payload_with_context(b"payload_test=kwaf-score-low-a kwaf-score-low-b kwaf-score-low-c", None),
         Decision::Block(_)
     ));
 
@@ -218,15 +218,15 @@ fn allows_single_low_score_regex_and_blocks_accumulated_score() {
     // splitting the payload across delimiters cannot keep each segment under
     // the block threshold.
     assert!(matches!(
-        engine.inspect_body_chunk(b"kwaf-score-low-a&kwaf-score-low-b&kwaf-score-low-c"),
+        engine.inspect_complete_payload_with_context(b"kwaf-score-low-a&kwaf-score-low-b&kwaf-score-low-c", None),
         Decision::Block(_),
     ));
     assert!(matches!(
-        engine.inspect_body_chunk(b"kwaf-score-low-a;kwaf-score-low-b;kwaf-score-low-c"),
+        engine.inspect_complete_payload_with_context(b"kwaf-score-low-a;kwaf-score-low-b;kwaf-score-low-c", None),
         Decision::Block(_),
     ));
     assert!(matches!(
-        engine.inspect_body_chunk(b"kwaf-score-low-a\nkwaf-score-low-b\nkwaf-score-low-c"),
+        engine.inspect_complete_payload_with_context(b"kwaf-score-low-a\nkwaf-score-low-b\nkwaf-score-low-c", None),
         Decision::Block(_),
     ));
 }
@@ -297,7 +297,7 @@ fn single_near_threshold_rule_in_full_request_is_not_double_counted_across_views
         b"POST /test_post HTTP/1.1\nhost: 127.0.0.1\ncontent-type: application/x-www-form-urlencoded\ncontent-length: 38\n\npayload_test=kwaf-score-near-threshold";
     assert!(
         matches!(
-            engine.inspect_complete_payload(full_request),
+            engine.inspect_complete_payload_with_context(full_request, None),
             Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. }
         ),
         "single rule scoring 599 must not be double-counted across inspection views"

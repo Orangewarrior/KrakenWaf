@@ -462,6 +462,11 @@ impl LocalRateLimiter {
                 ticker.tick().await;
                 if let Err(e) = persister.persist() {
                     warn!(target: "krakenwaf", error = %e, "rate-limiter persist failed");
+                    write_ratelimit_critical(
+                        "persist_failed",
+                        "rate-limiter snapshot persistence failed; counters may be lost on restart",
+                        &serde_json::json!({ "error": e.to_string() }),
+                    );
                 }
             }
         });
@@ -487,23 +492,42 @@ impl LocalRateLimiter {
 
 // ── RedisRateLimiter ──────────────────────────────────────────────────────────
 
-/// Atomic Lua script: INCR key, set TTL on first write, return 1=allow / 0=deny.
-const INCR_WITH_TTL_LUA: &str = r"
-local n = redis.call('INCR', KEYS[1])
-if n == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[2])
-end
-if n > tonumber(ARGV[1]) then
+/// Atomic GCRA (Generic Cell Rate Algorithm) Lua script — the distributed
+/// counterpart of the in-process [`gcra_check`]. It gives single-node and
+/// multi-node deployments **identical** semantics (a smooth burst of exactly
+/// `limit` requests with `window`-long recovery), replacing the previous
+/// fixed-window `INCR`+`EXPIRE`, which allowed up to ~2× `limit` across a window
+/// boundary.
+///
+/// State is a single key holding the TAT (Theoretical Arrival Time) in
+/// microseconds. The "now" reference is the Redis server clock via `TIME`, so
+/// every WAF node shares one monotonic-enough timeline without trusting each
+/// node's wall clock. `ARGV[1]` = emission interval (µs), `ARGV[2]` = delay
+/// tolerance / burst window (µs). Returns 1 = allow, 0 = deny.
+const GCRA_LUA: &str = r"
+local t = redis.call('TIME')
+local now = (tonumber(t[1]) * 1000000) + tonumber(t[2])
+local emission = tonumber(ARGV[1])
+local tolerance = tonumber(ARGV[2])
+local tat = tonumber(redis.call('GET', KEYS[1]))
+if not tat or tat < now then tat = now end
+local new_tat = tat + emission
+if (new_tat - tolerance) > now then
   return 0
 end
+local ttl_ms = math.ceil((tolerance + emission) / 1000)
+if ttl_ms < 1 then ttl_ms = 1 end
+redis.call('SET', KEYS[1], new_tat, 'PX', ttl_ms)
 return 1
 ";
 
 pub struct RedisRateLimiter {
     pool: FredPool,
     key_prefix: String,
-    max_requests: u32,
-    window_secs: u64,
+    /// GCRA emission interval in microseconds (`window / limit`).
+    emission_us: i64,
+    /// GCRA delay tolerance / burst window in microseconds (`= window`).
+    tolerance_us: i64,
     /// Per-call timeout for `EVAL` operations. Bounds the worst-case latency the
     /// WAF can spend waiting on a hung Redis (network blip, GC stall) before
     /// applying the fail mode. Keeps tail latency under control on heavy load.
@@ -595,11 +619,18 @@ impl RedisRateLimiter {
             .context("Redis pool init timed out after 10s")?
             .context("failed to connect to Redis")?;
 
+        // GCRA parameters in microseconds, mirroring the local limiter
+        // (`emission = window / limit`, `tolerance = window`). `limit.max(1)`
+        // avoids a divide-by-zero when misconfigured with a zero limit.
+        let window_us = i64::try_from(u128::from(window_secs) * 1_000_000).unwrap_or(i64::MAX);
+        let emission_us = window_us / i64::from(limit.max(1));
+        let tolerance_us = window_us;
+
         Ok(Self {
             pool,
             key_prefix: key_prefix.to_string(),
-            max_requests: limit,
-            window_secs,
+            emission_us,
+            tolerance_us,
             // 150 ms is comfortably above p99 of a healthy intra-DC Redis call
             // (typically &lt; 5 ms) yet tight enough that a degraded Redis cannot
             // dominate WAF tail latency under load. Tunable later if needed.
@@ -620,9 +651,9 @@ impl RedisRateLimiter {
         // timeout we apply the configured fail mode (`fail_open`) and record it
         // so a Redis outage silently disabling rate limiting is observable.
         let eval_fut = self.pool.eval::<i64, _, _, _>(
-            INCR_WITH_TTL_LUA,
+            GCRA_LUA,
             vec![key],
-            vec![i64::from(self.max_requests), self.window_secs.cast_signed()],
+            vec![self.emission_us, self.tolerance_us],
         );
 
         match tokio::time::timeout(self.op_timeout, eval_fut).await {
@@ -653,8 +684,55 @@ impl RedisRateLimiter {
             "Redis rate-limiter unavailable; applying fail mode (fail_open={})",
             self.fail_open
         );
+        // Redis being unavailable degrades the distributed rate-limit guarantee:
+        // fail-open silently disables limiting, fail-closed denies legitimate
+        // traffic. Persist either way so the outage is auditable post-mortem.
+        write_ratelimit_critical(
+            "redis_unavailable",
+            "Redis rate-limiter unavailable; applied configured fail mode",
+            &serde_json::json!({
+                "ip": ip,
+                "fail_open": self.fail_open,
+                "reason": reason.to_string(),
+            }),
+        );
         self.fail_open
     }
+}
+
+const RATELIMIT_CRITICAL_LOG: &str = "logs/ratelimit/critical.jsonl";
+
+/// Persist a critical rate-limiter event to `logs/ratelimit/critical.jsonl`,
+/// creating the directory if it does not exist. Reserved for failures that
+/// degrade the rate-limit guarantee (snapshot persistence errors, Redis
+/// unavailability) so they survive even if the tracing sink is unavailable.
+fn write_ratelimit_critical(code: &str, message: &str, fields: &serde_json::Value) {
+    let event = serde_json::json!({
+        "timestamp": chrono::Utc::now().to_rfc3339(),
+        "severity": "critical",
+        "component": "ratelimit",
+        "code": code,
+        "message": message,
+        "fields": fields,
+    });
+    if let Err(err) = append_ratelimit_critical(&event) {
+        warn!(
+            target: "krakenwaf",
+            error = %err,
+            path = RATELIMIT_CRITICAL_LOG,
+            code,
+            "failed to persist critical rate-limiter event"
+        );
+    }
+}
+
+fn append_ratelimit_critical(event: &serde_json::Value) -> std::io::Result<()> {
+    let path = Path::new(RATELIMIT_CRITICAL_LOG);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    writeln!(file, "{event}")
 }
 
 // ── TLS helpers ───────────────────────────────────────────────────────────────
@@ -1071,5 +1149,52 @@ mod tests {
         assert!(!rl.check("5.5.5.5").await, "3rd must be denied");
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(rl.check("5.5.5.5").await, "window reset — first request must pass again");
+    }
+
+    /// GCRA-specific contract against a real Redis: a burst of exactly `limit`
+    /// is admitted, the next request is denied, and after one emission interval
+    /// (`window / limit`) a single new request is admitted again — the smooth
+    /// "leaky bucket" recovery the fixed-window `INCR` could not provide. This is
+    /// the distributed mirror of `gcra_permite_ate_o_limite` /
+    /// `gcra_recupera_apos_janela`.
+    #[tokio::test]
+    async fn redis_gcra_burst_then_smooth_recovery() {
+        let Some(guard) = try_spawn_test_redis().await else { return };
+        let url = format!("redis://127.0.0.1:{}", guard.port);
+        // limit=4 over a 4s window ⇒ emission interval = 1s.
+        let rl = RateLimiter::new_redis_for_test(&url, 4, 4, "kwgcra")
+            .await
+            .expect("connect to test Redis");
+        let ip = "203.0.113.42";
+
+        // Full burst of `limit` is admitted at once.
+        for i in 0..4 {
+            assert!(rl.check(ip).await, "burst request {i} must be admitted");
+        }
+        // Bucket is full — the immediate next request is denied.
+        assert!(!rl.check(ip).await, "request beyond the burst must be denied");
+
+        // After a single emission interval the bucket leaks exactly one slot.
+        tokio::time::sleep(Duration::from_millis(1100)).await;
+        assert!(rl.check(ip).await, "one slot must free up after one emission interval");
+        assert!(!rl.check(ip).await, "only one slot recovers, not the whole burst");
+    }
+
+    /// GCRA canonicalises IPv4-mapped IPv6 to the same Redis key, so an attacker
+    /// cannot double their budget by alternating textual forms across nodes.
+    #[tokio::test]
+    async fn redis_gcra_canonicalises_ip_forms() {
+        let Some(guard) = try_spawn_test_redis().await else { return };
+        let url = format!("redis://127.0.0.1:{}", guard.port);
+        let rl = RateLimiter::new_redis_for_test(&url, 2, 60, "kwgcra2")
+            .await
+            .expect("connect to test Redis");
+        assert!(rl.check("1.2.3.4").await);
+        // Same host expressed as an IPv4-mapped IPv6 literal shares the counter.
+        assert!(rl.check("::ffff:1.2.3.4").await);
+        assert!(
+            !rl.check("1.2.3.4").await,
+            "3rd request across equivalent IP forms must be denied"
+        );
     }
 }
