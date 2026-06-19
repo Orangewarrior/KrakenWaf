@@ -162,10 +162,10 @@ struct SpamhausDqsConfig {
 }
 
 /// TTL for a positive (listed) Spamhaus DQS verdict.
-const SPAMHAUS_DQS_HIT_TTL: Duration = Duration::from_secs(3600);
+const SPAMHAUS_DQS_HIT_TTL: Duration = Duration::from_hours(1);
 /// TTL for a negative (clean) Spamhaus DQS verdict. Shorter so a freshly-listed
 /// IP starts being blocked promptly.
-const SPAMHAUS_DQS_MISS_TTL: Duration = Duration::from_secs(600);
+const SPAMHAUS_DQS_MISS_TTL: Duration = Duration::from_mins(10);
 /// Hard cap on cache entries so an IP-rotating flood cannot grow it without
 /// bound. On overflow, expired entries are reaped before inserting.
 const SPAMHAUS_DQS_CACHE_MAX: usize = 100_000;
