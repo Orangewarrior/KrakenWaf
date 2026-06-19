@@ -108,9 +108,12 @@ pub fn decompress_body_for_inspection(
         };
 
         // Ratio guard against zip-bomb: comparison vs the *original* compressed
-        // input, not the previous layer.
-        let ratio = decoded.len() / original_len;
-        if u32::try_from(ratio).unwrap_or(u32::MAX) > max_ratio {
+        // input, not the previous layer. Cross-multiply in `u128` instead of
+        // dividing so the comparison is exact — integer division truncates
+        // (e.g. 31.9x would read as 31x), under-reporting the true expansion and
+        // letting a payload that genuinely exceeds the ratio slip past when it
+        // lands just under an integer boundary.
+        if decoded.len() as u128 > original_len as u128 * u128::from(max_ratio) {
             return Err(DecompressError::Bomb { ratio: max_ratio });
         }
         if decoded.len() > max_bytes {
@@ -242,6 +245,27 @@ mod tests {
             4,
         )
         .expect_err("ratio guard must fire");
+        assert!(matches!(err, DecompressError::Bomb { .. }));
+    }
+
+    #[test]
+    fn ratio_guard_is_exact_at_fractional_boundary() {
+        // 33 bytes of zeros expands from a tiny gzip frame. With max_ratio = 1
+        // any expansion beyond 1x must trip the guard. Integer division of
+        // `decoded/original` previously truncated fractional ratios to 0/1 and
+        // could let a payload just over the limit through; the cross-multiplied
+        // comparison catches it exactly.
+        let plain = vec![0u8; 64];
+        let encoded = gzip_bytes(&plain);
+        // Compressed length is well under 64, so decoded/encoded > 1.
+        assert!(encoded.len() < plain.len());
+        let err = decompress_body_for_inspection(
+            &encoded,
+            &["gzip".to_string()],
+            1024 * 1024,
+            1,
+        )
+        .expect_err("expansion beyond 1x must trip the ratio guard");
         assert!(matches!(err, DecompressError::Bomb { .. }));
     }
 }

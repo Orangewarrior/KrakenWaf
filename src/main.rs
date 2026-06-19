@@ -360,9 +360,13 @@ async fn main() -> Result<()> {
     // Resolve and validate the observability bind before opening any listener
     // or spawning background reload tasks. Non-loopback exposure is fail-closed
     // unless bearer authentication or an explicit IP allowlist is active.
+    // conf/proxy.yaml is the final fallback for both the metrics and
+    // rule-management ports. Load it once here rather than re-reading the file
+    // for each port resolution below.
+    let proxy_yaml = proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml")).ok();
     let metrics_port = cli.metrics_port.unwrap_or_else(|| {
-        proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml"))
-            .ok()
+        proxy_yaml
+            .as_ref()
             .and_then(|cfg| cfg.metrics_port)
             .unwrap_or(DEFAULT_METRICS_PORT)
     });
@@ -428,8 +432,8 @@ async fn main() -> Result<()> {
     // the IP allowlist (403) and the Rorschach bearer token (401).
     if state.rule_management.is_some() {
         let rm_port = cli.rule_management_port.unwrap_or_else(|| {
-            proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml"))
-                .ok()
+            proxy_yaml
+                .as_ref()
                 .and_then(|cfg| cfg.rule_management_port)
                 .unwrap_or(DEFAULT_RULE_MANAGEMENT_PORT)
         });
