@@ -182,10 +182,10 @@ async fn local_rate_limit_ips_are_independent() {
     let url = format!("{}/ping", waf_base(port));
     // First request from IP1 (localhost) — passes.
     let r1 = client.get(&url).send().await.expect("r1").status();
-    // Second request from same IP — blocked (GCRA returns 403 via Decision::Block).
+    // Second request from same IP — blocked with the rate-limit-specific status.
     let r2 = client.get(&url).send().await.expect("r2").status();
     assert_eq!(r1, StatusCode::OK, "first request must pass");
-    assert_ne!(r2, StatusCode::OK, "second request must be rate-limited");
+    assert_eq!(r2, StatusCode::TOO_MANY_REQUESTS);
 }
 
 // ── Config-file loading tests ─────────────────────────────────────────────────
@@ -206,11 +206,30 @@ async fn ratelimit_by_file_conf_sets_rate_limit() {
     let url = format!("{}/ping", waf_base(port));
     assert_eq!(client.get(&url).send().await.unwrap().status(), StatusCode::OK);
     assert_eq!(client.get(&url).send().await.unwrap().status(), StatusCode::OK);
-    assert_ne!(
+    assert_eq!(
         client.get(&url).send().await.unwrap().status(),
-        StatusCode::OK,
+        StatusCode::TOO_MANY_REQUESTS,
         "3rd request must be blocked by file-configured limit of 2"
     );
+}
+
+#[tokio::test]
+async fn rate_limit_is_enforced_in_detect_only_mode() {
+    let backend_port = ensure_backend();
+    let port = alloc_waf_port();
+    let _waf = spawn_waf(
+        port,
+        backend_port,
+        &["--rate-limit-per-minute", "1", "--mode", "detect-only"],
+    );
+    let client = http_client();
+    wait_for_waf(&client, port).await;
+
+    let url = format!("{}/ping", waf_base(port));
+    assert_eq!(client.get(&url).send().await.unwrap().status(), StatusCode::OK);
+    let response = client.get(&url).send().await.unwrap();
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().contains_key("retry-after"));
 }
 
 #[tokio::test]
@@ -362,7 +381,7 @@ async fn attack_scanner_rate_limited_regardless_of_ua() {
             .send()
             .await
             .map_or(StatusCode::INTERNAL_SERVER_ERROR, |r| r.status());
-        // GCRA rate limiter blocks with 403 (Decision::Block); accept any non-200.
+        // GCRA is an operational control and returns 429 independently of WAF mode.
         if status != StatusCode::OK { blocked += 1; }
         if i >= 3 {
             assert!(blocked >= 1, "rate limit must fire even with varied user-agents");

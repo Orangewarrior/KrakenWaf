@@ -7,8 +7,11 @@
 //!
 //! Then start `KrakenWAF` in front of it:
 //!   cargo run -- --no-tls --allow-private-upstream \
-//!                --listen 0.0.0.0:8080    \
-//!                --upstream <http://127.0.0.1:9077>
+//!                --listen 0.0.0.0:8080 \
+//!                --upstream <http://127.0.0.1:9077> \
+//!                --cmc-load rules/cmc/config.yaml \
+//!                --enable-libinjection-sqli --enable-libinjection-xss \
+//!                --rate-limit-per-minute 100000
 //!
 //! Finally run the attack tool against the WAF:
 //!   cargo run --bin attack -- --target <http://127.0.0.1:8080>
@@ -274,7 +277,11 @@ async fn main() {
     println!("Demo backend listening on http://{addr}");
     println!("Routes: GET /test_get?payload_test=...  |  POST /test_post (form)");
     println!("Start KrakenWAF: cargo run -- --no-tls --allow-private-upstream \\");
-    println!("                   --listen 0.0.0.0:8080 --upstream http://127.0.0.1:{port}");
+    println!("                   --listen 0.0.0.0:8080 \\");
+    println!("                   --upstream http://127.0.0.1:{port} \\");
+    println!("                   --cmc-load rules/cmc/config.yaml \\");
+    println!("                   --enable-libinjection-sqli --enable-libinjection-xss \\");
+    println!("                   --rate-limit-per-minute 100000");
 
     let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
     axum::serve(listener, app).await.expect("serve");

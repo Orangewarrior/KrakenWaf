@@ -214,6 +214,6 @@ for the full engine) against a running WAF; all 50 must be blocked. See
 | `src/cmc/mod.rs` | Module registration, `CmcConfig` field, `CmcManager` field, config key `HPP_detect` |
 | `src/waf/engine/normalize.rs` | Global normalizer — UTF-16 transcoding + recursive percent-decoding (`normalize_str`) |
 | `src/waf/engine/mod.rs` | Integration — `WafEngine::inspect_hpp` |
-| `src/proxy.rs` | Pipeline wiring — query + body inspected once the body is available |
+| `src/proxy/mod.rs` | Pipeline wiring — query + body inspected once the body is available |
 | `src/bin/attack.rs` | DAST sweeps `sweep_hpp_get` / `sweep_hpp_post` over `HPP_PAYLOADS` |
 | `rules/cmc/config.yaml` | Default config — `HPP_detect: true` |

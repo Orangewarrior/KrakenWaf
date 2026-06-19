@@ -1,4 +1,70 @@
 
+## [2.44.0] - 2026-06-19
+
+> **Distributed GCRA and proxy architecture release.** Replaces the Redis
+> fixed-window counter with an atomic TAT-based GCRA, makes enforcement
+> decisions explicit, and splits the proxy pipeline into focused modules.
+
+### Added
+
+- **Redis GCRA using server time.** A single Lua script reads `Redis TIME`,
+  evaluates the client's theoretical arrival time (TAT), returns an exact retry
+  delay, and updates the TAT with an expiry only for conforming requests.
+- **Typed rate-limit decisions.** Local and Redis backends now return allow or
+  deny decisions with a retry duration and denial reason instead of reducing
+  backend failures, capacity pressure, and budget exhaustion to a Boolean.
+- **`ProxyClientBuilder`.** Proxy construction now uses a fluent Builder that
+  centralizes defaults and validates optional internal-header and CA settings.
+- **GCRA and proxy unit coverage.** Tests cover exact bursts, smooth refill,
+  retry calculations, drained-entry eviction, randomized sharding, async
+  persistence, Redis script semantics, configuration validation, proxy
+  construction, trusted-client resolution, and HTTP 429 enforcement in
+  `DetectOnly` mode.
+
+### Changed
+
+- **Modular proxy layout.** The former `src/proxy.rs` was split into
+  `src/proxy/` modules for construction, body handling, enforcement, real-IP
+  resolution, trusted-proxy parsing, and trace context while retaining the
+  existing crate-level proxy API.
+- **Rate limiting is an operational control.** Exhausted budgets are enforced
+  in every WAF inspection mode and consistently return HTTP 429 with a computed
+  `Retry-After`; signature findings continue to follow the configured WAF mode.
+- **Client identity is consistent across controls.** Ban checks, per-IP
+  concurrency, body-memory accounting, rate limiting, and proxy inspection now
+  use the same trusted-proxy-aware effective client IP.
+- **Local limiter hardening.** Runtime-randomized shard routing prevents
+  predictable shard targeting, drained TATs are removed as soon as they cease
+  to consume budget, and capacity scans are rate-limited to avoid repeated
+  O(n) work on attacker-controlled misses.
+- **Persistence no longer blocks Tokio workers.** Snapshot I/O runs on the
+  blocking pool, state is clamped and capacity-checked while loading, and a
+  final snapshot is flushed during graceful shutdown.
+- **Configuration fails early.** Zero limits, invalid pool sizes, unknown
+  fields, non-minute Redis windows, empty key prefixes, and credentials embedded
+  in Redis URLs are rejected during startup validation.
+
+### Fixed
+
+- Redis nodes no longer enforce independent fixed windows or depend on client
+  clocks; all nodes share Redis server time and one atomic TAT per client.
+- Concurrency-limit rejections are now recorded by the ban manager, matching
+  regular rate-limit rejections.
+- Postcard snapshots now have a bounded read size and durable directory sync;
+  SQLite snapshot limits include WAL and shared-memory sidecars and no longer
+  discard row-decoding failures silently.
+
+### Validation
+
+- `cargo test`: all automated tests passed (419 library tests plus integration
+  and documentation suites; two manual GeoIP tests remain intentionally
+  ignored).
+- `cargo clippy --all-targets -- -D warnings`: passed.
+- Real `demo_server` + `attack` run at `--concurrency 50`: 677 requests,
+  677 blocked, zero bypasses, zero transport errors, and zero score failures.
+- Redis/`rediss://` daemon tests remain environment-gated and self-skip when
+  their local Redis and TLS fixtures are not installed.
+
 ## [2.43.0] - 2026-06-19
 
 > **CodeRabbit Rust/AppSec and WAF/proxy remediation release.** Adds gated

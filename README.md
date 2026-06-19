@@ -144,12 +144,13 @@ Caps simultaneous in-flight connections from the same IP. Excess connections rec
 
 | Mechanism | Metric | Response |
 |-----------|--------|----------|
-| GCRA / Redis | requests / minute | `HTTP 403` |
+| GCRA (local or Redis) | requests / minute | `HTTP 429 Retry-After` |
 | Concurrency cap | simultaneous connections | `HTTP 429` |
 
 ### Redis — multi-node deployments
 
-When `redis:` is configured, all WAF replicas share the same counter:
+When `redis:` is configured, all WAF replicas share the same GCRA TAT and use
+Redis server time for atomic admission decisions:
 
 ```bash
 # Credentials are loaded file-first, then env vars (never in config files).
@@ -954,7 +955,7 @@ Full reference: **[docs/geoip.md](docs/geoip.md)**.
 
 ## Operational notes
 
-- Rate limiting is enforced per-IP by a **local GCRA sharded limiter** (64 shards, ~20–30 ns/req, snapshot-persisted across restarts) or a **Redis-backed distributed limiter** (consistent enforcement across WAF replicas via atomic Lua script). A separate per-IP **concurrency gate** (`max_coroutines_per_ip`) limits simultaneous in-flight connections before WAF inspection, returning HTTP 429. All settings load from `conf/ratelimit.yaml` or `--ratelimit-by-file-conf`. See **[docs/rate_limit.md](docs/rate_limit.md)** for the full guide including Redis setup, CIS hardening, and config file reference.
+- Rate limiting is enforced per-IP by the same **GCRA contract** in both backends: a randomized 64-shard local TAT store with async snapshot persistence, or a distributed Redis TAT updated atomically from Redis `TIME`. Rejections return HTTP 429 with a computed `Retry-After` in every WAF inspection mode. A separate per-IP **concurrency gate** (`max_coroutines_per_ip`) limits simultaneous in-flight requests and uses the same trusted-proxy-resolved client IP.
 - SNI CSV accepts an optional fourth column (`true`/`false`) to select the default certificate.
 - Send `SIGHUP` to hot-reload rule files without restarting the process.
 - KrakenWAF has full TLS support but don't use lib OpenSSL, uses rustls.

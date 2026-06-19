@@ -384,17 +384,22 @@ async fn serve_observability(
     // CPU/allocation sink. Liveness/readiness probes are intentionally exempt so
     // orchestration health checks are never throttled; `is_metrics` is only true
     // for `/metrics` on the dedicated listener (`include_metrics`).
-    if is_metrics && !state.waf.check_rate_limit_ip(&effective_ip).await {
+    if is_metrics {
+        let decision = state.waf.rate_limit_decision_ip(&effective_ip).await;
+        if !decision.is_allowed() {
         warn!(
             target: "krakenwaf",
             ip = %effective_ip,
             "rate-limited /metrics scrape on the observability port"
         );
         let mut resp = plain_response(StatusCode::TOO_MANY_REQUESTS, "Too many requests");
-        resp.headers_mut()
-            .insert("Retry-After", http::HeaderValue::from_static("5"));
+        let retry_after = decision.retry_after().map_or(1, retry_after_seconds);
+        if let Ok(value) = http::HeaderValue::from_str(&retry_after.to_string()) {
+            resp.headers_mut().insert("Retry-After", value);
+        }
         state.response_header_policy.apply(resp.headers_mut(), false);
         return Some(resp);
+        }
     }
     if path == "/__krakenwaf/livez" || path == "/livez" {
         let mut response = plain_response(StatusCode::OK, "ok");
@@ -817,13 +822,14 @@ async fn handle(
         return resp;
     }
 
+    let effective_ip = effective_client_ip(&client_ip, req.headers(), &state);
+
     // ── BAN-list short-circuit ────────────────────────────────────────────────
     // Resolve the effective client IP honouring X-Forwarded-For + trusted
     // proxies, then reject *any* request from a currently-banned IP before
     // touching concurrency gates, backpressure accounting, the WAF engine,
     // or the upstream. The block is logged at Low severity.
     if state.ban_manager.enabled() {
-        let effective_ip = effective_client_ip(&client_ip, req.headers(), &state);
         if let Some(banned_until) = state.ban_manager.check(&effective_ip).await {
             log_banned_request(
                 &state,
@@ -842,7 +848,7 @@ async fn handle(
     let _conn_guard = if state.max_coroutines_per_ip > 0 {
         let counter = state
             .ip_connections
-            .entry(client_ip.clone())
+            .entry(effective_ip.clone())
             .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
             .clone();
 
@@ -851,7 +857,7 @@ async fn handle(
             counter.fetch_sub(1, Ordering::Relaxed);
             warn!(
                 target: "krakenwaf",
-                ip = %client_ip,
+                ip = %effective_ip,
                 limit = state.max_coroutines_per_ip,
                 "per-IP concurrency limit exceeded"
             );
@@ -863,6 +869,7 @@ async fn handle(
             resp.headers_mut()
                 .insert("Retry-After", http::HeaderValue::from_static("5"));
             state.response_header_policy.apply(resp.headers_mut(), false);
+            record_rate_limit_block(&state, &effective_ip);
             return resp;
         }
         Some(ConnGuard(counter))
@@ -878,7 +885,7 @@ async fn handle(
                 target: "krakenwaf",
                 current_bytes = current,
                 limit = state.max_inflight_body_bytes,
-                ip = %client_ip,
+                ip = %effective_ip,
                 "global body-bytes backpressure limit reached"
             );
             state.metrics.inc_rate_limit_hits();
@@ -897,14 +904,14 @@ async fn handle(
     if state.max_per_ip_body_bytes > 0 {
         let ip_current = state
             .ip_body_bytes
-            .get(&client_ip)
+            .get(&effective_ip)
             .map_or(0, |v| v.load(Ordering::Relaxed));
         if ip_current >= state.max_per_ip_body_bytes {
             warn!(
                 target: "krakenwaf",
                 current_bytes = ip_current,
                 limit = state.max_per_ip_body_bytes,
-                ip = %client_ip,
+                ip = %effective_ip,
                 "per-IP body-bytes backpressure limit reached"
             );
             state.metrics.inc_rate_limit_hits();
@@ -919,13 +926,34 @@ async fn handle(
         }
     }
 
-    state.proxy.handle(&state, req, client_ip).await
+    state.proxy.handle(&state, req, effective_ip).await
+}
+
+fn retry_after_seconds(delay: Duration) -> u64 {
+    delay
+        .as_secs()
+        .saturating_add(u64::from(delay.subsec_nanos() > 0))
+        .max(1)
+}
+
+fn record_rate_limit_block(state: &AppState, ip: &str) {
+    if !state.ban_manager.enabled() {
+        return;
+    }
+    let manager = state.ban_manager.clone();
+    let ip = ip.to_string();
+    tokio::spawn(async move {
+        let _ = manager
+            .record_block(&ip, crate::banning::BlockReason::RateLimit)
+            .await;
+    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        constant_time_eq, extract_bearer, validate_observability_exposure,
+        constant_time_eq, extract_bearer, retry_after_seconds,
+        validate_observability_exposure,
     };
     use crate::{allowpaths::AllowPathConfig, rules::RuleSet};
     use http::header::{HeaderMap, HeaderValue, AUTHORIZATION};
@@ -934,6 +962,13 @@ mod tests {
         let mut h = HeaderMap::new();
         h.insert(AUTHORIZATION, HeaderValue::from_str(value).expect("header value"));
         h
+    }
+
+    #[test]
+    fn retry_after_rounds_up_to_whole_seconds() {
+        assert_eq!(retry_after_seconds(std::time::Duration::from_nanos(1)), 1);
+        assert_eq!(retry_after_seconds(std::time::Duration::from_millis(1_001)), 2);
+        assert_eq!(retry_after_seconds(std::time::Duration::from_secs(5)), 5);
     }
 
     #[test]

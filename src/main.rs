@@ -239,13 +239,14 @@ async fn main() -> Result<()> {
         anomaly_threshold: effective_anomaly_threshold,
         max_inspection_ms: effective_max_inspection_ms,
     })?);
-    let proxy = Arc::new(proxy::ProxyClient::new(
-        &cli.upstream,
-        cli.upstream_timeout_secs,
-        cli.allow_private_upstream,
-        Some(cli.internal_header_name.clone()),
-        cli.upstream_ca.as_deref(),
-    )?);
+    let mut proxy_builder = proxy::ProxyClientBuilder::new(&cli.upstream)
+        .timeout_secs(cli.upstream_timeout_secs)
+        .allow_private_upstream(cli.allow_private_upstream)
+        .internal_header_name(cli.internal_header_name.clone());
+    if let Some(ca_path) = &cli.upstream_ca {
+        proxy_builder = proxy_builder.upstream_ca(ca_path);
+    }
+    let proxy = Arc::new(proxy_builder.build()?);
     let (block_response_body, block_response_content_type) =
         load_block_message(cli.blockmsg.as_deref(), &root_dir)?;
 
@@ -491,12 +492,17 @@ async fn main() -> Result<()> {
         "KrakenWaf initialized"
     );
 
-    if cli.no_tls {
+    let shutdown_state = state.clone();
+    let server_result = if cli.no_tls {
         server::run_plain(cli.listen, state).await
     } else {
         let store = tls_store.expect("tls_store is Some when !cli.no_tls");
         server::run(cli.listen, store, state).await
+    };
+    if let Err(err) = shutdown_state.waf.persist_rate_limiter().await {
+        warn!(target: "krakenwaf", error = %err, "final rate-limiter persistence failed");
     }
+    server_result
 }
 
 /// Build the BAN-list manager. Reuses the rate-limiter's Redis pool when

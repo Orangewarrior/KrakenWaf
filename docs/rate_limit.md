@@ -1,9 +1,9 @@
 # Rate Limiter
 
 KrakenWaf ships with a per-IP rate limiter available in two backends: a
-**local GCRA sharded limiter** (single-node, zero dependencies, ~20 ns hot
-path) and a **Redis-backed distributed limiter** (multi-node, consistent
-enforcement across WAF replicas).
+**local GCRA sharded limiter** (single-node, zero dependencies) and a
+**Redis-backed distributed GCRA limiter** (multi-node, consistent enforcement
+across WAF replicas using Redis server time).
 
 Both backends load their configuration from `conf/ratelimit.yaml` (or an
 explicit path via `--ratelimit-by-file-conf`). The config file is
@@ -149,7 +149,7 @@ built-in default
 | `redis.url` | string | — | Redis endpoint. **Must** use `rediss://` (TLS). |
 | `redis.pool_size` | usize | 4 | Number of pooled connections. |
 | `redis.key_prefix` | string | `"krakenwaf:rl"` | Namespace prefix — isolates this WAF from other services on the same Redis instance. |
-| `redis.window_secs` | u64 | 60 | Rate-limit window length in seconds. |
+| `redis.window_secs` | u64 | 60 | GCRA period. Must remain `60` because the public setting is requests per minute. |
 | `redis.ca_cert_path` | string | — | Path to a PEM CA certificate for private PKI / mTLS. Omit to use the system trust store. |
 | `redis.fail_open` | bool | `true` | Behaviour on Redis unavailability: `true` = allow the request (fail-open), `false` = deny with HTTP 429 (fail-closed). Both emit a warning + Prometheus counter. |
 
@@ -193,15 +193,15 @@ keyword inspection:
   `/__krakenwaf/*`) are exempt** so orchestration health checks are never
   throttled.
 
-Internally the budget check is exposed by the engine as
-`WafEngine::check_rate_limit_ip` / `rate_limit_finding`, kept separate from the
-signature pipeline (`inspect_early`) so both the allow-path branch in the proxy
-and the observability listener can enforce it with one shared counter.
+Internally the budget check is exposed by the engine as the typed
+`WafEngine::rate_limit_decision_ip` / `rate_limit_finding` API, kept separate
+from the signature pipeline (`inspect_early`) so both the allow-path branch in
+the proxy and the observability listener can enforce it with one shared budget.
 
-> A data-plane rate-limit rejection returns **HTTP 403** (it flows through the
-> same `Decision::Block` → `log_and_enforce` path, so Block/Silent/DetectOnly
-> mode and BAN attribution are unchanged). A `/metrics` rejection on the
-> observability port returns **HTTP 429 `Retry-After: 5`**.
+> A rate-limit rejection returns **HTTP 429** with an algorithm-derived
+> `Retry-After` value on both the data plane and observability listener. Rate
+> limiting is an operational safety control and remains enforced in `Block`,
+> `Silent`, and `DetectOnly` WAF inspection modes.
 
 ---
 
@@ -212,7 +212,7 @@ accepted from a single source IP. This is distinct from the rate limiter:
 
 | Limiter | Metric | Block response |
 |---------|--------|----------------|
-| GCRA rate limiter | requests / minute | `HTTP 403` via `Decision::Block` |
+| GCRA rate limiter | requests / minute | `HTTP 429 Retry-After: <computed>` |
 | Concurrency cap | simultaneous connections | `HTTP 429 Retry-After: 5` |
 
 The concurrency check fires **before** any WAF inspection or upstream
@@ -257,8 +257,8 @@ Each client is represented by **one `AtomicU64`** — the **TAT** (Theoretical
 Arrival Time) in nanoseconds since the Unix epoch.
 
 ```
-emission_interval  = window_ns / limit       (nanoseconds between conforming requests)
-delay_tolerance    = window_ns               (exact burst of `limit` allowed at once)
+emission_interval  = ceil(window_ns / limit)  (nanoseconds between conforming requests)
+delay_tolerance    = emission_interval * limit (exact burst of `limit` allowed at once)
 
 on each request at `now`:
   new_tat = max(old_tat, now) + emission_interval
@@ -269,12 +269,9 @@ on each request at `now`:
 The CAS loop is **completely lock-free** for already-tracked IPs. A write-lock
 is acquired only once when a new IP is first seen.
 
-> **Why `tolerance = window` (not `window − emission`)?**
-> The textbook formula with `tolerance = window − emission` caps a same-instant
-> burst at `limit − 1`. KrakenWaf uses `tolerance = window` so that
-> `--rate-limit-per-minute 240` admits exactly 240 requests in a burst, not 239.
-> Sustained-rate behaviour is unchanged because it is governed by
-> `emission_interval`, not by `tolerance`.
+Ceiling division prevents a zero emission interval and prevents integer
+truncation from admitting more than the configured rate. Multiplying the
+emission interval by the limit preserves an exact burst of `limit` requests.
 
 ### Sharding
 
@@ -293,9 +290,11 @@ cold path (new IP):
 ```
 
 At 10 k RPS with 16 workers, expected lock contention is below 2 %.
-Each shard caps at `MAX_PER_SHARD = 4 096` entries; on overflow an expired or
-least-recently-active entry is evicted. Capacity: **64 × 4 096 = 262 144**
-unique IPs simultaneously tracked.
+Each shard caps at `MAX_PER_SHARD = 4 096` entries. Shard routing uses a
+per-process randomized AHash state, so clients cannot precompute the low hash
+bits needed to target one shard. When full, a shard scans drained TATs at most
+once per sweep interval; repeated new-IP misses cannot force an O(4096) scan
+under the write lock. Capacity is **64 × 4 096 = 262 144** active IPs.
 
 A background task sweeps drained TATs every 30 s and persists the snapshot
 every 60 s.
@@ -308,13 +307,16 @@ const PRIME:  u64 = 1_099_511_628_211;
 ip.bytes().fold(OFFSET, |h, b| (h ^ b as u64).wrapping_mul(PRIME))
 ```
 
-FNV-1a is deterministic and seed-free, so `hash_ip("203.0.113.7")` returns the
-same `u64` across restarts — which is what makes SQLite re-hydration correct.
+FNV-1a remains the stable persisted identity, so snapshots rehydrate across
+restarts. A separate randomized AHash maps that identity to an in-process
+shard, preventing predictable shard targeting without changing persistence.
 
 ### Persistence — `--wal-mode`
 
-The TAT map is snapshotted to disk every 60 s and re-hydrated on startup so a
-brief process restart does not grant blocked clients a fresh budget.
+The TAT map is snapshotted every 60 seconds and rehydrated on startup. Blocking
+SQLite/Postcard work runs through Tokio's blocking pool, and graceful shutdown
+performs a final flush. Loaded future TATs are clamped to the maximum valid
+burst horizon to tolerate wall-clock rollback and damaged snapshots.
 
 | `--wal-mode` | File | Format | Notes |
 |-------------|------|--------|-------|
@@ -347,34 +349,37 @@ the wrong schema.
 
 ---
 
-## Redis backend
+## Redis backend — distributed GCRA
 
-When the `redis:` section is present in `conf/ratelimit.yaml`, KrakenWaf
-replaces the local GCRA limiter with a Redis-backed counter. All WAF instances
-pointing at the same Redis server share the counter, giving consistent
-enforcement across horizontal replicas.
+When the `redis:` section is present, KrakenWaf replaces local state with a
+Redis-backed TAT. All WAF replicas share the same admission state and use
+Redis `TIME`, eliminating application-host clock skew.
 
 ### How it works
 
-A single **atomic Lua script** runs server-side on every admission check:
+A single atomic Lua script runs on every admission check. In simplified form:
 
 ```lua
-local n = redis.call('INCR', KEYS[1])       -- atomic increment
-if n == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[2])    -- set TTL on first write
+local clock = redis.call('TIME')
+local now_us = clock[1] * 1000000 + clock[2]
+local tat = tonumber(redis.call('GET', KEYS[1])) or now_us
+local new_tat = math.max(tat, now_us) + emission_us
+
+if new_tat - now_us > tolerance_us then
+  return {0, retry_after_us}
 end
-if n > tonumber(ARGV[1]) then
-  return 0                                   -- denied
-end
-return 1                                     -- allowed
+
+redis.call('SET', KEYS[1], new_tat, 'PX', ttl_ms)
+return {1, 0}
 ```
 
 `KEYS[1]` = `{key_prefix}:{client_ip}` (e.g. `krakenwaf:rl:1.2.3.4`)
-`ARGV[1]` = `rate_limit_per_minute`
-`ARGV[2]` = `window_secs`
+`ARGV[1]` = emission interval in microseconds
+`ARGV[2]` = burst tolerance in microseconds
 
-Using `EVAL` (Lua) guarantees atomicity — the increment and TTL set are a
-single Redis transaction. There is no MULTI/EXEC overhead and no TOCTOU window.
+Using `EVAL` guarantees the time read, conformance decision, TAT update, and
+TTL update are atomic. Rejected requests do not mutate the TAT. The script
+returns the exact delay until the next conforming arrival.
 
 ### Fail-open policy
 
@@ -386,8 +391,9 @@ log events in production.
 
 ### Key lifecycle
 
-Keys expire automatically via the `EXPIRE` set on first increment. There is no
-background cleanup task in KrakenWaf; Redis handles TTL expiry natively.
+Each accepted request sets a millisecond TTL ending when its TAT drains. A
+missing key and a drained TAT are equivalent, so Redis can reclaim inactive IPs
+without a background cleanup task.
 
 ---
 
@@ -454,11 +460,11 @@ docker run \
 Create a dedicated Redis user with the minimum permissions needed:
 
 ```redis
-ACL SETUSER krakenwaf on >[strong-password] ~krakenwaf:rl:* &* +EVAL +EVALSHA +INFO +PING
+ACL SETUSER krakenwaf on >[strong-password] ~krakenwaf:rl:* &* +EVAL +EVALSHA +TIME +GET +SET +INFO +PING
 ```
 
-This grants only `EVAL` (for the Lua script), `EVALSHA`, `INFO`, and `PING` —
-no administrative commands, no access to other keyspaces.
+This grants only the script and its GCRA primitives plus connection health
+commands—no administrative commands and no access to other keyspaces.
 
 ### 4. Namespace isolation
 
@@ -523,8 +529,7 @@ These are at the top of `src/waf/rate_limit.rs`.
   WAF is stopped is safe and simply forfeits in-progress TATs.
 - Switching `--wal-mode` between `sqlite` and `postcard` ignores the other
   format's snapshot file and starts fresh — no silent corruption.
-- With the Redis backend, deleting a key in Redis (e.g. `DEL krakenwaf:rl:1.2.3.4`)
-  immediately resets that IP's counter.
+- With the Redis backend, deleting a key immediately resets that IP's TAT.
 
 ---
 
@@ -546,11 +551,11 @@ request ──────────────►│  server::handle()      
                        │  RateLimiter::check(ip)                  │
                        │       │                                  │
                        │  ┌────┴────────────────────────┐         │
-                       │  │ Local GCRA    │ Redis Lua   │         │
+                       │  │ Local GCRA    │ Redis GCRA  │         │
                        │  │ (64 shards)   │ (EVAL)      │         │
                        │  │ ~20 ns / req  │ ~1 RTT      │         │
                        │  └──────────────┴─────────────-┘         │
-                       │       │ denied? ──────────────► 403      │
+                       │       │ denied? ──────────────► 429      │
                        │       │                                  │
                        │       ▼  (further WAF inspection)        │
                        └─────────────────────────────────────────┘

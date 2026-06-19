@@ -91,9 +91,9 @@ max_body_bytes: 0
 max_upstream_response_bytes: 0
 
 # ── Redis distributed rate limiter ────────────────────────────────────────────
-# When this section is present KrakenWaf replaces the built-in GCRA limiter
-# with a Redis-backed counter, enabling consistent rate limiting across multiple
-# WAF instances (horizontal scaling / active-active deployments).
+# When this section is present KrakenWaf replaces the local TAT store with a
+# Redis-backed GCRA using Redis TIME, enabling identical rate semantics across
+# multiple WAF instances without application-host clock skew.
 #
 # CIS Redis Benchmark requirements enforced by KrakenWaf:
 #   • TLS mandatory — URL MUST use the rediss:// scheme (encrypted transport).
@@ -119,7 +119,8 @@ max_upstream_response_bytes: 0
 #   # Namespace prefix — isolates this WAF from other services sharing Redis.
 #   key_prefix: "krakenwaf:rl"
 #
-#   # Sliding window length in seconds (default: 60 = per-minute).
+#   # GCRA period. Must be 60 because rate_limit_per_minute has a fixed
+#   # per-minute contract.
 #   window_secs: 60
 #
 #   # Path to a custom CA certificate (PEM) for private PKI / mTLS deployments.

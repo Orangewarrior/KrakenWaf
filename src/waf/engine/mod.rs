@@ -14,7 +14,7 @@ use crate::update::{
 use crate::{
     metrics::WafMetrics,
     rules::{AddrListEntry, HttpAction, RuleSet, Severity},
-    waf::rate_limit::RateLimiter,
+    waf::rate_limit::{RateLimitDecision, RateLimiter},
 };
 use anyhow::Result;
 use arc_swap::ArcSwap;
@@ -110,6 +110,12 @@ pub struct WafEngineConfig {
     pub anomaly_threshold: u32,
     /// Per-request wall-clock cap on WAF inspection in milliseconds. `0` = unlimited.
     pub max_inspection_ms: u64,
+}
+
+/// Adapter between the rate-limiter domain decision and the WAF event model.
+pub struct RateLimitRejection {
+    pub finding: Box<Finding>,
+    pub decision: RateLimitDecision,
 }
 
 /// Factory for constructing a fully-initialised [`WafEngine`].
@@ -361,12 +367,28 @@ impl WafEngine {
     /// / keyword inspection can share one budget: allow-listed request paths
     /// (via [`Self::rate_limit_finding`]) and the dedicated observability
     /// listener's `/metrics` endpoint.
+    #[allow(dead_code)]
     pub async fn check_rate_limit_ip(&self, ip: &str) -> bool {
-        let allowed = self.rate_limiter.check(ip).await;
-        if !allowed {
+        self.rate_limit_decision_ip(ip).await.is_allowed()
+    }
+
+    /// Return the typed rate-limit decision and account rejected admissions.
+    pub async fn rate_limit_decision_ip(&self, ip: &str) -> RateLimitDecision {
+        let decision = self.rate_limiter.decide(ip).await;
+        if !decision.is_allowed() {
             self.metrics.inc_rate_limit_hits();
         }
-        allowed
+        decision
+    }
+
+    /// Flush local GCRA state from a blocking worker during graceful shutdown.
+    /// Redis-backed limiters are already durable and return immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the local snapshot cannot be persisted.
+    pub async fn persist_rate_limiter(&self) -> Result<()> {
+        self.rate_limiter.persist_async().await
     }
 
     /// Build the rate-limit [`Finding`] for `ctx` when the client has exceeded
@@ -374,20 +396,24 @@ impl WafEngine {
     /// the engine produced inline before rate-limiting was split out of
     /// [`Self::inspect_early`], so logging, ban attribution
     /// ([`crate::banning::BlockReason::RateLimit`]), and metrics are unchanged.
-    pub async fn rate_limit_finding(&self, ctx: &InspectionContext) -> Option<Box<Finding>> {
-        if self.check_rate_limit_ip(&ctx.client_ip).await {
+    pub async fn rate_limit_finding(&self, ctx: &InspectionContext) -> Option<RateLimitRejection> {
+        let decision = self.rate_limit_decision_ip(&ctx.client_ip).await;
+        if decision.is_allowed() {
             return None;
         }
-        Some(Box::new(self.simple_finding(
-            "Rate limit exceeded",
-            Severity::High,
-            "CWE-770",
-            "The client exceeded the configured requests-per-minute threshold.",
-            "https://cwe.mitre.org/data/definitions/770.html",
-            "rate_limiter",
-            "window_exceeded",
-            format!("{} {}", ctx.method, ctx.uri),
-        )))
+        Some(RateLimitRejection {
+            finding: Box::new(self.simple_finding(
+                "Rate limit exceeded",
+                Severity::High,
+                "CWE-770",
+                "The client exceeded the configured GCRA request budget.",
+                "https://cwe.mitre.org/data/definitions/770.html",
+                "rate_limiter",
+                "gcra_budget_exceeded",
+                format!("{} {}", ctx.method, ctx.uri),
+            )),
+            decision,
+        })
     }
 
     async fn spamhaus_dqs_finding(

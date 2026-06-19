@@ -6,8 +6,8 @@
 //! [`RateLimiter`] is a public enum with two variants:
 //!
 //! * **`Local`** — GCRA-sharded in-process limiter (default, zero dependencies).
-//! * **`Redis`** — Distributed counter backed by Redis; suitable for multi-node
-//!   deployments where state must be shared across WAF instances.
+//! * **`Redis`** — Distributed GCRA backed by Redis server time; suitable for
+//!   multi-node deployments where state must be shared across WAF instances.
 //!
 //! ## Local / GCRA
 //!
@@ -15,8 +15,8 @@
 //! Arrival Time) in nanoseconds from the Unix epoch.
 //!
 //! ```text
-//! emission_interval  = window_ns / limit         (ns between conforming requests)
-//! delay_tolerance    = window_ns                 (exact burst of `limit` allowed)
+//! emission_interval  = ceil(window_ns / limit)   (ns between conforming requests)
+//! delay_tolerance    = emission_interval * limit (exact burst of `limit` allowed)
 //!
 //! On arrival at `now`:
 //!   new_tat = max(old_tat, now) + emission_interval
@@ -32,8 +32,9 @@
 //!
 //! ## Redis / distributed
 //!
-//! An atomic Lua script (`INCR` + conditional `EXPIRE`) runs server-side —
-//! no MULTI/EXEC round-trips. On unavailability the limiter applies the
+//! An atomic Lua script reads Redis `TIME`, checks and updates the per-IP TAT,
+//! and sets a precise TTL — no MULTI/EXEC round-trips and no replica clock
+//! skew. On unavailability the limiter applies the
 //! configured fail mode (`redis.fail_open`, default **fail-open** = allow the
 //! request) and emits a `tracing::warn!` plus a Prometheus counter
 //! (`krakenwaf_redis_rate_limit_failopen_total` /
@@ -55,7 +56,7 @@
 //! * `Postcard` — atomic-rename flat file, 10-50× faster. Encoded with the
 //!   [`postcard`] crate.
 
-use ahash::AHashMap;
+use ahash::{AHashMap, RandomState};
 use anyhow::{Context, Result};
 use parking_lot::{Mutex, RwLock};
 use rusqlite::{params, Connection};
@@ -66,7 +67,7 @@ use std::{
     net::IpAddr,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
@@ -87,11 +88,43 @@ pub enum PersistenceMode {
     Postcard,
 }
 
-/// Rate-limiter backend. Use [`RateLimiter::new`] for the local GCRA limiter or
-/// [`RateLimiter::new_redis`] for the Redis-backed distributed limiter.
+/// Rate-limiter backend. Both variants implement the same GCRA contract.
 pub enum RateLimiter {
     Local(Arc<LocalRateLimiter>),
     Redis(Arc<RedisRateLimiter>),
+}
+
+/// Typed admission result shared by the local and Redis GCRA backends.
+///
+/// Keeping the retry delay in the domain result lets HTTP adapters emit an
+/// accurate `Retry-After` header without coupling the rate limiter to Hyper.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitDecision {
+    Allow,
+    Deny {
+        retry_after: Duration,
+        reason: RateLimitDenyReason,
+    },
+}
+
+impl RateLimitDecision {
+    #[must_use]
+    pub const fn is_allowed(self) -> bool { matches!(self, Self::Allow) }
+
+    #[must_use]
+    pub const fn retry_after(self) -> Option<Duration> {
+        match self {
+            Self::Allow => None,
+            Self::Deny { retry_after, .. } => Some(retry_after),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RateLimitDenyReason {
+    LimitExceeded,
+    BackendUnavailable,
+    CapacityExhausted,
 }
 
 impl RateLimiter {
@@ -105,6 +138,8 @@ impl RateLimiter {
         snapshot_path: &Path,
         mode: PersistenceMode,
     ) -> Result<Self> {
+        anyhow::ensure!(limit > 0, "rate limit must be greater than zero");
+        anyhow::ensure!(!window.is_zero(), "rate-limit window must be greater than zero");
         Ok(Self::Local(Arc::new(LocalRateLimiter::new(
             limit,
             window,
@@ -172,10 +207,17 @@ impl RateLimiter {
     }
 
     /// Returns `true` if the request from `ip` is within the rate limit.
+    #[allow(dead_code)]
     pub async fn check(&self, ip: &str) -> bool {
+        self.decide(ip).await.is_allowed()
+    }
+
+    /// Return the complete admission decision, including an accurate retry
+    /// delay for rejected requests.
+    pub async fn decide(&self, ip: &str) -> RateLimitDecision {
         match self {
-            Self::Local(inner) => inner.check(ip).await,
-            Self::Redis(inner) => inner.check(ip).await,
+            Self::Local(inner) => inner.decide(ip),
+            Self::Redis(inner) => inner.decide(ip).await,
         }
     }
 
@@ -189,6 +231,21 @@ impl RateLimiter {
             Self::Local(inner) => inner.persist(),
             Self::Redis(_) => Ok(()),
         }
+    }
+
+    /// Persist local state without blocking a Tokio worker. Redis owns its
+    /// durability and returns immediately.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the blocking task cannot be joined or the
+    /// configured snapshot backend cannot persist the state.
+    pub async fn persist_async(&self) -> Result<()> {
+        let Self::Local(inner) = self else { return Ok(()) };
+        let inner = inner.clone();
+        tokio::task::spawn_blocking(move || inner.persist())
+            .await
+            .context("rate-limiter persistence task panicked")?
     }
 
     /// Expose a clone of the underlying Redis pool when this limiter is
@@ -206,24 +263,34 @@ impl RateLimiter {
 // ── Tunables ─────────────────────────────────────────────────────────────────
 
 const NUM_SHARDS: usize = 64;
-const SHARD_MASK: u64 = NUM_SHARDS as u64 - 1;
+const SHARD_MASK: usize = NUM_SHARDS - 1;
 const MAX_PER_SHARD: usize = 4_096;
 const SWEEP_INTERVAL: Duration = Duration::from_secs(30);
 const PERSIST_INTERVAL: Duration = Duration::from_mins(1);
 const MAX_DB_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_POSTCARD_BYTES: u64 = 32 * 1024 * 1024;
 
 // ── GCRA core (lock-free) ─────────────────────────────────────────────────────
 
 #[inline]
-fn gcra_check(tat: &AtomicU64, now_ns: u64, emit_ns: u64, tolerance_ns: u64) -> bool {
+fn gcra_decide(
+    tat: &AtomicU64,
+    now_ns: u64,
+    emit_ns: u64,
+    tolerance_ns: u64,
+) -> RateLimitDecision {
     loop {
         let old_tat = tat.load(Ordering::Acquire);
         let new_tat = old_tat.max(now_ns).saturating_add(emit_ns);
         if new_tat.saturating_sub(now_ns) > tolerance_ns {
-            return false;
+            let eligible_at = new_tat.saturating_sub(tolerance_ns);
+            return RateLimitDecision::Deny {
+                retry_after: Duration::from_nanos(eligible_at.saturating_sub(now_ns).max(1)),
+                reason: RateLimitDenyReason::LimitExceeded,
+            };
         }
         match tat.compare_exchange_weak(old_tat, new_tat, Ordering::Release, Ordering::Relaxed) {
-            Ok(_) => return true,
+            Ok(_) => return RateLimitDecision::Allow,
             Err(_) => core::hint::spin_loop(),
         }
     }
@@ -233,20 +300,30 @@ fn gcra_check(tat: &AtomicU64, now_ns: u64, emit_ns: u64, tolerance_ns: u64) -> 
 
 struct Shard {
     rw: RwLock<AHashMap<u64, Arc<AtomicU64>>>,
+    next_opportunistic_sweep_ns: AtomicU64,
 }
 
 impl Shard {
     fn new() -> Self {
-        Self { rw: RwLock::new(AHashMap::with_capacity(64)) }
+        Self {
+            rw: RwLock::new(AHashMap::with_capacity(64)),
+            next_opportunistic_sweep_ns: AtomicU64::new(0),
+        }
     }
 
-    fn check(&self, key: u64, now_ns: u64, emit_ns: u64, tolerance_ns: u64) -> bool {
+    fn decide(
+        &self,
+        key: u64,
+        now_ns: u64,
+        emit_ns: u64,
+        tolerance_ns: u64,
+    ) -> RateLimitDecision {
         {
             let map = self.rw.read();
             if let Some(cell) = map.get(&key) {
                 let cell = cell.clone();
                 drop(map);
-                return gcra_check(&cell, now_ns, emit_ns, tolerance_ns);
+                return gcra_decide(&cell, now_ns, emit_ns, tolerance_ns);
             }
         }
         let fresh = Arc::new(AtomicU64::new(0));
@@ -255,31 +332,40 @@ impl Shard {
             if let Some(existing) = map.get(&key) {
                 let cell = existing.clone();
                 drop(map);
-                return gcra_check(&cell, now_ns, emit_ns, tolerance_ns);
+                return gcra_decide(&cell, now_ns, emit_ns, tolerance_ns);
             }
             if map.len() >= MAX_PER_SHARD {
-                // Admission control (2.24.0): under DDoS the shard fills with
-                // attacker IPs in a few seconds. Evicting an incumbent — even
-                // an "expired" one — favours the attacker because the new
-                // arrival is the one stalling legitimate traffic. First try a
-                // cheap, opportunistic expired-entry sweep; if every slot is
-                // still live, drop the *new* request rather than disturb the
-                // working set. A dropped-from-shard request is treated as a
-                // denial: we return `false` so the proxy emits 429 just like
-                // a normal rate-limit miss.
-                let evicted_expired = try_evict_expired(&mut map, now_ns, tolerance_ns);
+                // Admission control: scan drained TATs at most once per sweep
+                // interval. Repeating an O(n) retain under this write lock for
+                // every new flooding address would itself be a CPU/lock DoS.
+                // If all slots are live, reject the newcomer with a typed
+                // capacity decision and preserve the incumbent working set.
+                let sweep_due = self
+                    .next_opportunistic_sweep_ns
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |deadline| {
+                        (now_ns >= deadline).then(|| {
+                            now_ns.saturating_add(
+                                u64::try_from(SWEEP_INTERVAL.as_nanos()).unwrap_or(u64::MAX),
+                            )
+                        })
+                    })
+                    .is_ok();
+                let evicted_expired = sweep_due && try_evict_expired(&mut map, now_ns);
                 if !evicted_expired && map.len() >= MAX_PER_SHARD {
-                    return false;
+                    return RateLimitDecision::Deny {
+                        retry_after: SWEEP_INTERVAL,
+                        reason: RateLimitDenyReason::CapacityExhausted,
+                    };
                 }
             }
             map.insert(key, fresh.clone());
         }
-        gcra_check(&fresh, now_ns, emit_ns, tolerance_ns)
+        gcra_decide(&fresh, now_ns, emit_ns, tolerance_ns)
     }
 
-    fn sweep(&self, now_ns: u64, tolerance_ns: u64) {
+    fn sweep(&self, now_ns: u64) {
         let mut map = self.rw.write();
-        map.retain(|_, cell| cell.load(Ordering::Relaxed).saturating_add(tolerance_ns) >= now_ns);
+        map.retain(|_, cell| cell.load(Ordering::Relaxed) > now_ns);
     }
 
     fn snapshot(&self) -> Vec<(u64, u64)> {
@@ -296,10 +382,9 @@ impl Shard {
 fn try_evict_expired(
     map: &mut AHashMap<u64, Arc<AtomicU64>>,
     now_ns: u64,
-    tolerance_ns: u64,
 ) -> bool {
     let before = map.len();
-    map.retain(|_, cell| cell.load(Ordering::Relaxed).saturating_add(tolerance_ns) >= now_ns);
+    map.retain(|_, cell| cell.load(Ordering::Relaxed) > now_ns);
     map.len() < before
 }
 
@@ -335,18 +420,23 @@ impl Backend {
                 let mut stmt = conn
                     .prepare("SELECT ip_hash, tat_ns FROM rate_counters WHERE tat_ns >= ?1")?;
                 #[allow(clippy::cast_possible_wrap, clippy::cast_sign_loss)]
-                let rows = stmt
+                let rows: rusqlite::Result<Vec<(u64, u64)>> = stmt
                     .query_map(params![cutoff as i64], |row| {
                         Ok((row.get::<_, i64>(0)? as u64, row.get::<_, i64>(1)? as u64))
                     })?
-                    .flatten()
                     .collect();
-                Ok(rows)
+                Ok(rows.context("failed to decode rate-limiter SQLite snapshot")?)
             }
             Backend::Postcard(path) => {
                 if !path.exists() {
                     return Ok(Vec::new());
                 }
+                let size = std::fs::metadata(path)?.len();
+                anyhow::ensure!(
+                    size <= MAX_POSTCARD_BYTES,
+                    "postcard rate-limiter snapshot '{}' is {size} bytes; limit is {MAX_POSTCARD_BYTES}",
+                    path.display()
+                );
                 let mut buf = Vec::new();
                 File::open(path)?.read_to_end(&mut buf)?;
                 if buf.len() < POSTCARD_MAGIC.len() || &buf[..POSTCARD_MAGIC.len()] != POSTCARD_MAGIC
@@ -403,6 +493,10 @@ impl Backend {
                     f.sync_all()?;
                 }
                 std::fs::rename(&tmp, path)?;
+                #[cfg(unix)]
+                if let Some(parent) = path.parent() {
+                    File::open(parent)?.sync_all()?;
+                }
                 Ok(())
             }
         }
@@ -413,9 +507,11 @@ impl Backend {
 
 pub struct LocalRateLimiter {
     shards: Arc<[Shard; NUM_SHARDS]>,
+    shard_hasher: RandomState,
     emit_ns: u64,
     tolerance_ns: u64,
     db: Arc<Mutex<Backend>>,
+    tasks_started: AtomicBool,
 }
 
 impl LocalRateLimiter {
@@ -426,21 +522,42 @@ impl LocalRateLimiter {
         mode: PersistenceMode,
     ) -> Result<Self> {
         let window_ns = u64::try_from(window.as_nanos()).unwrap_or(u64::MAX);
-        let emit_ns = window_ns / u64::from(limit.max(1));
-        let tolerance_ns = window_ns;
+        let emit_ns = window_ns.div_ceil(u64::from(limit));
+        anyhow::ensure!(emit_ns > 0, "rate-limit emission interval underflowed");
+        let tolerance_ns = emit_ns.saturating_mul(u64::from(limit));
         let shards: Arc<[Shard; NUM_SHARDS]> = Arc::new(array::from_fn(|_| Shard::new()));
+        let shard_hasher = RandomState::new();
         let backend = Backend::open(mode, snapshot_path)?;
         let now = now_ns();
-        let cutoff = now.saturating_sub(tolerance_ns);
-        for (key, tat) in backend.load(cutoff)? {
-            let idx = (key & SHARD_MASK) as usize;
-            shards[idx].rw.write().insert(key, Arc::new(AtomicU64::new(tat)));
+        let maximum_valid_tat = now.saturating_add(tolerance_ns);
+        for (key, persisted_tat) in backend.load(now)? {
+            // A valid GCRA TAT can never be further ahead than the burst
+            // tolerance. Clamp snapshots after a wall-clock rollback, config
+            // change, or manual/corrupt database edit.
+            let tat = persisted_tat.min(maximum_valid_tat);
+            let idx = shard_index(&shard_hasher, key);
+            let mut map = shards[idx].rw.write();
+            if map.len() < MAX_PER_SHARD {
+                map.insert(key, Arc::new(AtomicU64::new(tat)));
+            } else {
+                warn!(target: "krakenwaf", shard = idx, "rate-limiter snapshot entry dropped because shard capacity was reached");
+            }
         }
-        Ok(Self { shards, emit_ns, tolerance_ns, db: Arc::new(Mutex::new(backend)) })
+        Ok(Self {
+            shards,
+            shard_hasher,
+            emit_ns,
+            tolerance_ns,
+            db: Arc::new(Mutex::new(backend)),
+            tasks_started: AtomicBool::new(false),
+        })
     }
 
     fn spawn_persistence_task(self: Arc<Self>) {
         let Ok(handle) = tokio::runtime::Handle::try_current() else { return };
+        if self.tasks_started.swap(true, Ordering::AcqRel) {
+            return;
+        }
 
         let sweeper = self.clone();
         handle.spawn(async move {
@@ -448,9 +565,8 @@ impl LocalRateLimiter {
             loop {
                 ticker.tick().await;
                 let now = now_ns();
-                let tol = sweeper.tolerance_ns;
                 for shard in sweeper.shards.iter() {
-                    shard.sweep(now, tol);
+                    shard.sweep(now);
                 }
             }
         });
@@ -460,18 +576,20 @@ impl LocalRateLimiter {
             let mut ticker = interval(PERSIST_INTERVAL);
             loop {
                 ticker.tick().await;
-                if let Err(e) = persister.persist() {
-                    warn!(target: "krakenwaf", error = %e, "rate-limiter persist failed");
+                let current = persister.clone();
+                match tokio::task::spawn_blocking(move || current.persist()).await {
+                    Ok(Ok(())) => {}
+                    Ok(Err(e)) => warn!(target: "krakenwaf", error = %e, "rate-limiter persist failed"),
+                    Err(e) => warn!(target: "krakenwaf", error = %e, "rate-limiter persistence task panicked"),
                 }
             }
         });
     }
 
-    #[allow(clippy::unused_async)]
-    async fn check(&self, ip: &str) -> bool {
+    fn decide(&self, ip: &str) -> RateLimitDecision {
         let key = hash_ip(ip);
-        let idx = (key & SHARD_MASK) as usize;
-        self.shards[idx].check(key, now_ns(), self.emit_ns, self.tolerance_ns)
+        let idx = shard_index(&self.shard_hasher, key);
+        self.shards[idx].decide(key, now_ns(), self.emit_ns, self.tolerance_ns)
     }
 
     fn persist(&self) -> Result<()> {
@@ -479,31 +597,51 @@ impl LocalRateLimiter {
         for shard in self.shards.iter() {
             items.extend(shard.snapshot());
         }
-        let cutoff = now_ns().saturating_sub(self.tolerance_ns);
+        let cutoff = now_ns();
         let backend = self.db.lock();
         backend.save(&items, cutoff)
     }
 }
 
+#[inline]
+fn shard_index(hasher: &RandomState, key: u64) -> usize {
+    usize::try_from(hasher.hash_one(key) & u64::try_from(SHARD_MASK).unwrap_or(u64::MAX))
+        .unwrap_or_default()
+}
+
 // ── RedisRateLimiter ──────────────────────────────────────────────────────────
 
-/// Atomic Lua script: INCR key, set TTL on first write, return 1=allow / 0=deny.
-const INCR_WITH_TTL_LUA: &str = r"
-local n = redis.call('INCR', KEYS[1])
-if n == 1 then
-  redis.call('EXPIRE', KEYS[1], ARGV[2])
+/// Distributed GCRA admission using Redis as the authoritative clock and TAT
+/// store. The script returns `{allowed, retry_after_us}`.
+///
+/// Redis Lua numbers are exact for the current epoch in microseconds (well
+/// below 2^53). `TIME` avoids clock skew between WAF replicas.
+const REDIS_GCRA_LUA: &str = r"
+local emission_us = tonumber(ARGV[1])
+local tolerance_us = tonumber(ARGV[2])
+local redis_time = redis.call('TIME')
+local now_us = tonumber(redis_time[1]) * 1000000 + tonumber(redis_time[2])
+local tat = tonumber(redis.call('GET', KEYS[1])) or now_us
+if tat < now_us then
+  tat = now_us
 end
-if n > tonumber(ARGV[1]) then
-  return 0
+
+local new_tat = tat + emission_us
+if new_tat - now_us > tolerance_us then
+  local eligible_at = new_tat - tolerance_us
+  return {0, math.max(1, math.ceil(eligible_at - now_us))}
 end
-return 1
+
+local ttl_ms = math.max(1, math.ceil((new_tat - now_us) / 1000))
+redis.call('SET', KEYS[1], string.format('%.0f', new_tat), 'PX', ttl_ms)
+return {1, 0}
 ";
 
 pub struct RedisRateLimiter {
     pool: FredPool,
     key_prefix: String,
-    max_requests: u32,
-    window_secs: u64,
+    emit_us: u64,
+    tolerance_us: u64,
     /// Per-call timeout for `EVAL` operations. Bounds the worst-case latency the
     /// WAF can spend waiting on a hung Redis (network blip, GC stall) before
     /// applying the fail mode. Keeps tail latency under control on heavy load.
@@ -535,6 +673,11 @@ impl RedisRateLimiter {
             url.starts_with("rediss://"),
             "Redis URL must use rediss:// (TLS) per CIS Benchmark — got: {url}"
         );
+        let parsed = url::Url::parse(url).context("invalid Redis URL")?;
+        anyhow::ensure!(
+            parsed.username().is_empty() && parsed.password().is_none(),
+            "Redis URL must not contain credentials; use REDIS_USERNAME/REDIS_PASSWORD secrets"
+        );
         Self::new_inner(
             url, limit, window_secs, key_prefix, pool_size, ca_cert_path, true, fail_open, metrics,
         )
@@ -555,6 +698,18 @@ impl RedisRateLimiter {
     ) -> Result<Self> {
         use fred::prelude::*;
         use fred::types::config::TlsConnector;
+
+        anyhow::ensure!(limit > 0, "Redis rate limit must be greater than zero");
+        anyhow::ensure!(window_secs > 0, "Redis rate-limit window must be greater than zero");
+        anyhow::ensure!(pool_size > 0, "Redis pool_size must be greater than zero");
+        anyhow::ensure!(!key_prefix.trim().is_empty(), "Redis key_prefix must not be empty");
+        let window_us = window_secs
+            .checked_mul(1_000_000)
+            .context("Redis rate-limit window is too large")?;
+        let emit_us = window_us.div_ceil(u64::from(limit));
+        let tolerance_us = emit_us
+            .checked_mul(u64::from(limit))
+            .context("Redis GCRA tolerance overflow")?;
 
         let mut config = Config::from_url(url).context("invalid Redis URL")?;
 
@@ -583,7 +738,6 @@ impl RedisRateLimiter {
             config.tls = Some(connector.into());
         }
 
-        let pool_size = pool_size.max(1);
         let pool = Builder::from_config(config)
             .build_pool(pool_size)
             .context("failed to build Redis connection pool")?;
@@ -598,8 +752,8 @@ impl RedisRateLimiter {
         Ok(Self {
             pool,
             key_prefix: key_prefix.to_string(),
-            max_requests: limit,
-            window_secs,
+            emit_us,
+            tolerance_us,
             // 150 ms is comfortably above p99 of a healthy intra-DC Redis call
             // (typically &lt; 5 ms) yet tight enough that a degraded Redis cannot
             // dominate WAF tail latency under load. Tunable later if needed.
@@ -610,7 +764,7 @@ impl RedisRateLimiter {
     }
 
 
-    async fn check(&self, ip: &str) -> bool {
+    async fn decide(&self, ip: &str) -> RateLimitDecision {
         use fred::prelude::*;
 
         let ip_key = canonical_rate_limit_ip_key(ip);
@@ -619,15 +773,28 @@ impl RedisRateLimiter {
         // pause, evictions) must not stall the WAF request path. On error or
         // timeout we apply the configured fail mode (`fail_open`) and record it
         // so a Redis outage silently disabling rate limiting is observable.
-        let eval_fut = self.pool.eval::<i64, _, _, _>(
-            INCR_WITH_TTL_LUA,
+        let eval_fut = self.pool.eval::<Vec<i64>, _, _, _>(
+            REDIS_GCRA_LUA,
             vec![key],
-            vec![i64::from(self.max_requests), self.window_secs.cast_signed()],
+            vec![
+                i64::try_from(self.emit_us).unwrap_or(i64::MAX),
+                i64::try_from(self.tolerance_us).unwrap_or(i64::MAX),
+            ],
         );
 
         match tokio::time::timeout(self.op_timeout, eval_fut).await {
-            Ok(Ok(1)) => true,
-            Ok(Ok(_)) => false,
+            Ok(Ok(result)) if result.first() == Some(&1) => RateLimitDecision::Allow,
+            Ok(Ok(result)) if result.first() == Some(&0) => {
+                let retry_us = result.get(1).copied().unwrap_or(1).max(1);
+                RateLimitDecision::Deny {
+                    retry_after: Duration::from_micros(u64::try_from(retry_us).unwrap_or(1)),
+                    reason: RateLimitDenyReason::LimitExceeded,
+                }
+            }
+            Ok(Ok(result)) => self.on_unavailable(
+                ip,
+                format_args!("GCRA script returned an invalid response: {result:?}"),
+            ),
             Ok(Err(err)) => self.on_unavailable(ip, format_args!("check failed: {err}")),
             Err(_elapsed) => self.on_unavailable(
                 ip,
@@ -641,7 +808,11 @@ impl RedisRateLimiter {
 
     /// Apply the configured fail mode when Redis is unavailable: record the
     /// event in metrics, warn, and return the allow/deny decision.
-    fn on_unavailable(&self, ip: &str, reason: std::fmt::Arguments<'_>) -> bool {
+    fn on_unavailable(
+        &self,
+        ip: &str,
+        reason: std::fmt::Arguments<'_>,
+    ) -> RateLimitDecision {
         if let Some(metrics) = &self.metrics {
             metrics.inc_redis_rate_limit_fail(self.fail_open);
         }
@@ -653,7 +824,14 @@ impl RedisRateLimiter {
             "Redis rate-limiter unavailable; applying fail mode (fail_open={})",
             self.fail_open
         );
-        self.fail_open
+        if self.fail_open {
+            RateLimitDecision::Allow
+        } else {
+            RateLimitDecision::Deny {
+                retry_after: Duration::from_secs(1),
+                reason: RateLimitDenyReason::BackendUnavailable,
+            }
+        }
     }
 }
 
@@ -667,9 +845,12 @@ fn build_custom_ca_connector(ca_path: &str) -> Result<fred::types::config::TlsCo
         .with_context(|| format!("failed to read Redis CA cert '{ca_path}'"))?;
 
     let mut roots = RootCertStore::empty();
+    let mut certificate_count = 0usize;
     for cert in CertificateDer::pem_slice_iter(&pem) {
         roots.add(cert.context("invalid PEM certificate in Redis CA file")?)?;
+        certificate_count += 1;
     }
+    anyhow::ensure!(certificate_count > 0, "Redis CA file '{ca_path}' contains no certificates");
 
     // From<RustlsClientConfig> for TlsConnector wraps it in
     // TlsConnector::Rustls(RustlsConnector::from(Arc::new(config))).
@@ -686,17 +867,25 @@ fn open_db(path: &Path) -> Result<Connection> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    if path.exists() {
-        let size = std::fs::metadata(path).map_or(0, |m| m.len());
-        if size > MAX_DB_BYTES {
+    let sqlite_files = [
+        path.to_path_buf(),
+        sqlite_sidecar(path, "-wal"),
+        sqlite_sidecar(path, "-shm"),
+    ];
+    let size = sqlite_files
+        .iter()
+        .filter_map(|file| std::fs::metadata(file).ok())
+        .fold(0u64, |total, metadata| total.saturating_add(metadata.len()));
+    if size > MAX_DB_BYTES {
             warn!(
                 target: "krakenwaf",
                 size, limit = MAX_DB_BYTES, path = %path.display(),
                 "rate-limiter DB exceeds limit; starting clean"
             );
-            let _ = std::fs::remove_file(path);
+            for file in &sqlite_files {
+                let _ = std::fs::remove_file(file);
+            }
         }
-    }
     let conn = Connection::open(path)?;
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
@@ -710,6 +899,12 @@ fn open_db(path: &Path) -> Result<Connection> {
          );",
     )?;
     Ok(conn)
+}
+
+fn sqlite_sidecar(path: &Path, suffix: &str) -> PathBuf {
+    let mut value = path.as_os_str().to_os_string();
+    value.push(suffix);
+    PathBuf::from(value)
 }
 
 fn with_transaction(conn: &Connection, f: impl FnOnce(&Connection) -> Result<()>) -> Result<()> {
@@ -808,8 +1003,8 @@ mod tests {
 
     fn make_limiter(limit: u32, window_secs: u64) -> RateLimiter {
         let window_ns = window_secs * 1_000_000_000;
-        let emit_ns = window_ns / u64::from(limit.max(1));
-        let tolerance_ns = window_ns;
+        let emit_ns = window_ns.div_ceil(u64::from(limit));
+        let tolerance_ns = emit_ns * u64::from(limit);
         let conn = Connection::open_in_memory().expect("sqlite in-memory");
         conn.execute_batch(
             "CREATE TABLE rate_counters (ip_hash INTEGER PRIMARY KEY, tat_ns INTEGER NOT NULL);",
@@ -817,14 +1012,16 @@ mod tests {
         .expect("create test table");
         RateLimiter::Local(Arc::new(LocalRateLimiter {
             shards: Arc::new(array::from_fn(|_| Shard::new())),
+            shard_hasher: RandomState::new(),
             emit_ns,
             tolerance_ns,
             db: Arc::new(Mutex::new(Backend::Sqlite(conn))),
+            tasks_started: AtomicBool::new(false),
         }))
     }
 
     #[test]
-    fn gcra_permite_ate_o_limite() {
+    fn gcra_allows_exact_burst_then_returns_retry_delay() {
         let limit = 5u32;
         let window_ns = 1_000_000_000u64;
         let emit_ns = window_ns / u64::from(limit);
@@ -832,13 +1029,22 @@ mod tests {
         let tat = AtomicU64::new(0);
         let now = now_ns();
         for _ in 0..limit {
-            assert!(gcra_check(&tat, now, emit_ns, tolerance_ns), "should allow");
+            assert_eq!(
+                gcra_decide(&tat, now, emit_ns, tolerance_ns),
+                RateLimitDecision::Allow
+            );
         }
-        assert!(!gcra_check(&tat, now, emit_ns, tolerance_ns), "should block");
+        assert_eq!(
+            gcra_decide(&tat, now, emit_ns, tolerance_ns),
+            RateLimitDecision::Deny {
+                retry_after: Duration::from_nanos(emit_ns),
+                reason: RateLimitDenyReason::LimitExceeded,
+            }
+        );
     }
 
     #[test]
-    fn gcra_recupera_apos_janela() {
+    fn gcra_recovers_after_window() {
         let limit = 3u32;
         let window_ns = 1_000_000_000u64;
         let emit_ns = window_ns / u64::from(limit);
@@ -846,15 +1052,35 @@ mod tests {
         let tat = AtomicU64::new(0);
         let now = now_ns();
         for _ in 0..limit {
-            assert!(gcra_check(&tat, now, emit_ns, tolerance_ns));
+            assert!(gcra_decide(&tat, now, emit_ns, tolerance_ns).is_allowed());
         }
-        assert!(!gcra_check(&tat, now, emit_ns, tolerance_ns));
+        assert!(!gcra_decide(&tat, now, emit_ns, tolerance_ns).is_allowed());
         let later = now + window_ns + 1;
-        assert!(gcra_check(&tat, later, emit_ns, tolerance_ns));
+        assert!(gcra_decide(&tat, later, emit_ns, tolerance_ns).is_allowed());
     }
 
     #[test]
-    fn hash_ip_e_estavel() {
+    fn drained_tat_is_evicted_without_an_extra_window() {
+        let now = 10_000;
+        let mut map = AHashMap::new();
+        map.insert(1, Arc::new(AtomicU64::new(now)));
+        map.insert(2, Arc::new(AtomicU64::new(now + 1)));
+        assert!(try_evict_expired(&mut map, now));
+        assert!(!map.contains_key(&1));
+        assert!(map.contains_key(&2));
+    }
+
+    #[test]
+    fn local_constructor_rejects_zero_limit_and_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rate.bin");
+        assert!(RateLimiter::new(0, Duration::from_secs(1), &path, PersistenceMode::Postcard)
+            .is_err());
+        assert!(RateLimiter::new(1, Duration::ZERO, &path, PersistenceMode::Postcard).is_err());
+    }
+
+    #[test]
+    fn hash_ip_is_stable() {
         assert_eq!(hash_ip("192.168.1.1"), hash_ip("192.168.1.1"));
         assert_ne!(hash_ip("192.168.1.1"), hash_ip("192.168.1.2"));
     }
@@ -883,6 +1109,14 @@ mod tests {
     }
 
     #[test]
+    fn redis_script_uses_server_time_and_tat_state() {
+        assert!(REDIS_GCRA_LUA.contains("redis.call('TIME')"));
+        assert!(REDIS_GCRA_LUA.contains("redis.call('GET', KEYS[1])"));
+        assert!(REDIS_GCRA_LUA.contains("string.format('%.0f', new_tat)"));
+        assert!(!REDIS_GCRA_LUA.contains("INCR"));
+    }
+
+    #[test]
     fn monotonic_now_ns_never_goes_backwards() {
         let a = now_ns();
         let b = now_ns();
@@ -890,14 +1124,15 @@ mod tests {
     }
 
     #[test]
-    fn shard_routing_consistente() {
+    fn shard_routing_is_consistent_within_process() {
         let ip = "10.0.0.99";
         let key = hash_ip(ip);
-        assert_eq!((key & SHARD_MASK) as usize, (hash_ip(ip) & SHARD_MASK) as usize);
+        let hasher = RandomState::new();
+        assert_eq!(shard_index(&hasher, key), shard_index(&hasher, hash_ip(ip)));
     }
 
     #[tokio::test]
-    async fn check_bloqueia_apos_limite() {
+    async fn check_denies_after_limit() {
         let rl = make_limiter(3, 60);
         let ip = "192.0.2.1";
         assert!(rl.check(ip).await);
@@ -907,7 +1142,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ips_diferentes_sao_independentes() {
+    async fn different_ips_have_independent_budgets() {
         let rl = make_limiter(1, 60);
         assert!(rl.check("10.0.0.1").await);
         assert!(!rl.check("10.0.0.1").await);
@@ -915,7 +1150,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn persist_e_snapshot_funcionam() {
+    async fn persistence_snapshot_succeeds() {
         let rl = make_limiter(10, 60);
         for _ in 0..5 {
             rl.check("10.1.1.1").await;
@@ -924,7 +1159,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn postcard_round_trip_rehidrata_tats() {
+    async fn async_persistence_flushes_without_blocking_runtime_worker() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("rate.bin");
+        let limiter = RateLimiter::new(
+            2,
+            Duration::from_secs(60),
+            &path,
+            PersistenceMode::Postcard,
+        )
+        .expect("limiter");
+        assert!(limiter.check("192.0.2.55").await);
+        limiter.persist_async().await.expect("async persist");
+        assert!(path.exists());
+        assert!(std::fs::metadata(path).expect("metadata").len() > POSTCARD_MAGIC.len() as u64);
+    }
+
+    #[tokio::test]
+    async fn postcard_round_trip_rehydrates_tats() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("rl.bin");
         {
@@ -1047,6 +1299,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn redis_constructor_rejects_zero_values() {
+        let result = RateLimiter::new_redis_for_test("redis://127.0.0.1:1", 0, 60, "kwtest")
+            .await;
+        assert!(result.is_err());
+        let result = RateLimiter::new_redis_for_test("redis://127.0.0.1:1", 1, 0, "kwtest")
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
     async fn redis_ips_are_independent() {
         let Some(guard) = try_spawn_test_redis().await else { return };
         let url = format!("redis://127.0.0.1:{}", guard.port);
@@ -1071,5 +1333,24 @@ mod tests {
         assert!(!rl.check("5.5.5.5").await, "3rd must be denied");
         tokio::time::sleep(Duration::from_secs(3)).await;
         assert!(rl.check("5.5.5.5").await, "window reset — first request must pass again");
+    }
+
+    #[tokio::test]
+    async fn redis_gcra_refills_one_request_per_emission_interval() {
+        let Some(guard) = try_spawn_test_redis().await else { return };
+        let url = format!("redis://127.0.0.1:{}", guard.port);
+        let rl = RateLimiter::new_redis_for_test(&url, 2, 2, "kwtest-gcra-refill")
+            .await
+            .expect("connect to test Redis");
+        assert!(rl.check("6.6.6.6").await);
+        assert!(rl.check("6.6.6.6").await);
+        let denied = rl.decide("6.6.6.6").await;
+        assert!(!denied.is_allowed());
+        assert!(denied.retry_after().is_some_and(|delay| delay <= Duration::from_secs(1)));
+        tokio::time::sleep(Duration::from_millis(1_100)).await;
+        assert!(
+            rl.check("6.6.6.6").await,
+            "GCRA must refill before the original fixed window expires"
+        );
     }
 }

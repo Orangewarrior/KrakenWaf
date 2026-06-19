@@ -86,16 +86,14 @@ async fn rate_limit_keys_are_per_ip_over_rediss() {
     assert!(rl.check("10.42.0.10").await, "first request from .10 must pass");
     assert!(!rl.check("10.42.0.10").await, "second request from .10 must be denied");
 
-    // A different IP gets its own fresh window.
+    // A different IP gets an independent TAT.
     assert!(
         rl.check("10.42.0.11").await,
         "first request from .11 must pass — budgets must be per-IP over TLS"
     );
 }
 
-/// A short window resets after expiry. Confirms TTL semantics work
-/// through the TLS transport (the EXPIRE in the Lua script must take
-/// effect).
+/// A drained TAT expires. Confirms GCRA key TTL semantics over TLS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rate_limit_window_resets_over_rediss() {
     // 2 req / 2 s — short enough to keep the test fast.
@@ -116,7 +114,7 @@ async fn rate_limit_window_resets_over_rediss() {
 
 /// Heavy concurrency check — 20 parallel `check()` calls against a
 /// limit of 5 must produce **exactly 5** allowed responses. The Lua
-/// `INCR_WITH_TTL_LUA` script must remain atomic over multiplexed TLS.
+/// The Redis GCRA script must remain atomic over multiplexed TLS.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rate_limit_lua_script_is_atomic_over_rediss() {
     let Some(rl) = build_rl(5, 60, "atomic").await else { return };

@@ -184,7 +184,7 @@ cmc::open_redirect_rfi_detect:kind=rfi parameter=file token=file marker=trailing
 * Normalizer mitigation: `src/waf/engine/normalize.rs`
   (`strip_control_and_space_prefix`)
 * Engine entry point: `WafEngine::inspect_open_redirect_rfi` in
-  `src/waf/engine/mod.rs`, called from `src/proxy.rs`
+  `src/waf/engine/mod.rs`, called from `src/proxy/mod.rs`
 * DAST sweep: `OPEN_REDIRECT_RFI_PAYLOADS` in `src/bin/attack.rs`
 * Integration test: `cmc_open_redirect_rfi_payload_sweep_get_and_post` in
   `tests/server_real_test.rs`

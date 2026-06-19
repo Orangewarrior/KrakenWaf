@@ -1,3 +1,19 @@
+mod builder;
+mod body;
+mod enforcement;
+mod real_ip;
+mod trusted_proxy;
+mod trace_context;
+
+pub use builder::ProxyClientBuilder;
+pub use body::WafBody;
+pub(crate) use body::full_body;
+use body::{limited_body, BodyTracker};
+use enforcement::{derive_block_reason, derive_module_label};
+pub(crate) use real_ip::effective_client_ip;
+pub use trusted_proxy::{parse_trusted_proxy_cidr, parse_trusted_proxy_cidrs};
+use trace_context::build_traceparent;
+
 use crate::{
     allowpaths::PathDecision,
     app::AppState,
@@ -11,14 +27,13 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
-use chrono::Utc;
 use http::{
     header::{CONNECTION, COOKIE, HOST, LOCATION, UPGRADE},
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
 };
-use http_body_util::{combinators::UnsyncBoxBody, BodyExt, Full};
+use http_body_util::{BodyExt, Full};
 use hyper::{
-    body::{Body, Frame, Incoming, SizeHint},
+    body::{Frame, Incoming},
     upgrade,
 };
 use hyper_rustls::HttpsConnectorBuilder;
@@ -30,56 +45,15 @@ use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::{pem::PemObject, CertificateDer};
 use std::{
     collections::VecDeque,
-    convert::Infallible,
-    fs::{self, OpenOptions},
-    io::Write as _,
-    path::Path,
-    pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
         Arc,
     },
-    task::{Context as TaskContext, Poll},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info, warn};
 use url::{Host, Url};
 use uuid::Uuid;
-
-const PROXY_ERROR_DEV_LOG: &str = "logs/proxy_errors_dev/proxy_errors.jsonl";
-
-/// RAII guard that tracks bytes buffered during body inspection and releases
-/// the global + per-IP in-flight byte counters on drop.
-struct BodyTracker {
-    global: Arc<AtomicUsize>,
-    ip: Arc<AtomicUsize>,
-    bytes: usize,
-}
-
-impl BodyTracker {
-    fn new(global: Arc<AtomicUsize>, ip: Arc<AtomicUsize>) -> Self {
-        Self {
-            global,
-            ip,
-            bytes: 0,
-        }
-    }
-
-    fn add(&mut self, n: usize) {
-        self.global.fetch_add(n, Ordering::Relaxed);
-        self.ip.fetch_add(n, Ordering::Relaxed);
-        self.bytes += n;
-    }
-}
-
-impl Drop for BodyTracker {
-    fn drop(&mut self) {
-        if self.bytes > 0 {
-            self.global.fetch_sub(self.bytes, Ordering::Relaxed);
-            self.ip.fetch_sub(self.bytes, Ordering::Relaxed);
-        }
-    }
-}
 
 /// Bytes carried between adjacent body chunks when streaming-inspecting the body.
 /// Sized to be larger than any realistic detection pattern so attackers cannot
@@ -105,8 +79,6 @@ const BODY_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3
 
 type UpstreamConnector = hyper_rustls::HttpsConnector<HttpConnector>;
 type UpstreamClient = Client<UpstreamConnector, Full<Bytes>>;
-type BoxError = Box<dyn std::error::Error + Send + Sync>;
-pub type WafBody = UnsyncBoxBody<Bytes, BoxError>;
 pub type WafResponse = Response<WafBody>;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,103 +93,6 @@ pub enum ResponseMode {
         inspect_prefix_bytes: usize,
         max_bytes: usize,
     },
-}
-
-struct LimitedResponseBody {
-    initial: VecDeque<Frame<Bytes>>,
-    inner: Pin<Box<Incoming>>,
-    seen: usize,
-    max_bytes: usize,
-    done: bool,
-}
-
-impl LimitedResponseBody {
-    fn new(
-        initial: VecDeque<Frame<Bytes>>,
-        inner: Incoming,
-        seen: usize,
-        max_bytes: usize,
-    ) -> Self {
-        Self {
-            initial,
-            inner: Box::pin(inner),
-            seen,
-            max_bytes,
-            done: false,
-        }
-    }
-}
-
-impl Body for LimitedResponseBody {
-    type Data = Bytes;
-    type Error = BoxError;
-
-    fn poll_frame(
-        self: Pin<&mut Self>,
-        cx: &mut TaskContext<'_>,
-    ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        let this = self.get_mut();
-        if this.done {
-            return Poll::Ready(None);
-        }
-        if let Some(frame) = this.initial.pop_front() {
-            return Poll::Ready(Some(Ok(frame)));
-        }
-        match this.inner.as_mut().poll_frame(cx) {
-            Poll::Ready(Some(Ok(frame))) => {
-                if let Some(data) = frame.data_ref() {
-                    let Some(total) = this.seen.checked_add(data.len()) else {
-                        this.done = true;
-                        return Poll::Ready(Some(Err(response_limit_error(this.max_bytes))));
-                    };
-                    if total > this.max_bytes {
-                        this.done = true;
-                        return Poll::Ready(Some(Err(response_limit_error(this.max_bytes))));
-                    }
-                    this.seen = total;
-                }
-                Poll::Ready(Some(Ok(frame)))
-            }
-            Poll::Ready(Some(Err(error))) => {
-                this.done = true;
-                Poll::Ready(Some(Err(Box::new(error))))
-            }
-            Poll::Ready(None) => {
-                this.done = true;
-                Poll::Ready(None)
-            }
-            Poll::Pending => Poll::Pending,
-        }
-    }
-
-    fn is_end_stream(&self) -> bool {
-        self.done || (self.initial.is_empty() && self.inner.is_end_stream())
-    }
-
-    fn size_hint(&self) -> SizeHint {
-        SizeHint::default()
-    }
-}
-
-fn response_limit_error(max_bytes: usize) -> BoxError {
-    Box::new(std::io::Error::other(format!(
-        "upstream response exceeded streaming limit of {max_bytes} bytes"
-    )))
-}
-
-pub(crate) fn full_body(bytes: Bytes) -> WafBody {
-    Full::new(bytes)
-        .map_err(|never: Infallible| match never {})
-        .boxed_unsync()
-}
-
-fn limited_body(
-    initial: VecDeque<Frame<Bytes>>,
-    inner: Incoming,
-    seen: usize,
-    max_bytes: usize,
-) -> WafBody {
-    LimitedResponseBody::new(initial, inner, seen, max_bytes).boxed_unsync()
 }
 
 pub struct ProxyClient {
@@ -279,6 +154,12 @@ enum BodyInspectionError {
     },
     Timeout,
     Other(anyhow::Error),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum EnforcementPolicy {
+    WafMode,
+    RateLimit { retry_after: std::time::Duration },
 }
 
 impl std::fmt::Display for BodyInspectionError {
@@ -359,13 +240,14 @@ impl ProxyClient {
 
         let client = build_upstream_client(upstream_ca)?;
 
-        let internal_header_name = internal_header_name.and_then(|value| {
-            if value.trim().is_empty() {
-                None
-            } else {
-                value.parse().ok()
-            }
-        });
+        let internal_header_name = match internal_header_name {
+            Some(value) if !value.trim().is_empty() => Some(
+                value
+                    .parse()
+                    .with_context(|| format!("invalid internal header name: {value}"))?,
+            ),
+            _ => None,
+        };
 
         Ok(Self {
             client,
@@ -467,12 +349,21 @@ impl ProxyClient {
         // decision and independent of CMC/regex/keyword inspection. An
         // allow-listed path skips signature inspection but must still be
         // rate-limited; otherwise an allow-listed route is an unbounded request
-        // sink. Routed through the same finding + `log_and_enforce` path the
-        // engine used before, so Block/Silent/DetectOnly semantics, the ban
-        // attribution, and the metrics are all unchanged.
-        if let Some(finding) = state.waf.rate_limit_finding(&context).await {
-            let event = build_event(&context, &finding, None);
-            if let Some(response) = self.log_and_enforce(state, event).await {
+        // sink. Rate limiting is an operational control, so it is enforced in
+        // every WAF inspection mode and returns HTTP 429 with `Retry-After`.
+        if let Some(rejection) = state.waf.rate_limit_finding(&context).await {
+            let event = build_event(&context, &rejection.finding, None);
+            if let Some(response) = Self::log_and_enforce_with(
+                    state,
+                    event,
+                    EnforcementPolicy::RateLimit {
+                        retry_after: rejection
+                            .decision
+                            .retry_after()
+                            .unwrap_or(std::time::Duration::from_secs(1)),
+                    },
+                )
+            {
                 return response;
             }
         }
@@ -517,7 +408,7 @@ impl ProxyClient {
                 Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
                 Decision::Block(finding) => {
                     let event = build_event(&context, &finding, None);
-                    if let Some(response) = self.log_and_enforce(state, event).await {
+                    if let Some(response) = Self::log_and_enforce(state, event) {
                         return response;
                     }
                 }
@@ -553,7 +444,7 @@ impl ProxyClient {
                         .inspect_complete_payload_with_context(&handshake, Some(&context.method))
                     {
                         let event = build_event(&context, &finding, None);
-                        if let Some(response) = self.log_and_enforce(state, event).await {
+                        if let Some(response) = Self::log_and_enforce(state, event) {
                             return response;
                         }
                     }
@@ -610,7 +501,7 @@ impl ProxyClient {
             }) => {
                 if !skip_inspection {
                     let event = build_event(&context, &finding, Some(&partial_body));
-                    if let Some(response) = self.log_and_enforce(state, event).await {
+                    if let Some(response) = Self::log_and_enforce(state, event) {
                         return response;
                     }
                 }
@@ -635,10 +526,7 @@ impl ProxyClient {
         };
 
         if !skip_inspection {
-            if let Some(response) = self
-                .inspect_buffered_request_body(state, &context, &body_bytes)
-                .await
-            {
+            if let Some(response) = Self::inspect_buffered_request_body(state, &context, &body_bytes) {
                 return response;
             }
         }
@@ -669,8 +557,7 @@ impl ProxyClient {
         }
     }
 
-    async fn inspect_buffered_request_body(
-        &self,
+    fn inspect_buffered_request_body(
         state: &AppState,
         context: &InspectionContext,
         body_bytes: &Bytes,
@@ -684,7 +571,7 @@ impl ProxyClient {
         let body_text = String::from_utf8_lossy(&body_for_inspection);
         if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
             let event = build_event(context, &finding, Some(body_bytes));
-            if let Some(response) = self.log_and_enforce(state, event).await {
+            if let Some(response) = Self::log_and_enforce(state, event) {
                 return Some(response);
             }
         }
@@ -695,7 +582,7 @@ impl ProxyClient {
         // URL, dangerous scheme, or inclusion wrapper.
         if let Decision::Block(finding) = state.waf.inspect_open_redirect_rfi(query, &body_text) {
             let event = build_event(context, &finding, Some(body_bytes));
-            if let Some(response) = self.log_and_enforce(state, event).await {
+            if let Some(response) = Self::log_and_enforce(state, event) {
                 return Some(response);
             }
         }
@@ -708,7 +595,7 @@ impl ProxyClient {
             Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
             Decision::Block(finding) => {
                 let event = build_event(context, &finding, Some(body_bytes));
-                self.log_and_enforce(state, event).await
+                Self::log_and_enforce(state, event)
             }
         }
     }
@@ -819,8 +706,15 @@ impl ProxyClient {
 
     /// Log the detection event and, in `Block` mode, return a 403 response.
     /// Returns `None` in `Silent` or `DetectOnly` mode so the caller continues forwarding.
-    #[allow(clippy::unused_async)]
-    async fn log_and_enforce(&self, state: &AppState, event: SecurityEvent) -> Option<WafResponse> {
+    fn log_and_enforce(state: &AppState, event: SecurityEvent) -> Option<WafResponse> {
+        Self::log_and_enforce_with(state, event, EnforcementPolicy::WafMode)
+    }
+
+    fn log_and_enforce_with(
+        state: &AppState,
+        event: SecurityEvent,
+        enforcement: EnforcementPolicy,
+    ) -> Option<WafResponse> {
         state.metrics.inc_blocked();
         // Per-engine:module counter derived from the security event label.
         let module_label = derive_module_label(&event.engine, &event.rule_match);
@@ -850,7 +744,9 @@ impl ProxyClient {
         // SQLite queue. Counting only happens when the WAF is going to
         // actually return 403 (Block mode); Silent / DetectOnly are
         // observe-only modes and must not poison the ban list.
-        if state.mode == crate::cli::WafMode::Block && state.ban_manager.enabled() {
+        let actually_blocked = matches!(enforcement, EnforcementPolicy::RateLimit { .. })
+            || state.mode == crate::cli::WafMode::Block;
+        if actually_blocked && state.ban_manager.enabled() {
             let reason = derive_block_reason(&event);
             let ip = event.client_ip.clone();
             let manager = state.ban_manager.clone();
@@ -866,15 +762,34 @@ impl ProxyClient {
 
         state.store.enqueue(event);
 
-        if state.mode == WafMode::Silent || state.mode == WafMode::DetectOnly {
+        if matches!(enforcement, EnforcementPolicy::WafMode)
+            && (state.mode == WafMode::Silent || state.mode == WafMode::DetectOnly)
+        {
             return None;
         }
 
-        Some(block_content_response(
+        let (status, retry_after) = match enforcement {
+            EnforcementPolicy::WafMode => (StatusCode::FORBIDDEN, None),
+            EnforcementPolicy::RateLimit { retry_after } => {
+                (StatusCode::TOO_MANY_REQUESTS, Some(retry_after))
+            }
+        };
+        let mut response = block_content_response(
             state,
-            StatusCode::FORBIDDEN,
+            status,
             "Blocked by KrakenWaf",
-        ))
+        );
+        if let Some(delay) = retry_after {
+            let seconds = delay
+                .as_secs()
+                .saturating_add(u64::from(delay.subsec_nanos() > 0))
+                .max(1)
+                .to_string();
+            if let Ok(value) = HeaderValue::from_str(&seconds) {
+                response.headers_mut().insert("Retry-After", value);
+            }
+        }
+        Some(response)
     }
 
     #[allow(clippy::too_many_lines, clippy::too_many_arguments)]
@@ -1009,8 +924,7 @@ impl ProxyClient {
                     }
                 }
                 let mut bytes = body_buf.freeze();
-                if let Some(response) = self
-                    .inspect_upstream_response(
+                if let Some(response) = Self::inspect_upstream_response(
                         state,
                         status,
                         &resp_headers_map,
@@ -1021,7 +935,6 @@ impl ProxyClient {
                         &uri,
                         request_id,
                     )
-                    .await
                 {
                     return Ok(response);
                 }
@@ -1034,8 +947,7 @@ impl ProxyClient {
             ResponseMode::StreamOnly { max_bytes } => {
                 ensure_advertised_length_within_limit(advertised_length, max_bytes)?;
                 let mut empty = Bytes::new();
-                if let Some(response) = self
-                    .inspect_upstream_response(
+                if let Some(response) = Self::inspect_upstream_response(
                         state,
                         status,
                         &resp_headers_map,
@@ -1046,7 +958,6 @@ impl ProxyClient {
                         &uri,
                         request_id,
                     )
-                    .await
                 {
                     return Ok(response);
                 }
@@ -1066,8 +977,7 @@ impl ProxyClient {
                 let (mut prefix, remainder, response_body, seen) =
                     read_response_prefix(response_body, inspect_prefix_bytes, max_bytes).await?;
                 let original_prefix_len = prefix.len();
-                if let Some(response) = self
-                    .inspect_upstream_response(
+                if let Some(response) = Self::inspect_upstream_response(
                         state,
                         status,
                         &resp_headers_map,
@@ -1078,7 +988,6 @@ impl ProxyClient {
                         &uri,
                         request_id,
                     )
-                    .await
                 {
                     return Ok(response);
                 }
@@ -1105,8 +1014,7 @@ impl ProxyClient {
     }
 
     #[allow(clippy::too_many_arguments)]
-    async fn inspect_upstream_response(
-        &self,
+    fn inspect_upstream_response(
         state: &AppState,
         status: StatusCode,
         response_headers: &HeaderMap,
@@ -1125,7 +1033,7 @@ impl ProxyClient {
         match state.waf.inspect_response(&resp_ctx) {
             Decision::Block(finding) => {
                 let event = build_response_event(&finding, method, uri, request_id);
-                if let Some(response) = self.log_and_enforce(state, event).await {
+                if let Some(response) = Self::log_and_enforce(state, event) {
                     return Some(response);
                 }
             }
@@ -1568,96 +1476,6 @@ fn format_full_request(
         _ => {}
     }
     out
-}
-
-/// Parse a single `--trusted-proxy-cidrs` / `proxy.yaml` entry. Accepts either
-/// CIDR notation (`10.0.0.0/8`, `2001:db8::/32`) or a bare IP literal
-/// (`192.0.2.1`, treated as a `/32`; `2001:db8::1` as a `/128`). Surrounding
-/// whitespace is trimmed.
-///
-/// # Errors
-/// Returns an error when `entry` is neither a valid IP nor a valid CIDR.
-pub fn parse_trusted_proxy_cidr(entry: &str) -> Result<ipnet::IpNet> {
-    let trimmed = entry.trim();
-    if let Ok(net) = trimmed.parse::<ipnet::IpNet>() {
-        return Ok(net);
-    }
-    let ip = trimmed.parse::<std::net::IpAddr>().map_err(|_| {
-        anyhow::anyhow!(
-            "'{entry}' is not a valid IP address or CIDR (e.g. 10.0.0.0/8 or 192.0.2.1)"
-        )
-    })?;
-    let prefix = if ip.is_ipv4() { 32 } else { 128 };
-    ipnet::IpNet::new(ip, prefix)
-        .with_context(|| format!("failed to build a host network for '{entry}'"))
-}
-
-/// Parse every trusted-proxy entry once, failing on the first malformed value.
-/// Empty entries are skipped. Done eagerly at startup so a typo fails fast
-/// instead of being silently dropped on every request — a dropped entry would
-/// make the proxy's own IP look like the client and break rate-limit, ban, and
-/// blocklist keying.
-///
-/// # Errors
-/// Returns an error if any entry is neither a valid IP nor a valid CIDR.
-pub fn parse_trusted_proxy_cidrs(entries: &[String]) -> Result<Vec<ipnet::IpNet>> {
-    entries
-        .iter()
-        .map(|entry| entry.trim())
-        .filter(|entry| !entry.is_empty())
-        .map(parse_trusted_proxy_cidr)
-        .collect()
-}
-
-#[cfg(test)]
-mod trusted_proxy_cidr_tests {
-    use super::{parse_trusted_proxy_cidr, parse_trusted_proxy_cidrs};
-
-    #[test]
-    fn accepts_cidr_and_bare_ip() {
-        // CIDR notation passes through unchanged.
-        assert_eq!(
-            parse_trusted_proxy_cidr("10.0.0.0/8").expect("cidr").to_string(),
-            "10.0.0.0/8"
-        );
-        // A bare IPv4 becomes a /32 host network.
-        assert_eq!(
-            parse_trusted_proxy_cidr("192.0.2.1").expect("v4 host").to_string(),
-            "192.0.2.1/32"
-        );
-        // A bare IPv6 becomes a /128 host network.
-        assert_eq!(
-            parse_trusted_proxy_cidr("2001:db8::1").expect("v6 host").to_string(),
-            "2001:db8::1/128"
-        );
-        // Surrounding whitespace is tolerated.
-        assert!(parse_trusted_proxy_cidr("  127.0.0.1/32  ").is_ok());
-    }
-
-    #[test]
-    fn rejects_malformed_entry() {
-        // A typo no longer fails silently — it is a hard error at parse time.
-        assert!(parse_trusted_proxy_cidr("999.0.0.0/8").is_err());
-        assert!(parse_trusted_proxy_cidr("not-an-ip").is_err());
-        assert!(parse_trusted_proxy_cidr("10.0.0.0/40").is_err());
-    }
-
-    #[test]
-    fn parses_list_skipping_blanks_and_fails_on_first_bad() {
-        let nets = parse_trusted_proxy_cidrs(&[
-            "127.0.0.1/32".to_string(),
-            "  ".to_string(),
-            "10.0.0.0/8".to_string(),
-        ])
-        .expect("all valid");
-        assert_eq!(nets.len(), 2, "blank entries are skipped");
-
-        let err = parse_trusted_proxy_cidrs(&[
-            "127.0.0.1/32".to_string(),
-            "bogus".to_string(),
-        ]);
-        assert!(err.is_err(), "one malformed entry fails the whole parse");
-    }
 }
 
 fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()> {
@@ -2362,312 +2180,6 @@ pub fn plain_response(status: StatusCode, message: &str) -> WafResponse {
             *resp.status_mut() = status;
             resp
         })
-}
-
-fn header_value_case_insensitive(headers: &http::HeaderMap, name: &str) -> Option<String> {
-    headers
-        .iter()
-        .find(|(k, _)| k.as_str().eq_ignore_ascii_case(name))
-        .and_then(|(_, v)| v.to_str().ok())
-        .map(str::to_owned)
-}
-
-#[track_caller]
-fn write_proxy_error_dev(
-    debug_proxy_dev: bool,
-    always_save: bool,
-    function: &str,
-    code: &str,
-    message: &str,
-    fields: &serde_json::Value,
-) {
-    let severity = if always_save { "critical" } else { "diagnostic" };
-    if !debug_proxy_dev && !always_save {
-        tracing::debug!(
-            target: "krakenwaf",
-            function,
-            code,
-            message,
-            "diagnostic proxy dev event suppressed; enable debug-proxy-dev to persist it"
-        );
-        return;
-    }
-
-    let location = std::panic::Location::caller();
-    let event = serde_json::json!({
-        "timestamp": Utc::now().to_rfc3339(),
-        "severity": severity,
-        "debug_proxy_dev": debug_proxy_dev,
-        "function": function,
-        "file": location.file(),
-        "line": location.line(),
-        "code": code,
-        "message": message,
-        "fields": fields,
-    });
-    if let Err(err) = append_proxy_error_dev_event(&event) {
-        warn!(
-            target: "krakenwaf",
-            error = %err,
-            path = PROXY_ERROR_DEV_LOG,
-            function,
-            code,
-            "failed to write proxy error dev event"
-        );
-    }
-}
-
-fn append_proxy_error_dev_event(event: &serde_json::Value) -> std::io::Result<()> {
-    let path = Path::new(PROXY_ERROR_DEV_LOG);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{event}")
-}
-
-/// Parse the RFC 7239 `Forwarded:` header chain and return the rightmost
-/// `for=` value whose IP does **not** belong to a trusted proxy CIDR.
-///
-/// Browsers / users do not send `Forwarded:` directly; only intermediaries
-/// do. The rightmost untrusted value is therefore the real client. Returns
-/// `None` when the header is absent, malformed, or every value resolves to
-/// a trusted hop.
-fn forwarded_header_real_ip(
-    headers: &http::HeaderMap,
-    trusted: &[ipnet::IpNet],
-    debug_proxy_dev: bool,
-) -> Option<String> {
-    use std::net::IpAddr;
-    let raw = header_value_case_insensitive(headers, "forwarded")?;
-    let elements: Vec<&str> = raw.split(',').collect();
-    for element in elements.iter().rev() {
-        for kv in element.split(';') {
-            let kv = kv.trim();
-            let Some((k, v)) = kv.split_once('=') else {
-                continue;
-            };
-            if !k.eq_ignore_ascii_case("for") {
-                continue;
-            }
-            // Allowed forms: `for=192.0.2.1`, `for="192.0.2.1:4711"`,
-            // `for="[2001:db8::1]"`, `for="_obfuscated"`.
-            let stripped = v.trim().trim_matches('"');
-            // Strip an optional port and surrounding `[]` for IPv6.
-            let host_only = if let Some(rest) = stripped.strip_prefix('[') {
-                let Some((host, _suffix)) = rest.split_once(']') else {
-                    write_proxy_error_dev(
-                        debug_proxy_dev,
-                        false,
-                        "forwarded_header_real_ip",
-                        "malformed_forwarded_ipv6",
-                        "Forwarded for= value starts with '[' but has no closing ']'",
-                        &serde_json::json!({
-                            "raw_header": raw,
-                            "element": element,
-                            "value": stripped,
-                        }),
-                    );
-                    continue;
-                };
-                host
-            } else if stripped.matches(':').count() == 1 {
-                // `host:port` for IPv4.
-                if let Some((host, _port)) = stripped.split_once(':') {
-                    host
-                } else {
-                    stripped
-                }
-            } else {
-                stripped
-            };
-            let Ok(parsed) = host_only.parse::<IpAddr>() else {
-                if !host_only.starts_with('_') {
-                    write_proxy_error_dev(
-                        debug_proxy_dev,
-                        false,
-                        "forwarded_header_real_ip",
-                        "invalid_forwarded_for_ip",
-                        "Forwarded for= value could not be parsed as an IP address",
-                        &serde_json::json!({
-                            "raw_header": raw,
-                            "element": element,
-                            "value": stripped,
-                            "host_only": host_only,
-                        }),
-                    );
-                }
-                continue;
-            };
-            if !trusted.iter().any(|net| net.contains(&parsed)) {
-                return Some(host_only.to_string());
-            }
-        }
-    }
-    None
-}
-
-pub(crate) fn effective_client_ip(
-    peer_ip: &str,
-    headers: &http::HeaderMap,
-    state: &AppState,
-) -> String {
-    use std::net::IpAddr;
-    let Ok(peer) = peer_ip.parse::<IpAddr>() else {
-        return peer_ip.to_string();
-    };
-    // Trusted-proxy CIDRs are parsed and validated once at startup
-    // (see `parse_trusted_proxy_cidrs`), so the request path is a cheap slice
-    // scan instead of re-parsing strings — and a malformed entry can no longer
-    // be silently dropped here (it fails the process at boot instead).
-    let trusted_nets = state.trusted_proxy_nets.as_slice();
-    if !trusted_nets.iter().any(|net| net.contains(&peer)) {
-        return peer_ip.to_string();
-    }
-
-    // RFC 7239 `Forwarded:` header takes precedence when present — modern
-    // proxies (HAProxy 2.x, recent nginx with the realip module) emit it
-    // instead of `X-Forwarded-For`. We walk the chain right-to-left and pick
-    // the first `for=` value whose IP is *not* one of our trusted proxies.
-    if let Some(ip) = forwarded_header_real_ip(headers, trusted_nets, state.cli.debug_proxy_dev) {
-        return ip;
-    }
-
-    let header_name = match state.cli.real_ip_header.as_deref() {
-        Some(h) if !h.trim().is_empty() => h.trim(),
-        // Even without an explicit --real-ip-header we still honour the
-        // de-facto standard `X-Real-IP` if the peer is a trusted proxy.
-        _ => "x-real-ip",
-    };
-    let Some(raw) = header_value_case_insensitive(headers, header_name) else {
-        return peer_ip.to_string();
-    };
-    let candidate = if header_name.eq_ignore_ascii_case("x-forwarded-for") {
-        // Rightmost-trusted algorithm (RFC 7239 §5.3): walk right-to-left, skip IPs that
-        // belong to a trusted proxy CIDR, and pick the first one that does not. Using the
-        // leftmost value (split(',').next()) is client-controlled and trivially bypassable —
-        // an attacker can prepend any IP to spoof past blocklist and rate-limit checks.
-        raw.split(',')
-            .rev()
-            .map(str::trim)
-            .find(|s| {
-                !s.parse::<IpAddr>()
-                    .ok()
-                    .is_some_and(|ip| trusted_nets.iter().any(|net| net.contains(&ip)))
-            })
-            .unwrap_or(peer_ip)
-            .to_string()
-    } else {
-        raw.trim().to_string()
-    };
-    if candidate.parse::<IpAddr>().is_ok() {
-        candidate
-    } else {
-        peer_ip.to_string()
-    }
-}
-
-/// Build or propagate a W3C traceparent header value.
-///
-/// Rules:
-/// - If the incoming value is present and has a valid 32-hex trace-id in field[1],
-///   the trace-id is preserved and a new parent-id span is generated.
-/// - Otherwise (absent or malformed) both trace-id and parent-id are freshly
-///   generated from UUID v4.
-fn build_traceparent(incoming: Option<&str>, metrics: &crate::metrics::WafMetrics) -> String {
-    fn new_parent_id() -> String {
-        let parent_bytes = *Uuid::new_v4().as_bytes();
-        format!(
-            "{:016x}",
-            u64::from_be_bytes([
-                parent_bytes[0],
-                parent_bytes[1],
-                parent_bytes[2],
-                parent_bytes[3],
-                parent_bytes[4],
-                parent_bytes[5],
-                parent_bytes[6],
-                parent_bytes[7],
-            ])
-        )
-    }
-
-    if let Some(tp) = incoming {
-        let parts: Vec<&str> = tp.splitn(4, '-').collect();
-        if parts.len() >= 3
-            && parts[1].len() == 32
-            && parts[1].chars().all(|c| c.is_ascii_hexdigit())
-        {
-            let trace_id = parts[1];
-            metrics.inc_traceparent_forwarded();
-            return format!("00-{trace_id}-{}-01", new_parent_id());
-        }
-    }
-    // No valid incoming — generate fresh traceparent.
-    let trace_id = format!("{:032x}", Uuid::new_v4().as_u128());
-    metrics.inc_traceparent_generated();
-    format!("00-{trace_id}-{}-01", new_parent_id())
-}
-
-/// Classify a block event so the BAN-list manager knows whether the
-/// `security_scanners` fast-track applies (User-Agent scanner hit) or whether
-/// the event must roll into the normal `tolerance_block_count` threshold.
-fn derive_block_reason(event: &SecurityEvent) -> crate::banning::BlockReason {
-    use crate::banning::BlockReason;
-
-    // Detect_bots_n_scanners CMC module → potential fast-track.
-    if event.rule_match.starts_with("cmc::detect_bots_n_scanners") {
-        return BlockReason::SecurityScanner;
-    }
-
-    // Rate-limit / per-IP concurrency exhaustion.
-    if event.rule_match == "rate_limiter"
-        || event.rule_match.starts_with("rate_limit")
-        || event.rule_line_match == "window_exceeded"
-    {
-        return BlockReason::RateLimit;
-    }
-
-    // IP-reputation blocks (Spamhaus, Firehol, blocklist/allowlist, DQS).
-    if event.rule_line_match.starts_with("addr/")
-        || event.rule_line_match.starts_with("rules/addr/")
-        || event.rule_match.starts_with("Spamhaus")
-        || event.title.starts_with("Blocked source IP")
-        || event.title.starts_with("Blocked IP range")
-        || event.title.starts_with("Spamhaus")
-    {
-        return BlockReason::IpReputation;
-    }
-
-    BlockReason::RuleDetection
-}
-
-/// Derive an `"engine:module"` label for the per-module Prometheus counter.
-/// For CMC findings the `rule_match` is `"cmc::module_name:..."`, so we extract
-/// the module name. For other engines we use a sensible short label.
-///
-/// Custom regex rules arrive here with an already-enriched engine label of the
-/// form `"<title>, ID <id>:Regex rule"` (see `logging::derive_engine_label`),
-/// which is forwarded as-is so the metrics identify the exact rule that
-/// blocked instead of the old blind `unknown:regex`.
-fn derive_module_label(engine: &str, rule_match: &str) -> String {
-    if engine == "cmc" {
-        // rule_match format: "cmc::sqli_comments_detect:evidence"
-        let module = rule_match
-            .strip_prefix("cmc::")
-            .and_then(|s| s.split(':').next())
-            .unwrap_or("unknown");
-        format!("cmc:{module}")
-    } else if engine == "libinjection" {
-        // rule_match format: "libinjection::sqli:fingerprint"
-        let variant = rule_match
-            .strip_prefix("libinjection::")
-            .and_then(|s| s.split(':').next())
-            .unwrap_or("unknown");
-        format!("libinjection:{variant}")
-    } else {
-        engine.to_string()
-    }
 }
 
 #[cfg(test)]

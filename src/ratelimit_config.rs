@@ -9,6 +9,7 @@ use tracing::warn;
 // ── Top-level config ─────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RateLimitConfig {
     /// Maximum requests per minute per source IP.
     /// `None` (or 0 in the file) defers to the CLI flag or the built-in default (240).
@@ -87,7 +88,7 @@ pub struct RateLimitConfig {
     pub max_upstream_response_bytes: Option<usize>,
 
     /// Redis distributed rate-limiter settings. When present, replaces the
-    /// built-in GCRA limiter with a Redis-backed counter.
+    /// local GCRA TAT store with a distributed Redis TAT store.
     #[serde(default)]
     pub redis: Option<RedisConfig>,
 }
@@ -283,6 +284,10 @@ impl RateLimitConfig {
             );
         }
 
+        if let Some(redis) = &self.redis {
+            redis.validate()?;
+        }
+
         Ok(())
     }
 }
@@ -290,6 +295,7 @@ impl RateLimitConfig {
 // ── Redis section ─────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RedisConfig {
     /// Redis endpoint URL. **Must** use `rediss://` (TLS) per CIS Benchmark.
     /// Credentials are injected at runtime from `REDIS_PASSWORD` /
@@ -322,6 +328,38 @@ pub struct RedisConfig {
     /// Redis outage must not silently disable it.
     #[serde(default = "default_redis_fail_open")]
     pub fail_open: bool,
+}
+
+impl RedisConfig {
+    fn validate(&self) -> Result<()> {
+        if self.pool_size == 0 {
+            bail!("`redis.pool_size` must be >= 1");
+        }
+        if self.window_secs == 0 {
+            bail!("`redis.window_secs` must be >= 1; zero disables key retention");
+        }
+        if self.window_secs != 60 {
+            bail!(
+                "`redis.window_secs` must be 60 because `rate_limit_per_minute` has a fixed per-minute contract"
+            );
+        }
+        if self.key_prefix.trim().is_empty() {
+            bail!("`redis.key_prefix` must not be empty");
+        }
+        let url = url::Url::parse(&self.url).context("`redis.url` is invalid")?;
+        if url.scheme() != "rediss" {
+            bail!("`redis.url` must use rediss:// (TLS)");
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            bail!(
+                "`redis.url` must not contain credentials; use REDIS_USERNAME/REDIS_PASSWORD secrets"
+            );
+        }
+        self.window_secs
+            .checked_mul(1_000_000)
+            .context("`redis.window_secs` is too large")?;
+        Ok(())
+    }
 }
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
@@ -525,5 +563,26 @@ max_upstream_response_bytes: 2097152
         let disabled: RateLimitConfig =
             serde_yaml::from_str("http_header_read_timeout_secs: 0").expect("yaml parses");
         assert_eq!(disabled.effective_http_header_read_timeout_secs(None), 0);
+    }
+
+    #[test]
+    fn redis_validation_rejects_zero_window_pool_and_embedded_credentials() {
+        for yaml in [
+            "redis:\n  url: rediss://redis.example:6380\n  window_secs: 0\n",
+            "redis:\n  url: rediss://redis.example:6380\n  window_secs: 30\n",
+            "redis:\n  url: rediss://redis.example:6380\n  pool_size: 0\n",
+            "redis:\n  url: rediss://user:secret@redis.example:6380\n",
+        ] {
+            let config: RateLimitConfig = serde_yaml::from_str(yaml).expect("YAML parses");
+            assert!(config.validate().is_err(), "configuration must be rejected: {yaml}");
+        }
+    }
+
+    #[test]
+    fn unknown_rate_limit_fields_are_rejected() {
+        let result = serde_yaml::from_str::<RateLimitConfig>(
+            "rate_limit_per_minute: 240\nredis:\n  url: rediss://redis.example:6380\n  window_sec: 60\n",
+        );
+        assert!(result.is_err());
     }
 }

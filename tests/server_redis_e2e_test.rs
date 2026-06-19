@@ -435,7 +435,7 @@ async fn rate_limit_is_enforced_via_redis_over_tls() {
     let attacker = unique_ip(0xB2);
     let url = format!("https://127.0.0.1:{port}/ok");
 
-    // The WAF returns HTTP 403 (with a "Rate limit exceeded" SecurityEvent)
+    // The WAF returns HTTP 429 (with a "Rate limit exceeded" SecurityEvent)
     // when the rate-limiter denies a request — same response code as any
     // other Block-mode rejection. The 429 status only fires for per-IP
     // concurrency exhaustion (which we disabled via max_coroutines_per_ip:
@@ -457,7 +457,7 @@ async fn rate_limit_is_enforced_via_redis_over_tls() {
         let body = resp.text().await.unwrap_or_default();
         match status {
             StatusCode::OK if body == "ok" => allowed += 1,
-            StatusCode::FORBIDDEN if body.contains("Blocked") => rate_limited += 1,
+            StatusCode::TOO_MANY_REQUESTS if body.contains("Blocked") => rate_limited += 1,
             StatusCode::FORBIDDEN if body.contains("Banned") => {
                 panic!("test polluted by earlier ban — got BAN short-circuit during rate-limit sweep: {body}")
             }
@@ -476,7 +476,7 @@ async fn rate_limit_is_enforced_via_redis_over_tls() {
 
     // Verify the rate-limiter wrote to Redis under ITS OWN prefix
     // (separate from the BAN list). Keys are `<rl_key_prefix>:<ip>`,
-    // values are INCR counters with EXPIRE = window_secs (60s).
+    // values are GCRA theoretical-arrival timestamps in Redis microseconds.
     if let Some(keys) = redis_tls_cli(&[
         "--scan", "--pattern", &format!("{}:*", waf.rl_key_prefix),
     ]) {
@@ -486,23 +486,22 @@ async fn rate_limit_is_enforced_via_redis_over_tls() {
             "expected rate-limit keys under prefix '{}', got: {keys}",
             waf.rl_key_prefix
         );
-        // Find the key for our attacker IP and assert its value reflects
-        // the sweep (>= 5 — we sent 30 requests, the Lua script INCRs on
-        // every check regardless of allow/deny).
+        // Find the key for our attacker IP and assert it contains an epoch-based
+        // TAT. Rejected requests do not mutate TAT in GCRA.
         let attacker_key = lines.iter().find(|k| k.ends_with(&format!(":{attacker}"))).copied();
         if let Some(k) = attacker_key {
             if let Some(val) = redis_tls_cli(&["GET", k]) {
-                let n: u32 = val.trim().parse().unwrap_or(0);
+                let tat_us: u64 = val.trim().parse().unwrap_or(0);
                 assert!(
-                    n >= 5,
-                    "rate-limit counter for {attacker} should reflect the sweep (>= 5), got: {n}"
+                    tat_us > 1_000_000_000_000,
+                    "rate-limit TAT for {attacker} must be an epoch timestamp, got: {tat_us}"
                 );
             }
-            if let Some(ttl) = redis_tls_cli(&["TTL", k]) {
-                let secs: i64 = ttl.trim().parse().unwrap_or(-1);
+            if let Some(ttl) = redis_tls_cli(&["PTTL", k]) {
+                let millis: i64 = ttl.trim().parse().unwrap_or(-1);
                 assert!(
-                    (1..=60).contains(&secs),
-                    "rate-limit TTL must be inside window_secs=60, got: {secs}"
+                    (1..=60_000).contains(&millis),
+                    "rate-limit TAT TTL must be inside the configured window, got: {millis} ms"
                 );
             }
         }

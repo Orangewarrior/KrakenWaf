@@ -132,7 +132,7 @@ pub struct Cli {
     /// Per-IP request rate limit (requests per minute). Overrides the value in
     /// `--ratelimit-by-file-conf` or `conf/ratelimit.yaml`. When absent the
     /// effective limit is taken from the config file or defaults to 240.
-    #[arg(long)]
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
     pub rate_limit_per_minute: Option<u32>,
 
     /// Path to a WebSocket control-policy YAML file. `KrakenWaf` auto-discovers
@@ -359,5 +359,15 @@ mod tests {
         ])
         .expect("header timeout must parse");
         assert_eq!(cli.http_header_read_timeout_secs, Some(7));
+    }
+
+    #[test]
+    fn rejects_zero_rate_limit() {
+        assert!(Cli::try_parse_from([
+            "krakenwaf",
+            "--rate-limit-per-minute",
+            "0",
+        ])
+        .is_err());
     }
 }

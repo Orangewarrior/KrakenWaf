@@ -59,8 +59,18 @@ cargo run -- \
   --allow-private-upstream \
   --listen 0.0.0.0:8080 \
   --upstream http://127.0.0.1:9077 \
-  --rules-dir ./rules
+  --rules-dir ./rules \
+  --cmc-load ./rules/cmc/config.yaml \
+  --enable-libinjection-sqli \
+  --enable-libinjection-xss \
+  --rate-limit-per-minute 100000
 ```
+
+The full attack sweep expects the shipped CMC configuration and libinjection
+detectors above. Omitting them intentionally disables part of the detection
+surface and produces bypasses rather than a valid full-suite result. The high
+rate limit isolates detector validation: HTTP 429 is correct rate-limit
+behaviour, but this tool classifies any non-403 response as a signature bypass.
 
 Wait for the banner — the WAF is ready when `/__krakenwaf/health` returns HTTP 200.
 
@@ -70,7 +80,7 @@ Wait for the banner — the WAF is ready when `/__krakenwaf/health` returns HTTP
 
 ```sh
 # Summary only
-cargo run --bin attack -- --target http://127.0.0.1:8080
+cargo run --bin attack -- --target http://127.0.0.1:8080 --concurrency 50
 
 # Verbose — show each payload line
 cargo run --bin attack -- --target http://127.0.0.1:8080 --verbose
