@@ -22,6 +22,10 @@ KrakenWaf is built on:
 
 Client → TLS (KrakenWaf) → Inspection → Upstream → Response
 
+See the [visual architecture and runtime flows](docs/visual_architecture.md) for
+editable draw.io diagrams covering local SQLite/Postcard and distributed Redis
+deployments, request processing, GCRA admission, metrics, and rule management.
+
 ---
 
 ## ⚡ Detection Engines

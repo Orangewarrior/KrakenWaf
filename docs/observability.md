@@ -5,10 +5,13 @@ KrakenWaf exposes a Prometheus-compatible metrics endpoint and structured JSON l
 ## Metrics endpoint
 
 ```
-GET /__kwaf/metrics
+GET /metrics
 ```
 
 Returns metrics in the [Prometheus text exposition format](https://prometheus.io/docs/instrumenting/exposition_formats/).
+
+See the [metrics and health flow diagram](diagrams/krakenwaf-metrics-flow.png)
+or open its [editable draw.io source](diagrams/krakenwaf-metrics-flow.drawio).
 
 ### Global counters
 
