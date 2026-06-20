@@ -182,3 +182,43 @@ When a client IP matches a DQS zone, the finding uses:
 - title: `Spamhaus DQS match: <ZONE>`
 - rule match: `Spamhaus DQS zone=<zone> response=<127.x.x.x>`
 - rule source: `rules/addr/spamhaus/<ZONE>.txt:dqs`
+
+## DQS lookup caching (per-request DoS hardening)
+
+The DQS check runs **per request** on the WAF hot path: each lookup is a
+DNS-over-TLS query with a multi-second timeout. Without caching, a client that
+rotates source addresses (trivial across an IPv6 `/64`) would force one outbound
+DoT lookup per request — both an amplification vector and a tail-latency hit
+against the WAF itself.
+
+KrakenWaf therefore caches every DQS outcome in a bounded, TTL-expiring,
+lock-free cache keyed by `(client IP, zone)`:
+
+- **Positive** (listed) results are cached for `DQS-cache-ttl-secs`
+  (default **3600s**) — a listed IP rarely de-lists within the hour.
+- **Negative** (not-listed) results are cached for
+  `DQS-cache-negative-ttl-secs` (default **300s**) — kept short so a
+  *newly*-listed IP starts being blocked promptly.
+- **Errors are never cached.** A transient DoT failure must not pin a
+  "not listed" verdict; the next request retries.
+
+The cache is bounded to a fixed maximum number of `(ip, zone)` entries; when
+full it first reclaims expired slots and only then admits a new entry, so IP
+rotation cannot grow it without bound.
+
+### Configuration (`conf/update.yaml`)
+
+```yaml
+spamhaus:
+  DQS-key: true
+  zones:
+    - sbl
+    - xbl
+    - authbl
+  # Optional cache tuning (defaults shown):
+  DQS-cache-ttl-secs: 3600           # positive (listed) TTL
+  DQS-cache-negative-ttl-secs: 300   # negative (not-listed) TTL
+```
+
+Both keys are optional; omit them to use the defaults. Lowering the negative TTL
+trades more DoT lookups for faster reaction to freshly-listed IPs.

@@ -270,6 +270,18 @@ pub struct SpamhausUpdateConfig {
     pub cron: String,
     #[serde(default = "default_spamhaus_zones")]
     pub zones: Vec<String>,
+    /// Seconds a *positive* (listed) DQS result is cached before a fresh
+    /// DNS-over-TLS lookup is performed. Bounds the per-request lookup cost so a
+    /// flood of requests from the same IP does not become a DNS-over-TLS amplification denial of service.
+    #[serde(rename = "DQS-cache-ttl-secs", default = "default_dqs_cache_ttl_secs")]
+    pub dqs_cache_ttl_secs: u64,
+    /// Seconds a *negative* (not-listed) DQS result is cached. Kept shorter than
+    /// the positive TTL so a newly-listed IP starts being blocked sooner.
+    #[serde(
+        rename = "DQS-cache-negative-ttl-secs",
+        default = "default_dqs_cache_negative_ttl_secs"
+    )]
+    pub dqs_cache_negative_ttl_secs: u64,
 }
 
 impl Default for SpamhausUpdateConfig {
@@ -280,8 +292,20 @@ impl Default for SpamhausUpdateConfig {
             lists: AddrListsConfig::default(),
             cron: default_spamhaus_cron(),
             zones: default_spamhaus_zones(),
+            dqs_cache_ttl_secs: default_dqs_cache_ttl_secs(),
+            dqs_cache_negative_ttl_secs: default_dqs_cache_negative_ttl_secs(),
         }
     }
+}
+
+/// Default positive (listed) DQS cache TTL: one hour.
+const fn default_dqs_cache_ttl_secs() -> u64 {
+    3600
+}
+
+/// Default negative (not-listed) DQS cache TTL: five minutes.
+const fn default_dqs_cache_negative_ttl_secs() -> u64 {
+    300
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -342,7 +366,7 @@ impl UrlFileList {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpamhausDqsMatch {
     pub zone: String,
     pub query: String,

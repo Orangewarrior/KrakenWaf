@@ -1164,7 +1164,7 @@ mod tests {
         let path = dir.path().join("rate.bin");
         let limiter = RateLimiter::new(
             2,
-            Duration::from_secs(60),
+            Duration::from_mins(1),
             &path,
             PersistenceMode::Postcard,
         )

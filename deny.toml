@@ -1,17 +1,21 @@
 [advisories]
 version = 2
 ignore = [
-    # hickory-proto 0.25.x DNSSEC DoS pair. Both are only reachable through the
-    # `soldier_update` Quad9 DNS-over-TLS resolver (download + Spamhaus DQS
-    # hostname resolution) — never on the request-serving data plane — and only
-    # when an upstream resolver returns a crafted response. The fix lives in the
-    # 0.26 line, which is a breaking migration: hickory-resolver 0.26 removes
-    # `ResolverConfig::quad9_tls()`, makes `name_server` private, drops the
-    # `LookupIp` iterator, and splits code into `hickory-net`, so it cannot be a
-    # drop-in bump of the updater's resolver. Tracking the 0.26 migration
+    # hickory-proto 0.25.x DNSSEC DoS pair. Reached through the Quad9
+    # DNS-over-TLS resolver in two places: `soldier_update` (list download +
+    # Spamhaus DQS hostname resolution) and, when `--blocklist-ip` + DQS-key are
+    # enabled, the per-request Spamhaus DQS reputation check. As of 2.45.0 the
+    # data-plane DQS path is TTL-cached per (client IP, zone), so a crafted
+    # resolver response can be triggered at most once per IP per TTL rather than
+    # per request — bounding the exposure. Both advisories require an upstream
+    # resolver (Quad9, operator-trusted) to return a crafted response. The fix
+    # lives in the 0.26 line, which is a breaking migration: hickory-resolver
+    # 0.26 removes `ResolverConfig::quad9_tls()`, makes `name_server` private,
+    # drops the `LookupIp` iterator, and splits code into `hickory-net`, so it
+    # cannot be a drop-in bump of the resolver. Tracking the 0.26 migration
     # separately rather than rushing a security-sensitive DNS rewrite.
-    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25 NSEC3 DoS; only in soldier_update DoT resolver, 0.26 fix is a breaking migration — tracked" },
-    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25 name-compression DoS; only in soldier_update DoT resolver, 0.26 fix is a breaking migration — tracked" },
+    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25 NSEC3 DoS; Quad9 DoT resolver only, data-plane DQS path TTL-cached since 2.45.0, 0.26 fix is a breaking migration — tracked" },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25 name-compression DoS; Quad9 DoT resolver only, data-plane DQS path TTL-cached since 2.45.0, 0.26 fix is a breaking migration — tracked" },
 
     # proc-macro-error2 is unmaintained (RUSTSEC-2026-0173). It is a build-time
     # only proc-macro dependency pulled transitively via sea-orm-macros → sea-bae;

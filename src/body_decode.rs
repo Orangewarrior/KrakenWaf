@@ -108,9 +108,12 @@ pub fn decompress_body_for_inspection(
         };
 
         // Ratio guard against zip-bomb: comparison vs the *original* compressed
-        // input, not the previous layer.
-        let ratio = decoded.len() / original_len;
-        if u32::try_from(ratio).unwrap_or(u32::MAX) > max_ratio {
+        // input, not the previous layer. Cross-multiply in `u128` instead of
+        // dividing so the comparison is exact — integer division truncates
+        // (e.g. 31.9x would read as 31x), under-reporting the true expansion and
+        // letting a payload that genuinely exceeds the ratio slip past when it
+        // lands just under an integer boundary.
+        if decoded.len() as u128 > original_len as u128 * u128::from(max_ratio) {
             return Err(DecompressError::Bomb { ratio: max_ratio });
         }
         if decoded.len() > max_bytes {
@@ -242,6 +245,35 @@ mod tests {
             4,
         )
         .expect_err("ratio guard must fire");
+        assert!(matches!(err, DecompressError::Bomb { .. }));
+    }
+
+    #[test]
+    fn ratio_guard_is_exact_at_fractional_boundary() {
+        // Pin max_ratio to the *floor* of the fixture's real expansion ratio and
+        // require a non-zero remainder. Under those parameters the previous
+        // integer-division guard (`decoded/original > max_ratio`) would see
+        // `floor > floor` → false and ALLOW the payload, while the cross-
+        // multiplied guard (`decoded > original * max_ratio`) catches the
+        // fractional overage and rejects it. This is the exact regression the
+        // truncation fix addresses.
+        let plain = vec![0u8; 64];
+        let encoded = gzip_bytes(&plain);
+        assert!(encoded.len() < plain.len());
+        let floor_ratio = u32::try_from(plain.len() / encoded.len()).expect("ratio fits u32");
+        assert!(floor_ratio > 0);
+        assert_ne!(
+            plain.len() % encoded.len(),
+            0,
+            "fixture must exercise a fractional expansion boundary"
+        );
+        let err = decompress_body_for_inspection(
+            &encoded,
+            &["gzip".to_string()],
+            1024 * 1024,
+            floor_ratio,
+        )
+        .expect_err("fractional expansion above the floor ratio must trip the guard");
         assert!(matches!(err, DecompressError::Bomb { .. }));
     }
 }

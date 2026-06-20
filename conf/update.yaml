@@ -17,6 +17,11 @@ spamhaus:
     - xbl
     - authbl
   cron: "0 12 */3 * *"
+  # Optional DQS lookup-cache TTLs (seconds). Bounds the per-request
+  # DNS-over-TLS cost so IP rotation cannot turn each request into a DoT
+  # lookup. Defaults shown; omit to use them. See docs/spamhaus_dqs_updates.md.
+  # DQS-cache-ttl-secs: 3600           # positive (listed) result TTL
+  # DQS-cache-negative-ttl-secs: 300   # negative (not-listed) result TTL
 firehol:
   title: "Firehol"
   lists:

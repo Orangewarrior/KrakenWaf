@@ -1303,9 +1303,7 @@ fn request_body_for_text_inspection(ctx: &InspectionContext, body: &Bytes) -> By
     for part in &parts {
         out.extend_from_slice(&part.headers);
         out.extend_from_slice(b"\n\n");
-        if multipart_part_body_should_be_inspected(part) {
-            out.extend_from_slice(&part.body);
-        }
+        out.extend_from_slice(multipart_part_inspect_bytes(part));
         out.push(b'\n');
     }
     Bytes::from(out)
@@ -1315,25 +1313,49 @@ fn multipart_part_for_text_inspection(part: &MultipartPart) -> Bytes {
     let mut out = Vec::with_capacity(part.headers.len() + part.body.len().min(8 * 1024) + 2);
     out.extend_from_slice(&part.headers);
     out.extend_from_slice(b"\n\n");
-    if multipart_part_body_should_be_inspected(part) {
-        out.extend_from_slice(&part.body);
-    }
+    out.extend_from_slice(multipart_part_inspect_bytes(part));
     Bytes::from(out)
 }
 
-fn multipart_part_body_should_be_inspected(part: &MultipartPart) -> bool {
+/// Bounded prefix scanned from a binary part body. A polyglot upload — a text
+/// attack payload smuggled under an `image/png` (or other binary) content type —
+/// would otherwise be skipped entirely; inspecting a capped prefix catches the
+/// common case (payloads sit near the start) without paying to scan megabytes of
+/// genuine binary on every upload.
+const BINARY_PART_INSPECT_PREFIX: usize = 8 * 1024;
+
+/// Return the slice of a part's body that should be fed to the textual matchers.
+///
+/// * Declared-textual parts (`text/*`, JSON, XML, form-urlencoded, …) — full body.
+/// * Declared-binary parts (`image/*`, `application/octet-stream`, …) — a bounded
+///   prefix, so a polyglot still trips the matchers without unbounded scanning.
+/// * Unknown content type — full body when it sniffs as text, otherwise a bounded
+///   prefix (the same polyglot defence as the declared-binary case).
+///
+/// Full inspection of a textual or text-sniffing part is intentional: such a
+/// body is what the upstream will parse, so inspecting less than the whole would
+/// open a false-negative window. It is **not** unbounded — the per-route request
+/// `body_limit` is enforced in `accumulate_body_frames` *before* the body is
+/// parsed into parts, so no single part can exceed that cap. Only declared- or
+/// sniffed-binary parts are additionally trimmed to [`BINARY_PART_INSPECT_PREFIX`].
+fn multipart_part_inspect_bytes(part: &MultipartPart) -> &[u8] {
     if part.body.is_empty() {
-        return false;
+        return &[];
     }
+    let prefix = &part.body[..part.body.len().min(BINARY_PART_INSPECT_PREFIX)];
     if let Some(content_type) = &part.content_type {
         if media_type_is_textual(content_type) {
-            return true;
+            return &part.body;
         }
         if media_type_is_binary(content_type) {
-            return false;
+            return prefix;
         }
     }
-    looks_like_text(&part.body)
+    if looks_like_text(&part.body) {
+        &part.body
+    } else {
+        prefix
+    }
 }
 
 fn media_type_is_textual(value: &str) -> bool {
@@ -2323,7 +2345,10 @@ mod multipart_request_inspection_tests {
     }
 
     #[test]
-    fn multipart_image_body_is_removed_from_textual_inspection_view() {
+    fn multipart_image_polyglot_prefix_is_inspected() {
+        // A text attack payload smuggled into the head of an image/png part is a
+        // classic polyglot. The bounded prefix is now inspected (AppSec finding
+        // #3) so the payload — and the part metadata — both appear in the view.
         let boundary = "kw-boundary";
         let mut body = format!(
             "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"avatar.png\"\r\nContent-Type: image/png\r\n\r\n"
@@ -2338,7 +2363,29 @@ mod multipart_request_inspection_tests {
 
         assert!(text.contains("filename=\"avatar.png\""));
         assert!(text.contains("Content-Type: image/png"));
-        assert!(!text.contains("../<script"));
+        // The smuggled payload sits within the bounded prefix, so it is caught.
+        assert!(text.contains("../<script"));
+    }
+
+    #[test]
+    fn multipart_large_binary_body_is_capped_to_prefix() {
+        // A genuinely large binary part must not be scanned in full: only the
+        // bounded prefix is inspected, so a multi-MB upload is cheap to handle.
+        use super::BINARY_PART_INSPECT_PREFIX;
+        let boundary = "kw-boundary";
+        let mut body = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"big.bin\"\r\nContent-Type: application/octet-stream\r\n\r\n"
+        )
+        .into_bytes();
+        // A marker far past the prefix boundary must NOT appear in the view.
+        body.extend_from_slice(&vec![b'A'; BINARY_PART_INSPECT_PREFIX + 4096]);
+        body.extend_from_slice(b"PAST_PREFIX_MARKER");
+        body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        let body = Bytes::from(body);
+
+        let view = request_body_for_text_inspection(&ctx(boundary), &body);
+        let text = String::from_utf8_lossy(&view);
+        assert!(!text.contains("PAST_PREFIX_MARKER"));
     }
 
     #[test]
@@ -2427,5 +2474,75 @@ mHdKNWay9Hq1obnN0UbFuBnzT2hA/Uy6D0/Yekg5c30Xo8dpW79qYl4l0gdOnZk=
     fn no_upstream_ca_still_builds() {
         let client = ProxyClient::new(UPSTREAM, 5, true, None, None);
         assert!(client.is_ok(), "no CA should build with public roots only");
+    }
+}
+
+#[cfg(test)]
+mod multipart_inspect_tests {
+    use super::{multipart_part_inspect_bytes, BINARY_PART_INSPECT_PREFIX};
+    use crate::multipart_extract::MultipartPart;
+    use bytes::Bytes;
+
+    fn part(content_type: Option<&str>, body: &[u8]) -> MultipartPart {
+        MultipartPart {
+            name: None,
+            filename: None,
+            content_type: content_type.map(ToString::to_string),
+            headers: Bytes::new(),
+            body: Bytes::copy_from_slice(body),
+        }
+    }
+
+    #[test]
+    fn textual_part_is_inspected_in_full() {
+        let p = part(Some("application/json"), b"{\"q\":\"<script>\"}");
+        assert_eq!(multipart_part_inspect_bytes(&p), p.body.as_ref());
+    }
+
+    #[test]
+    fn binary_polyglot_prefix_is_still_inspected() {
+        // A text attack payload smuggled under image/png must NOT be skipped
+        // entirely — the bounded prefix is scanned so the matcher can fire.
+        let p = part(Some("image/png"), b"<script>alert(1)</script>");
+        assert_eq!(multipart_part_inspect_bytes(&p), b"<script>alert(1)</script>");
+    }
+
+    #[test]
+    fn binary_body_is_capped_at_prefix() {
+        let mut body = vec![b'A'; BINARY_PART_INSPECT_PREFIX + 4096];
+        body[0] = b'<';
+        let p = part(Some("application/octet-stream"), &body);
+        let inspected = multipart_part_inspect_bytes(&p);
+        assert_eq!(inspected.len(), BINARY_PART_INSPECT_PREFIX);
+        assert_eq!(inspected, &body[..BINARY_PART_INSPECT_PREFIX]);
+    }
+
+    #[test]
+    fn unknown_type_that_sniffs_binary_uses_prefix() {
+        let mut body = vec![0u8; BINARY_PART_INSPECT_PREFIX + 100];
+        body[10] = b'X';
+        let p = part(None, &body);
+        assert_eq!(multipart_part_inspect_bytes(&p).len(), BINARY_PART_INSPECT_PREFIX);
+    }
+
+    #[test]
+    fn unknown_type_that_sniffs_text_is_inspected_in_full() {
+        // No Content-Type but the body sniffs as text → inspected in full, even
+        // when larger than the binary prefix. This is the documented tradeoff:
+        // a text-like body is what the upstream parses, so trimming it would open
+        // a false-negative window; the per-route request body_limit (enforced
+        // before parsing) is what bounds the overall size.
+        let mut body = vec![b'a'; BINARY_PART_INSPECT_PREFIX + 4096];
+        body.extend_from_slice(b"<script>alert(1)</script>");
+        let p = part(None, &body);
+        let inspected = multipart_part_inspect_bytes(&p);
+        assert_eq!(inspected.len(), body.len(), "text-sniffing part is inspected in full");
+        assert!(inspected.ends_with(b"<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn empty_body_is_empty() {
+        let p = part(Some("image/png"), b"");
+        assert!(multipart_part_inspect_bytes(&p).is_empty());
     }
 }

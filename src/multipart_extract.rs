@@ -81,8 +81,18 @@ pub fn parse_parts(body: &Bytes, boundary: &str) -> Vec<MultipartPart> {
     let delim_bytes = delim.as_bytes();
     let bytes = body.as_ref();
 
+    // Only treat a `--boundary` occurrence as a real delimiter when it sits at
+    // the very start of the body or immediately after a line ending (RFC 2046
+    // §5.1.1: every delimiter is preceded by CRLF). Matching the boundary at an
+    // arbitrary offset let an attacker embed the literal `--boundary` inside a
+    // part body to fragment the inspection window and split a keyword across two
+    // synthetic parts. Anchoring to a line start closes that evasion while still
+    // tolerating LF-only bodies (`\n`, which also covers the `\r\n` case).
     let finder = memmem::Finder::new(delim_bytes);
-    let positions: Vec<usize> = finder.find_iter(bytes).collect();
+    let positions: Vec<usize> = finder
+        .find_iter(bytes)
+        .filter(|&pos| pos == 0 || bytes[pos - 1] == b'\n')
+        .collect();
     if positions.len() < 2 {
         return Vec::new();
     }
@@ -270,5 +280,32 @@ mod tests {
     #[test]
     fn non_multipart_content_type_returns_none() {
         assert!(extract_boundary("application/json").is_none());
+    }
+
+    #[test]
+    fn embedded_boundary_in_body_does_not_split_a_part() {
+        // The attacker embeds the literal `--boundary` token mid-body (not at a
+        // line start). It must NOT be treated as a delimiter, so the malicious
+        // value stays inside one inspectable part rather than being fragmented.
+        let boundary = "kw-boundary";
+        let raw = format!(
+            "--{boundary}\r\nContent-Disposition: form-data; name=\"a\"\r\n\r\nunion--{boundary}select\r\n--{boundary}--\r\n"
+        );
+        let parts = parse_parts(&Bytes::from(raw), boundary);
+        assert_eq!(parts.len(), 1, "embedded boundary must not create a new part");
+        assert_eq!(parts[0].body.as_ref(), b"union--kw-boundaryselect");
+    }
+
+    #[test]
+    fn lf_only_delimiters_are_still_parsed() {
+        // Bodies that use bare LF line endings (no CR) must still parse — the
+        // anchor accepts `\n` which also covers `\r\n`.
+        let boundary = "kw";
+        let raw = format!(
+            "--{boundary}\nContent-Disposition: form-data; name=\"a\"\n\nhello\n--{boundary}--\n"
+        );
+        let parts = parse_parts(&Bytes::from(raw), boundary);
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].body.as_ref(), b"hello");
     }
 }

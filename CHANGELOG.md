@@ -1,5 +1,45 @@
 
-## [2.44.0] - 2026-06-19
+## [2.45.0] - 2026-06-19
+
+> **AppSec hardening release.** Closes a per-request DNS-amplification DoS on
+> the Spamhaus DQS path, two multipart evasion gaps, and a fractional zip-bomb
+> ratio gap, and promotes `unwrap()` in production code to a denied lint.
+
+### Added
+
+- **Spamhaus DQS lookup cache.** A bounded, TTL-expiring, lock-free cache keyed
+  by `(client IP, zone)` now backs the per-request DQS reputation check. Without
+  it, every request from a not-yet-seen IP forced a fresh DNS-over-TLS lookup on
+  the WAF hot path — an amplification/DoS vector under source-IP rotation.
+  Positive results cache for `DQS-cache-ttl-secs` (default 3600s), negatives for
+  `DQS-cache-negative-ttl-secs` (default 300s); lookup errors are never cached.
+  New optional `conf/update.yaml` keys; see `docs/spamhaus_dqs_updates.md`.
+- **Unit coverage** for the DQS cache (TTL expiry, positive/negative
+  distinction, per-zone isolation, sweep/bound), the anchored multipart parser,
+  and the binary-part prefix inspection.
+- **`docs/multipart_inspection.md`** documenting boundary anchoring and the
+  polyglot-prefix inspection contract.
+
+### Changed
+
+- **Multipart boundary anchoring.** A `--boundary` token is treated as a real
+  delimiter only at the body start or immediately after a line ending (RFC 2046).
+  Previously any occurrence matched, letting an attacker embed the token inside a
+  part body to fragment the inspection window and split a keyword across parts.
+- **Binary multipart parts are now inspected up to a bounded 8 KiB prefix.**
+  Earlier releases skipped binary part bodies entirely, leaving a polyglot gap
+  (e.g. an attack payload smuggled under `Content-Type: image/png`). Part
+  metadata is still always inspected; genuinely large binaries are not scanned
+  in full.
+- **Exact zip-bomb expansion-ratio guard.** The decompression ratio check now
+  cross-multiplies in `u128` instead of using integer division, which truncated
+  fractional ratios (e.g. 31.9× read as 31×) and could let a payload just over
+  the limit through.
+- **`conf/proxy.yaml` is read once at startup** for the metrics and
+  rule-management port fallbacks instead of being re-parsed per resolution.
+- **`clippy::unwrap_used` promoted from `warn` to `deny`.** A panic in a
+  security control is a remotely-triggerable crash; production code is now
+  required to handle the error path. `pedantic` keeps `warn` (lower priority).
 
 > **Distributed GCRA and proxy architecture release.** Replaces the Redis
 > fixed-window counter with an atomic TAT-based GCRA, makes enforcement

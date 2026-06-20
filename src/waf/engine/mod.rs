@@ -2,6 +2,7 @@ mod finding;
 mod ip_filter;
 mod matchers;
 pub mod normalize;
+mod spamhaus_cache;
 
 pub use finding::Finding;
 pub use normalize::{normalize_str, strip_control_and_space_prefix};
@@ -28,6 +29,7 @@ use std::{
 };
 
 use ip_filter::{canonical_ip, extract_header_value};
+use spamhaus_cache::SpamhausDqsCache;
 use matchers::{
     build_matchers, keyword_match, keyword_match_accumulate, libinjection_match,
     regex_match_phase_scored, regex_match_phase_scored_threshold_deadline, EngineMatchers,
@@ -149,6 +151,10 @@ pub struct WafEngine {
     metrics: Arc<WafMetrics>,
     cmc_manager: Arc<CmcController>,
     spamhaus_dqs: Option<SpamhausDqsConfig>,
+    /// TTL cache for Spamhaus DQS lookups. `Some` exactly when `spamhaus_dqs`
+    /// is, so the per-request DNS-over-TLS lookup is performed at most once per
+    /// `(ip, zone)` per TTL instead of on every request.
+    spamhaus_cache: Option<Arc<SpamhausDqsCache>>,
     anomaly_threshold: u32,
     max_inspection_ms: u64,
 }
@@ -157,6 +163,8 @@ pub struct WafEngine {
 struct SpamhausDqsConfig {
     token: String,
     zones: Vec<String>,
+    positive_ttl: Duration,
+    negative_ttl: Duration,
 }
 
 const FILTER_DEADLINE_LOG: &str = "logs/filter/deadline.jsonl";
@@ -215,6 +223,9 @@ impl WafEngine {
         cfg.rate_limiter.clone().spawn_persistence_task();
         let matchers = build_matchers(&cfg.rules, cfg.vectorscan_enabled)?;
         let spamhaus_dqs = load_spamhaus_dqs_config(cfg.blocklist_ip_enabled);
+        let spamhaus_cache = spamhaus_dqs
+            .as_ref()
+            .map(|c| Arc::new(SpamhausDqsCache::new(c.positive_ttl, c.negative_ttl)));
         let anomaly_threshold = if cfg.anomaly_threshold == 0 {
             SCORE_BLOCK_THRESHOLD
         } else {
@@ -233,6 +244,7 @@ impl WafEngine {
             metrics: cfg.metrics,
             cmc_manager: cfg.cmc_manager,
             spamhaus_dqs,
+            spamhaus_cache,
             anomaly_threshold,
             max_inspection_ms: cfg.max_inspection_ms,
         })
@@ -422,10 +434,34 @@ impl WafEngine {
         ctx: &InspectionContext,
     ) -> Option<Finding> {
         let config = self.spamhaus_dqs.as_ref()?;
+        let cache = self.spamhaus_cache.as_ref();
         for zone in &config.zones {
+            // Serve from the TTL cache first so a flood of requests from one IP
+            // does not become a flood of DNS-over-TLS lookups. A cached negative
+            // (`Some(None)`) skips the zone; a cached positive blocks immediately.
+            if let Some(cache) = cache {
+                match cache.get(client, zone, Instant::now()) {
+                    spamhaus_cache::CacheLookup::Listed(hit) => {
+                        return Some(spamhaus_dqs_finding(&hit.zone, hit.response, ctx))
+                    }
+                    spamhaus_cache::CacheLookup::NotListed => continue,
+                    spamhaus_cache::CacheLookup::Miss => {}
+                }
+            }
             match query_spamhaus_dqs(&client.to_string(), &config.token, zone).await {
-                Ok(Some(hit)) => return Some(spamhaus_dqs_finding(&hit.zone, hit.response, ctx)),
-                Ok(None) => {}
+                Ok(Some(hit)) => {
+                    if let Some(cache) = cache {
+                        cache.insert(*client, zone, Some(hit.clone()), Instant::now());
+                    }
+                    return Some(spamhaus_dqs_finding(&hit.zone, hit.response, ctx));
+                }
+                Ok(None) => {
+                    if let Some(cache) = cache {
+                        cache.insert(*client, zone, None, Instant::now());
+                    }
+                }
+                // Errors are intentionally NOT cached: a transient DoT failure
+                // must not pin a "not listed" verdict for the whole TTL.
                 Err(err) => {
                     tracing::warn!(
                         target: "krakenwaf",
@@ -1102,6 +1138,8 @@ fn load_spamhaus_dqs_config(blocklist_ip_enabled: bool) -> Option<SpamhausDqsCon
     Some(SpamhausDqsConfig {
         token,
         zones: normalized_dqs_zones(&config.spamhaus.zones),
+        positive_ttl: Duration::from_secs(config.spamhaus.dqs_cache_ttl_secs),
+        negative_ttl: Duration::from_secs(config.spamhaus.dqs_cache_negative_ttl_secs),
     })
 }
 

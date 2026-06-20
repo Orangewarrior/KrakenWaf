@@ -1,8 +1,11 @@
 
 [package]
 name = "krakenwaf"
-version = "2.44.0"
+version = "2.45.0"
 edition = "2021"
+# `Duration::from_mins` / `from_hours` (used here and across the rate limiter and
+# updater) are const-stable since 1.91.0, which is the binding MSRV constraint.
+rust-version = "1.91"
 authors = ["Orangewarrior"]
 description = "TLS-aware Rust WAF inspired by OctopusWAF"
 license = "MIT"
@@ -83,8 +86,11 @@ which = "7"
 cc = "1.2"
 
 [lints.clippy]
-pedantic = "warn"
+# Lower priority so the specific lints below can override the group level.
+pedantic = { level = "warn", priority = -1 }
 # Truncation from u32/usize is intentional and guarded where it appears.
 cast_possible_truncation = "warn"
-# `unwrap()` in production code is a latent panic; tests may keep it.
-unwrap_used = "warn"
+# `unwrap()` in production code is a latent panic and, in a security control,
+# a remotely-triggerable crash. Denied so it cannot regress; test modules opt
+# back out with `#![allow(clippy::unwrap_used)]` where a panic is acceptable.
+unwrap_used = "deny"
