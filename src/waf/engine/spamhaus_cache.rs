@@ -159,13 +159,13 @@ mod tests {
 
     #[test]
     fn miss_when_empty() {
-        let cache = SpamhausDqsCache::new(Duration::from_secs(60), Duration::from_secs(60));
+        let cache = SpamhausDqsCache::new(Duration::from_mins(1), Duration::from_mins(1));
         assert_eq!(cache.get(&ip(), "sbl", Instant::now()), CacheLookup::Miss);
     }
 
     #[test]
     fn positive_hit_is_returned_within_ttl() {
-        let cache = SpamhausDqsCache::new(Duration::from_secs(3600), Duration::from_secs(300));
+        let cache = SpamhausDqsCache::new(Duration::from_hours(1), Duration::from_mins(5));
         let now = Instant::now();
         cache.insert(ip(), "sbl", Some(match_for("sbl")), now);
         match cache.get(&ip(), "sbl", now) {
@@ -176,7 +176,7 @@ mod tests {
 
     #[test]
     fn negative_hit_is_distinguished_from_miss() {
-        let cache = SpamhausDqsCache::new(Duration::from_secs(3600), Duration::from_secs(300));
+        let cache = SpamhausDqsCache::new(Duration::from_hours(1), Duration::from_mins(5));
         let now = Instant::now();
         cache.insert(ip(), "sbl", None, now);
         // NotListed means "known not listed" — distinct from Miss.
@@ -185,8 +185,8 @@ mod tests {
 
     #[test]
     fn positive_entry_expires_after_its_ttl() {
-        let positive = Duration::from_secs(3600);
-        let cache = SpamhausDqsCache::new(positive, Duration::from_secs(300));
+        let positive = Duration::from_hours(1);
+        let cache = SpamhausDqsCache::new(positive, Duration::from_mins(5));
         let now = Instant::now();
         cache.insert(ip(), "sbl", Some(match_for("sbl")), now);
         let after = now + positive + Duration::from_secs(1);
@@ -195,8 +195,8 @@ mod tests {
 
     #[test]
     fn negative_ttl_is_shorter_than_positive() {
-        let positive = Duration::from_secs(3600);
-        let negative = Duration::from_secs(300);
+        let positive = Duration::from_hours(1);
+        let negative = Duration::from_mins(5);
         let cache = SpamhausDqsCache::new(positive, negative);
         let now = Instant::now();
         cache.insert(ip(), "sbl", None, now);
@@ -213,7 +213,7 @@ mod tests {
 
     #[test]
     fn zones_are_cached_independently() {
-        let cache = SpamhausDqsCache::new(Duration::from_secs(3600), Duration::from_secs(300));
+        let cache = SpamhausDqsCache::new(Duration::from_hours(1), Duration::from_mins(5));
         let now = Instant::now();
         cache.insert(ip(), "sbl", Some(match_for("sbl")), now);
         cache.insert(ip(), "xbl", None, now);
@@ -226,7 +226,7 @@ mod tests {
 
     #[test]
     fn sweep_drops_expired_entries() {
-        let ttl = Duration::from_secs(60);
+        let ttl = Duration::from_mins(1);
         let cache = SpamhausDqsCache::new(ttl, ttl);
         let now = Instant::now();
         cache.insert(ip(), "sbl", None, now);
