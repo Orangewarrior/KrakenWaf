@@ -1,5 +1,8 @@
 # GeoIP Enrichment — MaxMind GeoLite2-City
 
+Architecture and lifecycle diagram: [GeoIP and MaxMind flow](diagrams/krakenwaf-geoip-architecture.drawio)
+([PNG preview](diagrams/krakenwaf-geoip-architecture.png)).
+
 KrakenWaf enriches every security event with the **country** and **continent**
 of the source IP address using the MaxMind GeoLite2-City database.  The lookup
 is performed once per request (before WAF inspection) and the result is

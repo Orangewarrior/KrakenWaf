@@ -7,6 +7,26 @@
 
 ### Added
 
+- **Complete draw.io architecture documentation suite.** Added editable
+  `.drawio` sources and PNG previews under `docs/diagrams/`, indexed by
+  `docs/visual_architecture.md`. The suite covers the single-node SQLite/Postcard
+  deployment, multi-replica Redis deployment, request processing, local and
+  distributed GCRA admission, metrics and health, and Rorschach-protected rule
+  management.
+- **GeoIP and BAN subsystem diagrams.** Added a MaxMind lifecycle architecture
+  showing startup-only MMDB loading, per-request local enrichment, hardened
+  scheduled download, atomic replacement, and the rolling-restart boundary.
+  Added a BAN lifecycle diagram showing the early request short-circuit,
+  asynchronous block accounting, scanner fast-track, progressive duration,
+  SQLite WAL transactions and retention cleanup, and Redis Lua/TTL behavior
+  with its 150 ms fail-open contract.
+- **Update and scheduler architecture plus flowchart.** Added separate views for
+  process supervision, `watch_tower`, isolated `soldier_update` workers,
+  external source and secret boundaries, generated local artifacts, update
+  journaling, multi-replica distribution, minute deduplication, fixed job order,
+  sequential execution, and scheduler termination on configuration or child
+  process failure. Added `docs/scheduler.md` and cross-links from the GeoIP and
+  banning references.
 - **Spamhaus DQS lookup cache.** A bounded, TTL-expiring, lock-free cache keyed
   by `(client IP, zone)` now backs the per-request DQS reputation check. Without
   it, every request from a not-yet-seen IP forced a fresh DNS-over-TLS lookup on

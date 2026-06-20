@@ -1,5 +1,8 @@
 # Banning subsystem
 
+Architecture and lifecycle diagram: [SQLite/Redis BAN system](diagrams/krakenwaf-ban-system.drawio)
+([PNG preview](diagrams/krakenwaf-ban-system.png)).
+
 KrakenWaf 2.31.0 introduces a first-class **BAN list** that keeps repeat
 offenders (and confirmed scanners) away from the protected origin
 without ever reaching the WAF inspection pipeline.
