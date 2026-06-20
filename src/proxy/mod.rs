@@ -1331,6 +1331,13 @@ const BINARY_PART_INSPECT_PREFIX: usize = 8 * 1024;
 ///   prefix, so a polyglot still trips the matchers without unbounded scanning.
 /// * Unknown content type — full body when it sniffs as text, otherwise a bounded
 ///   prefix (the same polyglot defence as the declared-binary case).
+///
+/// Full inspection of a textual or text-sniffing part is intentional: such a
+/// body is what the upstream will parse, so inspecting less than the whole would
+/// open a false-negative window. It is **not** unbounded — the per-route request
+/// `body_limit` is enforced in `accumulate_body_frames` *before* the body is
+/// parsed into parts, so no single part can exceed that cap. Only declared- or
+/// sniffed-binary parts are additionally trimmed to [`BINARY_PART_INSPECT_PREFIX`].
 fn multipart_part_inspect_bytes(part: &MultipartPart) -> &[u8] {
     if part.body.is_empty() {
         return &[];
@@ -2516,6 +2523,21 @@ mod multipart_inspect_tests {
         body[10] = b'X';
         let p = part(None, &body);
         assert_eq!(multipart_part_inspect_bytes(&p).len(), BINARY_PART_INSPECT_PREFIX);
+    }
+
+    #[test]
+    fn unknown_type_that_sniffs_text_is_inspected_in_full() {
+        // No Content-Type but the body sniffs as text → inspected in full, even
+        // when larger than the binary prefix. This is the documented tradeoff:
+        // a text-like body is what the upstream parses, so trimming it would open
+        // a false-negative window; the per-route request body_limit (enforced
+        // before parsing) is what bounds the overall size.
+        let mut body = vec![b'a'; BINARY_PART_INSPECT_PREFIX + 4096];
+        body.extend_from_slice(b"<script>alert(1)</script>");
+        let p = part(None, &body);
+        let inspected = multipart_part_inspect_bytes(&p);
+        assert_eq!(inspected.len(), body.len(), "text-sniffing part is inspected in full");
+        assert!(inspected.ends_with(b"<script>alert(1)</script>"));
     }
 
     #[test]

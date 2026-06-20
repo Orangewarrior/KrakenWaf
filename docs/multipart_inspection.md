@@ -20,7 +20,7 @@ is at offset 0 **or** immediately follows a line ending (`\n`, which also covers
 embed the literal `--<boundary>` token *inside* a part body to fragment the
 inspection window and split a single keyword across two synthetic parts:
 
-```
+```text
 union--<boundary>select      # NOT split: the embedded token is mid-line
 ```
 
@@ -50,8 +50,8 @@ never scanned. KrakenWaf now inspects a **bounded prefix** of every binary part:
 - a genuinely large binary upload is not scanned in full, so the cost stays
   bounded (a multi-megabyte image does not become a multi-megabyte scan).
 
-The prefix size is a compile-time constant (`8 KiB`) chosen to comfortably cover
-real polyglot headers while keeping per-upload work small.
+The prefix size is a compile-time constant (`8 KiB`) chosen to cover real
+polyglot headers comfortably while keeping per-upload work small.
 
 ## Bounds
 

@@ -250,22 +250,30 @@ mod tests {
 
     #[test]
     fn ratio_guard_is_exact_at_fractional_boundary() {
-        // 33 bytes of zeros expands from a tiny gzip frame. With max_ratio = 1
-        // any expansion beyond 1x must trip the guard. Integer division of
-        // `decoded/original` previously truncated fractional ratios to 0/1 and
-        // could let a payload just over the limit through; the cross-multiplied
-        // comparison catches it exactly.
+        // Pin max_ratio to the *floor* of the fixture's real expansion ratio and
+        // require a non-zero remainder. Under those parameters the previous
+        // integer-division guard (`decoded/original > max_ratio`) would see
+        // `floor > floor` → false and ALLOW the payload, while the cross-
+        // multiplied guard (`decoded > original * max_ratio`) catches the
+        // fractional overage and rejects it. This is the exact regression the
+        // truncation fix addresses.
         let plain = vec![0u8; 64];
         let encoded = gzip_bytes(&plain);
-        // Compressed length is well under 64, so decoded/encoded > 1.
         assert!(encoded.len() < plain.len());
+        let floor_ratio = u32::try_from(plain.len() / encoded.len()).expect("ratio fits u32");
+        assert!(floor_ratio > 0);
+        assert_ne!(
+            plain.len() % encoded.len(),
+            0,
+            "fixture must exercise a fractional expansion boundary"
+        );
         let err = decompress_body_for_inspection(
             &encoded,
             &["gzip".to_string()],
             1024 * 1024,
-            1,
+            floor_ratio,
         )
-        .expect_err("expansion beyond 1x must trip the ratio guard");
+        .expect_err("fractional expansion above the floor ratio must trip the guard");
         assert!(matches!(err, DecompressError::Bomb { .. }));
     }
 }

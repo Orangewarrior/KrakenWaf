@@ -116,6 +116,10 @@ impl SpamhausDqsCache {
         } else {
             self.negative_ttl
         };
+        // If `now + ttl` overflows `Instant` (astronomically unlikely — it needs
+        // an `Instant` near the monotonic-clock ceiling) fall back to `now`,
+        // which makes the entry expire immediately. That fails safe: a fresh
+        // lookup runs next time rather than the entry living effectively forever.
         let expires_at = now.checked_add(ttl).unwrap_or(now);
         self.entries
             .insert((ip, zone.to_string()), CacheEntry { expires_at, result });
