@@ -134,7 +134,7 @@ A 1-signal match (single weak indicator) is logged at info level only when
 ## Enabling the module
 
 Add `Java_deserialize_detect: true` under `CMC-Rules` in your config file
-(default location `rules/cmc/config.yaml`):
+(default location `conf/filter.yaml`):
 
 ```yaml
 global-options:
@@ -162,7 +162,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 To enable Vectorscan SIMD acceleration (requires the `vectorscan-engine` Cargo
@@ -173,7 +173,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml \
+  --cmc-load conf/filter.yaml \
   --enable-vectorscan
 ```
 
@@ -279,4 +279,4 @@ If your application legitimately transmits Java serialized objects:
 | `src/cmc/java_deserialize_detect.rs` | `SIGNAL_A_TEXT`, `SIGNAL_B_TEXT`, `SIGNAL_C_TEXT`, `JAVA_DESER_BINARY_MAGIC`, `SingleMatcher`, `JavaDeserializeDfa`, `JavaDeserDecision`, Aho-Corasick/Vectorscan backends, unit tests |
 | `src/cmc/mod.rs` | Module registration, `CmcConfig` fields (`java_deserialize_detect`, `untrust_level`), `CmcManager` field, `inspect_java_deser()`, `parse_lenient_yaml()` extended with `global-options` |
 | `src/waf/engine.rs` | Integration — `inspect_java_deser()` called in `inspect_complete_payload_with_context()` (request) and `inspect_response()` (response) |
-| `rules/cmc/config.yaml` | Default config — `global-options.Untrust: 60`, `Java_deserialize_detect: true` |
+| `conf/filter.yaml` | Default config — `global-options.Untrust: 60`, `Java_deserialize_detect: true` |

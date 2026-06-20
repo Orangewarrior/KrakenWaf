@@ -31,10 +31,10 @@ never reached.
 ## Enabling the module
 
 Add `Anti_exposed_backup: true` to your CMC config file (default location
-`rules/cmc/config.yaml`) and load it with the `--cmc-load` flag:
+`conf/filter.yaml`) and load it with the `--cmc-load` flag:
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 CMC-Rules:
   SQLi_comments_detect: true
   Overflow_detect: true
@@ -55,7 +55,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 To disable, set the value to `false` or remove the line entirely.
@@ -133,7 +133,7 @@ service), you have two options:
 | `src/cmc/anti_exposed_backup.rs` | Detector implementation, Vectorscan helper, unit tests |
 | `src/cmc/mod.rs` | Module registration, `CmcConfig` field, `CmcManager` field, `inspect_uri()` |
 | `src/waf/engine.rs` | Integration — `inspect_uri()` called in `inspect_early()` |
-| `rules/cmc/config.yaml` | Default config — `Anti_exposed_backup: true` |
+| `conf/filter.yaml` | Default config — `Anti_exposed_backup: true` |
 | `tests/server_real_test.rs` | Integration tests (`dfa_anti_exposed_backup_*`) |
 | `src/bin/attack.rs` | Attack-sweep payloads (`BACKUP_URI_PAYLOADS`) |
 | `src/bin/demo_server.rs` | Wildcard `/*path` route for bypass detection |

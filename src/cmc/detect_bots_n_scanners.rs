@@ -24,7 +24,7 @@
 //!   - `< 60` → silent log only via `tracing::warn!`, request is forwarded.
 //!
 //! Disabling the module entirely (`Detect_bots_n_scanners: false` in
-//! `rules/cmc/config.yaml`) removes all scanner-UA blocking from the engine.
+//! `conf/filter.yaml`) removes all scanner-UA blocking from the engine.
 
 use aho_corasick::{AhoCorasick, AhoCorasickBuilder, MatchKind};
 use anyhow::{Context, Result};

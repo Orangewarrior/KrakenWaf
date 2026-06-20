@@ -8,21 +8,37 @@ from a single YAML manifest and are individually togglable without recompiling.
 
 ---
 
-## Loading the CMC modules
+## Loading the filter and CMC modules
 
-Pass the config file path to `--cmc-load`:
+KrakenWAF loads `conf/filter.yaml` automatically. Use `--cmc-load` only to
+select an alternative file:
 
 ```sh
 krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
-The default manifest lives at `rules/cmc/config.yaml`.  Each key under
+The default manifest lives at `conf/filter.yaml`. Each key under
 `CMC-Rules` maps directly to a field on the internal `CmcConfig` struct;
 unknown keys are silently ignored, absent keys default to `false`.
+
+### Filter-engine switches
+
+The final top-level fields control the filter engines and their default paths.
+Explicit CLI arguments always take precedence.
+
+| Key | Default | Description |
+|---|---:|---|
+| `libinjection-sqli` | `true` | Enables libinjection SQL injection detection; `false` disables it. |
+| `libinjection-xss` | `true` | Enables libinjection XSS detection; `false` disables it. |
+| `vectorscan` | `true` | Enables Vectorscan; `false` disables it. A build without `vectorscan-engine` logs an error and uses the remaining engines. |
+| `cmc-modules` | `true` | Master switch for the modules selected under `CMC-Rules`; `false` disables all CMC modules. |
+| `rules-dir` | `./rules` | Default rule directory, overridden by `--rules-dir`. |
+| `allowpaths` | `./rules/allowpaths/lists.yaml` | Default allow-path policy, overridden by `--allow-paths`. |
+| `verbose` | `true` | Enables debug-level KrakenWAF logs; `false` uses info-level logs. |
 
 ### `global-options`
 
@@ -48,7 +64,7 @@ This is the same pattern used by `--rate-limit-per-minute` against
 file, otherwise the YAML value (or built-in default) takes effect.
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 global-options:
   Untrust: 60              # 0 = lenient; 100 = paranoid
   Anomaly_threshold: 600   # overridden by --anomaly-threshold
@@ -396,7 +412,8 @@ Modules that use Aho-Corasick for multi-keyword matching (`NOSQL_injection_detec
 Vectorscan `BlockDatabase` when:
 
 1. KrakenWAF is compiled with the `vectorscan-engine` Cargo feature.
-2. The process is started with `--enable-vectorscan`.
+2. `vectorscan: true` is set in `conf/filter.yaml`, or the process is started
+   with `--enable-vectorscan`.
 
 Vectorscan processes each pattern list in a single SIMD pass and terminates on the
 first match (`SINGLEMATCH`), reducing per-request latency for long pattern lists.

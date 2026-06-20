@@ -46,7 +46,7 @@ KrakenWaf supports multiple detection layers:
 ### 🔹CMC (Custom Module Code)
 
 Single-pass, zero-allocation Rust scanners — each module is individually togglable
-via `rules/cmc/config.yaml`.  See [docs/cmc/schema.md](docs/cmc/schema.md) for the
+via `conf/filter.yaml`.  See [docs/cmc/schema.md](docs/cmc/schema.md) for the
 full module catalogue.
 
 - [SQLi comments evasion](docs/cmc/sqli_comments_detect.md) — counts `/* */` block-comment pairs used to break up SQL keywords (CWE-89)
@@ -124,7 +124,7 @@ rate_limit_per_minute: 240     # req/min per IP (0 = use CLI flag or default)
 max_coroutines_per_ip: 64      # simultaneous connections per IP (0 = disabled)
 
 # Connection & body-size caps (mirror the matching CLI flags).
-# 0 = defer to the CLI flag / rules/cmc/config.yaml memory-limits / built-in.
+# 0 = defer to the CLI flag / conf/filter.yaml memory-limits / built-in.
 max_connections: 0                 # 0 = derive from system RAM
 connection_timeout_secs: 30        # client connection timeout (>= 1)
 http_header_read_timeout_secs: 10  # HTTP/1 incomplete-header timeout
@@ -140,7 +140,7 @@ max_upstream_response_bytes: 0     # 0 = 8 MiB buffered text default
 ```
 
 Priority chain: `--rate-limit-per-minute` CLI flag → file value → built-in default (240 req/min).
-The connection/body-size caps resolve CLI flag → `conf/ratelimit.yaml` → `rules/cmc/config.yaml` memory-limits → built-in default.
+The connection/body-size caps resolve CLI flag → `conf/ratelimit.yaml` → `conf/filter.yaml` memory-limits → built-in default.
 
 ### Per-IP concurrency cap (`max_coroutines_per_ip`)
 
@@ -392,7 +392,51 @@ Expected result: **215 blocked | 0 bypassed | 0 errors**
 
 ---
 
+### Zero-argument startup
+
+Running `target/release/krakenwaf` without arguments now loads the shipped
+configuration set automatically:
+
+- `conf/proxy.yaml`
+- `conf/filter.yaml`
+- `conf/ratelimit.yaml`
+- `conf/banning.yaml`
+- `conf/websocket.yaml`
+
+Explicit CLI arguments retain highest precedence. `conf/filter.yaml` controls
+the rule directory, allow-path policy, verbose logging, libinjection SQLi/XSS,
+Vectorscan, and the CMC master switch in addition to the individual CMC module
+table. If Vectorscan is enabled but the binary lacks the `vectorscan-engine`
+feature, KrakenWaf reports the configuration error on stderr and in
+`log/console/error.jsonl`, then continues with the available engines.
+
+---
+
 ## 🧪 Example: Protect DVWA for Testing attacks
+
+### Automated KrakenWAF + Kraken UI labs
+
+The [`deploy/WAF_n_WEB_UI`](deploy/WAF_n_WEB_UI) directory provides automated
+Docker Compose and Kubernetes profiles for both DVWA and OWASP Juice Shop. Each
+profile starts one vulnerable application and one combined KrakenWAF + Kraken
+UI service with working observability, runtime rule management, and pre-created
+`admin` and `operator` test accounts.
+
+```bash
+# Docker: protected DVWA on https://localhost:8443, UI on https://localhost:3443
+docker compose -f deploy/WAF_n_WEB_UI/compose.dvwa.yaml up --build
+
+# Docker: protected Juice Shop on https://localhost:9443
+docker compose -f deploy/WAF_n_WEB_UI/compose.juice-shop.yaml up --build
+
+# Kubernetes: choose one disposable lab overlay
+kubectl apply -k deploy/WAF_n_WEB_UI/kubernetes/dvwa
+kubectl apply -k deploy/WAF_n_WEB_UI/kubernetes/juice-shop
+```
+
+These profiles contain lab-only credentials and ephemeral Kubernetes storage;
+see the deployment README before adapting them to another environment.
+
 With Vectorscan:
 ```bash
 git clone https://github.com/Orangewarrior/KrakenWaf
@@ -436,7 +480,7 @@ target/release/krakenwaf \
   --enable-vectorscan \
   --enable-libinjection-sqli \
   --enable-libinjection-xss \
-  --cmc-load ./rules/cmc/config.yaml \
+  --cmc-load ./conf/filter.yaml \
   --real-ip-header X-Forwarded-For \
   --trusted-proxy-cidrs 127.0.0.1/32
 ```
@@ -546,36 +590,36 @@ Note: If you need to inspect the full request, refer to the "request_payload" fi
 | `--rules-dir` | `./rules` | Root directory containing rule files, blocklists, regex rules, and TLS files |
 | `--sni-map` | `./rules/tls/sni_map.csv` | Path to the TLS SNI CSV file mapping hostnames to certificate and key files |
 | `--mode` | `block` | Enforcement mode: `block` returns HTTP 403 on detections; `silent` logs and counts detections without blocking — useful for tuning rules in production |
-| `--allow-paths` | — | Path to a YAML file listing URI prefixes that bypass WAF inspection entirely — see [docs/allowpaths.md](docs/allowpaths.md) |
+| `--allow-paths` | `./rules/allowpaths/lists.yaml` from `conf/filter.yaml` | Path to a YAML file listing URI prefixes that bypass WAF inspection entirely — see [docs/allowpaths.md](docs/allowpaths.md) |
 | `--blocklist-ip` | `false` | Enable IP and CIDR blocklist enforcement from `rules/addr/blocklist.txt` — see [docs/blockaddrs_allowaddrs.md](docs/blockaddrs_allowaddrs.md) |
 | `--no-tls` | `false` | Disable TLS and listen on plain HTTP — useful when TLS termination is handled upstream or for integration testing |
 | `--allow-private-upstream` | `false` | Allow RFC1918/loopback upstream targets — see [docs/deployment.md](docs/deployment.md) |
 | `--upstream-ca` | — | Path to a PEM certificate/bundle to trust as an **additional** root CA for the TLS upstream. Full chain verification is still enforced — lets KrakenWaf front a backend with a private-PKI / internal-CA cert. Also settable via `upstream-ca` in `conf/proxy.yaml` |
-| `--enable-libinjection-sqli` | `false` | Enable libinjection-based SQL injection detection — see [docs/libinjection.md](docs/libinjection.md) |
-| `--enable-libinjection-xss` | `false` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
-| `--enable-vectorscan` | `false` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature) |
+| `--enable-libinjection-sqli` | `true` from `conf/filter.yaml` | Enable libinjection-based SQL injection detection — see [docs/libinjection.md](docs/libinjection.md) |
+| `--enable-libinjection-xss` | `true` from `conf/filter.yaml` | Enable libinjection-based XSS detection — see [docs/libinjection.md](docs/libinjection.md) |
+| `--enable-vectorscan` | `true` from `conf/filter.yaml` | Enable Vectorscan-based fast multi-pattern matching (requires `vectorscan-engine` feature; otherwise an error is logged and fallback engines remain active) |
 | `--rate-limit-per-minute` | 240 | Per-IP request budget per 60 s window. Overrides the config file. Default when absent: 240. See [docs/rate_limit.md](docs/rate_limit.md) |
 | `--ratelimit-by-file-conf` | auto-discover | Path to a YAML rate-limit config file. Auto-discovered at `conf/ratelimit.yaml` in the working directory. Enables Redis backend, `max_coroutines_per_ip`, and the connection/body-size caps. See [docs/rate_limit.md](docs/rate_limit.md) |
-| `--external-proxy-conf` | — / `conf/proxy.yaml` | Load the proxy flags (`--listen`, `--upstream`, `--upstream-timeout-secs`, `--allow-private-upstream`, `--debug-proxy-dev`, `--internal-header-name`, `--real-ip-header`, `--trusted-proxy-cidrs`, `--sni-map`, `--no-tls`, `--header-protection-injection`, `--blockmsg`) from a YAML file. Passed bare it auto-loads `conf/proxy.yaml`; pass a path for a different file. An explicit CLI flag still wins; an empty field keeps the WAF default. See [Proxy configuration file](#-proxy-configuration-file-confproxyyaml) |
+| `--external-proxy-conf` | `conf/proxy.yaml` | Select an alternative proxy configuration file. The default file is loaded automatically; an explicit CLI flag still wins. See [Proxy configuration file](#-proxy-configuration-file-confproxyyaml) |
 | `--debug-proxy-dev` | `false` | Persist diagnostic proxy errors to `logs/proxy_errors_dev/proxy_errors.jsonl`. Critical proxy failures are still saved when disabled; this enables noisy developer events such as malformed forwarding headers. Also settable via `debug-proxy-dev` in `conf/proxy.yaml`. See [docs/proxy_diagnostics.md](docs/proxy_diagnostics.md) |
 | `--wal-mode` | `sqlite` | Persistence backend for the local rate-limiter snapshot: `sqlite` (inspectable WAL) or `postcard` (atomic-rename binary, ~10–50× faster). Ignored when using Redis. See [docs/rate_limit.md](docs/rate_limit.md) |
 | `--websocket-conf` | auto-discover | Path to a YAML WebSocket control-policy file. Auto-discovered at `conf/websocket.yaml`. Governs `ws://`/`wss://` upgrade limits (allowed paths, per-IP session cap, idle/session timeouts, handshake inspection). See [docs/websocket.md](docs/websocket.md) |
 | `--upstream-timeout-secs` | `15` | Timeout in seconds for upstream requests |
 | `--connection-timeout-secs` | `30` | Timeout in seconds for a client connection accepted by the WAF. Also configurable via `connection_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--http-header-read-timeout-secs` | `10` | HTTP/1 request-line/header read timeout. Closes incomplete-header Slowloris connections before request-level rate limiting runs. `0` disables (not recommended). Also configurable via `http_header_read_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
-| `--max-connections` | RAM-derived | Maximum simultaneous TCP connections accepted by the WAF. When unset, a conservative cap is derived from system RAM (clamped to 64–4096). Also configurable via `max_connections` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
-| `--max-body-bytes` | `8388608` (8 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request. Also configurable via `max_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `rules/cmc/config.yaml` |
-| `--max-upstream-response-bytes` | `8388608` (8 MiB) | Ceiling for fully buffered textual upstream responses. Binary media streams without full accumulation; its total-byte cap and optional inspection prefix are configured by `max_streamed_response_bytes` and `response_inspect_prefix_bytes` in `rules/cmc/config.yaml`. Also configurable via `max_upstream_response_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
-| `--anomaly-threshold` | `600` | Score-engine block threshold. Detection rules with `score` below this are correlated; when their accumulated `sum_score` within a single inspection view reaches the threshold the request is blocked. Also configurable via `Anomaly_threshold` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml). See [docs/score_rank.md](docs/score_rank.md) |
-| `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set and elapsed, inspection blocks fail-closed with a deadline finding and records a JSONL event under `logs/filter/deadline.jsonl`. `0` disables the deadline. Also configurable via `Max_inspection_ms` under `global-options` in [rules/cmc/config.yaml](rules/cmc/config.yaml) |
+| `--max-connections` | RAM-derived | Maximum simultaneous TCP connections accepted by the WAF. When unset, a conservative cap is derived from system RAM (clamped to 64–4096). Also configurable via `max_connections` in [conf/ratelimit.yaml](docs/rate_limit.md) or `conf/filter.yaml` |
+| `--max-body-bytes` | `8388608` (8 MiB) | Maximum request body buffered for inspection. Larger bodies are streamed in chunks; this caps the in-memory footprint per request. Also configurable via `max_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) or `conf/filter.yaml` |
+| `--max-upstream-response-bytes` | `8388608` (8 MiB) | Ceiling for fully buffered textual upstream responses. Binary media streams without full accumulation; its total-byte cap and optional inspection prefix are configured by `max_streamed_response_bytes` and `response_inspect_prefix_bytes` in `conf/filter.yaml`. Also configurable via `max_upstream_response_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
+| `--anomaly-threshold` | `600` | Score-engine block threshold. Detection rules with `score` below this are correlated; when their accumulated `sum_score` within a single inspection view reaches the threshold the request is blocked. Also configurable via `Anomaly_threshold` under `global-options` in [conf/filter.yaml](conf/filter.yaml). See [docs/score_rank.md](docs/score_rank.md) |
+| `--max-inspection-ms` | `0` (disabled) | Per-request wall-clock cap on WAF inspection (ms). When set and elapsed, inspection blocks fail-closed with a deadline finding and records a JSONL event under `logs/filter/deadline.jsonl`. `0` disables the deadline. Also configurable via `Max_inspection_ms` under `global-options` in [conf/filter.yaml](conf/filter.yaml) |
 | `--body-frame-timeout-secs` | `30` | Per-frame timeout when streaming the request body. If the WAF waits longer than this for a single body chunk it returns 408 and drops the connection. Also configurable via `body_frame_timeout_secs` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--max-inflight-body-bytes` | `1073741824` (1 GiB) | Global ceiling on bytes from in-flight request bodies across all clients. When exceeded, new requests receive 503 + `Retry-After: 5`. Also configurable via `max_inflight_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--max-per-ip-body-bytes` | `209715200` (200 MiB) | Per-IP ceiling on bytes from in-flight request bodies. Prevents a single client from saturating the global body buffer. Also configurable via `max_per_ip_body_bytes` in [conf/ratelimit.yaml](docs/rate_limit.md) |
 | `--internal-header-name` | — | Optional header added to forwarded requests to mark them as processed by KrakenWaf |
 | `--blockmsg` | — | Path to a custom HTML or text file returned when a request is blocked |
-| `--verbose` | `false` | Enable debug-level logging |
+| `--verbose` | `true` from `conf/filter.yaml` | Enable debug-level logging |
 | `--header-protection-injection` | — | Path to a YAML file that injects custom security headers into all responses; see examples in `rules/headers_http/` |
-| `--cmc-load` | — | Path to CMC config YAML enabling/disabling each CMC detector — see [docs/cmc/schema.md](docs/cmc/schema.md) |
+| `--cmc-load` | `conf/filter.yaml` | Select an alternative filter/CMC YAML file; the default is loaded automatically — see [docs/cmc/schema.md](docs/cmc/schema.md) |
 | `--real-ip-header` | — | HTTP header containing the real client IP forwarded by a trusted proxy — see [docs/deployment.md](docs/deployment.md) |
 | `--trusted-proxy-cidrs` | — | Comma-separated list of trusted proxy CIDRs for real-IP extraction — see [docs/deployment.md](docs/deployment.md) |
 | `--help` | — | Show CLI help and exit |
@@ -659,7 +703,8 @@ CREATE INDEX idx_vulnerabilities_request_id
 ### Allow-paths — `rules/allowpaths/lists.yaml`
 
 Defines URI prefixes that bypass WAF inspection entirely.
-Loaded via `--allow-paths rules/allowpaths/lists.yaml`.
+Loaded automatically through `allowpaths` in `conf/filter.yaml`; an explicit
+`--allow-paths` value overrides it.
 
 ```yaml
 allow:
@@ -694,10 +739,10 @@ Fields:
 
 ---
 
-### 🔎  CMC config — `rules/cmc/config.yaml`
+### 🔎  CMC config — `conf/filter.yaml`
 
-Toggles each CMC detector independently at startup.
-Loaded via `--cmc-load rules/cmc/config.yaml`.
+Controls filter engines and toggles each CMC detector independently at startup.
+It is loaded automatically; `--cmc-load` selects an alternative file.
 
 ```yaml
 global-options:

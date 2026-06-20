@@ -79,10 +79,10 @@ input
 ## Enabling the module
 
 Add `XXE_attack_detect: true` to your CMC config file (default location
-`rules/cmc/config.yaml`) and load it with the `--cmc-load` flag:
+`conf/filter.yaml`) and load it with the `--cmc-load` flag:
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 CMC-Rules:
   SQLi_comments_detect: true
   Overflow_detect: true
@@ -103,7 +103,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 To enable Vectorscan SIMD acceleration (requires `vectorscan-engine` Cargo feature):
@@ -113,7 +113,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml \
+  --cmc-load conf/filter.yaml \
   --enable-vectorscan
 ```
 
@@ -204,4 +204,4 @@ If your application legitimately processes XML with external entity declarations
 | `src/cmc/xxe_attack_detect.rs` | Detector, list tables, Aho-Corasick/Vectorscan matchers, UTF-16 decoder, unit tests |
 | `src/cmc/mod.rs` | Module registration, `CmcConfig` field, `CmcManager` field, `inspect()` call |
 | `src/waf/engine.rs` | Integration — `inspect()` called in the main WAF pipeline |
-| `rules/cmc/config.yaml` | Default config — `XXE_attack_detect: true` |
+| `conf/filter.yaml` | Default config — `XXE_attack_detect: true` |

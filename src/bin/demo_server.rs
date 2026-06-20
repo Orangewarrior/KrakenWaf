@@ -9,7 +9,7 @@
 //!   cargo run -- --no-tls --allow-private-upstream \
 //!                --listen 0.0.0.0:8080 \
 //!                --upstream <http://127.0.0.1:9077> \
-//!                --cmc-load rules/cmc/config.yaml \
+//!                --cmc-load conf/filter.yaml \
 //!                --enable-libinjection-sqli --enable-libinjection-xss \
 //!                --rate-limit-per-minute 100000
 //!
@@ -279,7 +279,7 @@ async fn main() {
     println!("Start KrakenWAF: cargo run -- --no-tls --allow-private-upstream \\");
     println!("                   --listen 0.0.0.0:8080 \\");
     println!("                   --upstream http://127.0.0.1:{port} \\");
-    println!("                   --cmc-load rules/cmc/config.yaml \\");
+    println!("                   --cmc-load conf/filter.yaml \\");
     println!("                   --enable-libinjection-sqli --enable-libinjection-xss \\");
     println!("                   --rate-limit-per-minute 100000");
 

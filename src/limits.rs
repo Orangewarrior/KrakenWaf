@@ -3,12 +3,12 @@
 //! Centralises every cap that protects `KrakenWaf` from a memory-exhaustion
 //! style `DoS`. Defaults are intentionally **drastically lower** than the
 //! historical 100 MiB values: any deployment that legitimately handles
-//! larger payloads should opt in by editing `rules/cmc/config.yaml` (or
+//! larger payloads should opt in by editing `conf/filter.yaml` (or
 //! `conf/limits.yaml`) — not by silently accepting an unbounded surface.
 //!
 //! Priority chain (highest first):
 //!   1. Explicit CLI flag (`--max-body-bytes`, etc).
-//!   2. YAML configuration (`rules/cmc/config.yaml :: memory-limits` or
+//!   2. YAML configuration (`conf/filter.yaml :: memory-limits` or
 //!      `conf/limits.yaml`).
 //!   3. Built-in defaults below.
 
@@ -95,24 +95,23 @@ impl Default for MemoryLimits {
 }
 
 impl MemoryLimits {
-    /// Load `rules/cmc/config.yaml` and extract its `memory-limits:` block,
+    /// Load `conf/filter.yaml` and extract its `memory-limits:` block,
     /// falling back to `conf/limits.yaml`, then to defaults.
     ///
     /// # Errors
     /// Returns an error when a config file exists but cannot be parsed.
-    pub fn load(root: &Path) -> Result<Self> {
+    pub fn load(root: &Path, filter_path: &Path) -> Result<Self> {
         #[derive(Debug, Deserialize)]
         struct Outer {
             #[serde(rename = "memory-limits", default)]
             memory_limits: Option<MemoryLimits>,
         }
 
-        let cmc_path = root.join("rules").join("cmc").join("config.yaml");
-        if cmc_path.exists() {
-            let raw = fs::read_to_string(&cmc_path)
-                .with_context(|| format!("failed to read '{}'", cmc_path.display()))?;
+        if filter_path.exists() {
+            let raw = fs::read_to_string(filter_path)
+                .with_context(|| format!("failed to read '{}'", filter_path.display()))?;
             let outer: Outer = serde_yaml::from_str(&raw).with_context(|| {
-                format!("failed to parse '{}': memory-limits", cmc_path.display())
+                format!("failed to parse '{}': memory-limits", filter_path.display())
             })?;
             if let Some(limits) = outer.memory_limits {
                 return Ok(limits);

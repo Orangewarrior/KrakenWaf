@@ -6,7 +6,9 @@ use anyhow::Result;
 use serde::Serialize;
 use std::{fs, io::Write as _, path::Path};
 use tracing_appender::non_blocking::{NonBlocking, WorkerGuard};
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{
+    filter::LevelFilter, fmt, layer::{Layer, SubscriberExt}, util::SubscriberInitExt, EnvFilter,
+};
 
 #[allow(dead_code)]
 pub struct LoggingHandles {
@@ -14,6 +16,7 @@ pub struct LoggingHandles {
     pub json_guard: WorkerGuard,
     pub critical_writer: NonBlocking,
     pub critical_guard: WorkerGuard,
+    pub console_error_guard: WorkerGuard,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -77,14 +80,19 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
     fs::create_dir_all(root.join("logs/db"))?;
     fs::create_dir_all(root.join("logs/filter"))?;
     fs::create_dir_all(root.join("logs/proxy_errors_dev"))?;
+    fs::create_dir_all(root.join("log/console"))?;
 
     let raw_appender = tracing_appender::rolling::daily(root.join("logs"), "krakenwaf.log");
     let json_appender = tracing_appender::rolling::daily(root.join("logs/json"), "krakenwaf.jsonl");
     let critical_appender = tracing_appender::rolling::daily(root.join("logs/raw"), "critical.log");
+    let console_error_appender =
+        tracing_appender::rolling::never(root.join("log/console"), "error.jsonl");
 
     let (raw_writer, raw_guard) = tracing_appender::non_blocking(raw_appender);
     let (json_writer, json_guard) = tracing_appender::non_blocking(json_appender);
     let (critical_writer, critical_guard) = tracing_appender::non_blocking(critical_appender);
+    let (console_error_writer, console_error_guard) =
+        tracing_appender::non_blocking(console_error_appender);
 
     let filter = if verbose {
         EnvFilter::new("info,krakenwaf=debug,hyper_util=warn")
@@ -108,6 +116,12 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
                 .with_current_span(true)
                 .with_span_list(false),
         )
+        .with(
+            fmt::layer()
+                .json()
+                .with_writer(console_error_writer)
+                .with_filter(LevelFilter::ERROR),
+        )
         .init();
 
     Ok(LoggingHandles {
@@ -115,6 +129,7 @@ pub fn init_logging(root: &Path, verbose: bool) -> Result<LoggingHandles> {
         json_guard,
         critical_writer,
         critical_guard,
+        console_error_guard,
     })
 }
 

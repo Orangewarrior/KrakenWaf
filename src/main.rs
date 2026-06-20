@@ -7,6 +7,7 @@ mod cli;
 mod cmc;
 mod error;
 mod ffi;
+mod filter_config;
 mod geo;
 mod limits;
 mod logging;
@@ -35,8 +36,9 @@ use banning::BanManager;
 use bytes::Bytes;
 use clap::Parser;
 use cli::{Cli, WalMode};
-use cmc::{CmcConfig, CmcController};
+use cmc::CmcController;
 use dashmap::DashMap;
+use filter_config::FilterConfigFactory;
 use limits::MemoryLimits;
 use metrics::WafMetrics;
 use ratelimit_config::RateLimitConfig;
@@ -84,6 +86,13 @@ async fn main() -> Result<()> {
     let mut cli = Cli::parse();
     let root_dir = std::env::current_dir()?;
 
+    // ── Filter configuration factory ─────────────────────────────────────────
+    // `conf/filter.yaml` is loaded automatically. `--cmc-load` remains an
+    // explicit path override for compatibility. Individual CLI flags win over
+    // top-level filter switches.
+    let filter_config = FilterConfigFactory::create(&root_dir, cli.cmc_load.as_deref())?;
+    filter_config.merge_into_cli(&mut cli, &|flag| proxy_config::cli_flag_present(flag));
+
     // ── Administrative sub-commands (config/rules validate, config dump) ──────
     // When a sub-command is present we run it and exit without starting any
     // listener. Used for fail-fast pre-flight checks in CI / Kubernetes init
@@ -104,8 +113,15 @@ async fn main() -> Result<()> {
     // (listener, upstream, TLS store, block page, response headers). An
     // explicitly-passed flag still wins; an empty YAML field keeps the WAF's
     // built-in default for that knob.
-    let external_proxy_conf = cli.external_proxy_conf.clone();
-    if let Some(path) = external_proxy_conf.as_deref() {
+    let proxy_was_explicit = cli.external_proxy_conf.is_some();
+    let external_proxy_conf = cli.external_proxy_conf.clone().unwrap_or_else(|| {
+        root_dir
+            .join("conf/proxy.yaml")
+            .to_string_lossy()
+            .into_owned()
+    });
+    if proxy_was_explicit || PathBuf::from(&external_proxy_conf).exists() {
+        let path = external_proxy_conf.as_str();
         let proxy_cfg = proxy_config::ProxyConfig::load_from(&PathBuf::from(path))
             .with_context(|| format!("--external-proxy-conf: failed to load '{path}'"))?;
         proxy_cfg.merge_into(&mut cli, &|flag| proxy_config::cli_flag_present(flag));
@@ -115,9 +131,9 @@ async fn main() -> Result<()> {
     // The rate-limit config is loaded here (not later) because the connection
     // and body-byte caps now resolve through it. Priority for each cap:
     // explicit CLI flag → conf/ratelimit.yaml → memory-limits
-    // (rules/cmc/config.yaml) → built-in default. Resolved before anything
+    // (conf/filter.yaml) → built-in default. Resolved before anything
     // allocates inspection buffers so construction reads the values off `cli`.
-    let memory_limits = Arc::new(MemoryLimits::load(&root_dir)?);
+    let memory_limits = Arc::new(MemoryLimits::load(&root_dir, &filter_config.source)?);
     let rl_config = match cli.ratelimit_by_file_conf.as_deref() {
         Some(path) => RateLimitConfig::load_from(&PathBuf::from(path))
             .with_context(|| format!("--ratelimit-by-file-conf: failed to load '{path}'"))?,
@@ -139,6 +155,11 @@ async fn main() -> Result<()> {
     println!("{}", banner::banner());
 
     let logging = Arc::new(logging::init_logging(&root_dir, cli.verbose)?);
+    if cli.enable_vectorscan && !cfg!(feature = "vectorscan-engine") {
+        let message = "Vectorscan was enabled in conf/filter.yaml, but this binary was compiled without the 'vectorscan-engine' feature; the Vectorscan engine is unavailable";
+        eprintln!("ERROR: {message}");
+        error!(target: "krakenwaf", "{message}");
+    }
     let response_header_policy = Arc::new(match cli.header_protection_injection.as_deref() {
         Some(path) => ResponseHeaderPolicy::from_file(&PathBuf::from(path))?,
         None => ResponseHeaderPolicy::default(),
@@ -146,12 +167,9 @@ async fn main() -> Result<()> {
     let metrics = Arc::new(WafMetrics::default());
     let rules_root = PathBuf::from(&cli.rules_dir);
     let rules = Arc::new(rules::RuleSet::from_dir(&rules_root)?);
-    let cmc_config = match cli.cmc_load.as_deref() {
-        Some(path) => CmcConfig::from_file(&PathBuf::from(path))?,
-        None => CmcConfig::default(),
-    };
+    let cmc_config = filter_config.cmc_config();
     // Resolve detection-engine globals before moving cmc_config into the
-    // builder. CLI flag > cmc/config.yaml `global-options` > built-in default.
+    // builder. CLI flag > filter.yaml `global-options` > built-in default.
     let effective_anomaly_threshold =
         cmc_config.effective_anomaly_threshold(cli.anomaly_threshold);
     let effective_max_inspection_ms =
@@ -490,7 +508,7 @@ async fn main() -> Result<()> {
         connection_timeout_secs = state.connection_timeout_secs,
         tls_handshake_timeout_secs = state.tls_handshake_timeout_secs,
         http_header_read_timeout_secs = state.http_header_read_timeout_secs,
-        external_proxy_conf = external_proxy_conf.is_some(),
+        external_proxy_conf = %external_proxy_conf,
         ws_control_enabled = state.ws_control.enabled(),
         ws_max_connections_per_ip = state.ws_control.config().max_connections_per_ip,
         "KrakenWaf initialized"

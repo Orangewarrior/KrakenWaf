@@ -1,7 +1,7 @@
 # KrakenWaf — Rate-Limit Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-# Load with:  --ratelimit-by-file-conf conf/ratelimit.yaml
-# Auto-discovered at conf/ratelimit.yaml when present in the working directory.
+# Loaded automatically at startup. Use --ratelimit-by-file-conf <path> to
+# select an alternative file.
 #
 # Priority chain for rate_limit_per_minute:
 #   1. --rate-limit-per-minute CLI flag  (highest)
@@ -63,12 +63,12 @@ max_per_ip_body_bytes: 209715200
 # These four knobs mirror the matching CLI flags. When --max-connections,
 # --connection-timeout-secs, --max-body-bytes, or --max-upstream-response-bytes
 # is omitted, the value here is loaded into the limiting context. Resolution
-# order (highest first): CLI flag → this file → rules/cmc/config.yaml
+# order (highest first): CLI flag → this file → conf/filter.yaml
 # memory-limits → built-in default.
 
 # Maximum simultaneous TCP connections the WAF accepts.
 # 0 (default) = derive a conservative cap from system RAM at startup, honouring
-#               rules/cmc/config.yaml :: memory-limits.max_connections if set.
+#               conf/filter.yaml :: memory-limits.max_connections if set.
 # Overridden by --max-connections when > 0.
 max_connections: 0
 
@@ -78,14 +78,14 @@ max_connections: 0
 connection_timeout_secs: 30
 
 # Maximum request body buffered for inspection (bytes).
-# 0 (default) = use rules/cmc/config.yaml :: memory-limits.max_request_body_buffered_bytes
+# 0 (default) = use conf/filter.yaml :: memory-limits.max_request_body_buffered_bytes
 #               (built-in default 8388608 = 8 MiB).
 # Overridden by --max-body-bytes when > 0.
 max_body_bytes: 0
 
 # Hard ceiling on textual upstream responses buffered for complete inspection.
-# Binary/media responses use the streaming limits in rules/cmc/config.yaml.
-# 0 (default) = use rules/cmc/config.yaml :: memory-limits.max_response_body_buffered_bytes
+# Binary/media responses use the streaming limits in conf/filter.yaml.
+# 0 (default) = use conf/filter.yaml :: memory-limits.max_response_body_buffered_bytes
 #               (built-in default 8388608 = 8 MiB).
 # Overridden by --max-upstream-response-bytes when > 0.
 max_upstream_response_bytes: 0

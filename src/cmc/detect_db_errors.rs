@@ -22,7 +22,7 @@
 //!   vectorscan database could not be compiled (some complex PCRE constructs
 //!   are not supported by Hyperscan).
 //! * **Threshold-gated action** — the `untrust_level` from
-//!   `rules/cmc/config.yaml` controls the response:
+//!   `conf/filter.yaml` controls the response:
 //!   - **≥ 60** → block the response (return `Some(DbErrorMatch)`)
 //!   - **< 60**  → detection is still reported via the caller (returns
 //!     `Some(DbErrorMatch)`) but the `CmcManager` converts this into a

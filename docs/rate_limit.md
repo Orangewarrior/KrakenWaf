@@ -85,7 +85,7 @@ max_inflight_body_bytes: 1073741824   # 1 GiB
 max_per_ip_body_bytes: 209715200      # 200 MiB
 
 # ── Connection & body-size caps (mirror the matching CLI flags) ──────────────
-# Each resolves: CLI flag → this file → rules/cmc/config.yaml memory-limits →
+# Each resolves: CLI flag → this file → conf/filter.yaml memory-limits →
 # built-in default. A 0 here means "defer to the next source".
 
 # Maximum simultaneous TCP connections the WAF accepts.
@@ -98,13 +98,13 @@ max_connections: 0
 connection_timeout_secs: 30
 
 # Maximum request body buffered for inspection (bytes).
-# 0 = use rules/cmc/config.yaml memory-limits (built-in 8 MiB / 8388608).
+# 0 = use conf/filter.yaml memory-limits (built-in 8 MiB / 8388608).
 # Overridden by --max-body-bytes when > 0.
 max_body_bytes: 0
 
 # Hard ceiling on textual upstream responses buffered for complete inspection.
-# Binary/media responses use the streaming limits in rules/cmc/config.yaml.
-# 0 = use rules/cmc/config.yaml memory-limits (built-in 8 MiB / 8388608).
+# Binary/media responses use the streaming limits in conf/filter.yaml.
+# 0 = use conf/filter.yaml memory-limits (built-in 8 MiB / 8388608).
 # Overridden by --max-upstream-response-bytes when > 0.
 max_upstream_response_bytes: 0
 

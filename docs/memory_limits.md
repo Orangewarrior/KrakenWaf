@@ -8,10 +8,10 @@ workloads opt in by editing one file.
 
 ## Where the limits live
 
-Primary location: `rules/cmc/config.yaml`, under the top-level
+Primary location: `conf/filter.yaml`, under the top-level
 `memory-limits:` key. A fallback location at `conf/limits.yaml` is also
 honoured for sites that prefer keeping CMC and memory configuration in
-separate files. When both exist, `rules/cmc/config.yaml` wins.
+separate files. When both exist, `conf/filter.yaml` wins.
 
 ## Knobs and defaults
 
@@ -41,7 +41,7 @@ CLI flags still win when the operator passes a non-zero value:
 
 ## How to raise the limits
 
-Edit `rules/cmc/config.yaml`:
+Edit `conf/filter.yaml`:
 
 ```yaml
 memory-limits:

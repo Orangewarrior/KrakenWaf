@@ -69,7 +69,7 @@ When the module is enabled the WAF:
 ## Action: Scrub vs Block
 
 The module respects the global `Untrust` level configured in
-`rules/cmc/config.yaml`:
+`conf/filter.yaml`:
 
 | `Untrust` | Action | Severity |
 |---|---|---|
@@ -103,7 +103,7 @@ paranoia-level-1 rules embody.
 ## Configuration
 
 Enable the module by adding `Silent_sql_errors: true` under `CMC-Rules` in
-`rules/cmc/config.yaml`:
+`conf/filter.yaml`:
 
 ```yaml
 global-options:

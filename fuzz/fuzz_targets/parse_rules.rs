@@ -4,7 +4,7 @@
 //!   cargo fuzz run parse_rules
 //!
 //! Feeds arbitrary bytes as a YAML document into the lenient YAML parser used
-//! to load `rules/cmc/config.yaml`. Panics on parse errors are bugs.
+//! to load `conf/filter.yaml`. Panics on parse errors are bugs.
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;

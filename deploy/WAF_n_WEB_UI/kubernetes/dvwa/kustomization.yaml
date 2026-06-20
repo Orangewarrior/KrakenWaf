@@ -1,0 +1,13 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - vulnerable-app.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: kraken-waf-ui
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/env/0/value
+        value: http://dvwa:80

@@ -92,10 +92,10 @@ hardening benefits every other CMC module and rule. See
 ## Enabling the module
 
 Add `HPP_detect: true` to your CMC config file (default location
-`rules/cmc/config.yaml`) and load it with the `--cmc-load` flag:
+`conf/filter.yaml`) and load it with the `--cmc-load` flag:
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 CMC-Rules:
   SQLi_comments_detect: true
   # … other modules …
@@ -113,7 +113,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 ---
@@ -216,4 +216,4 @@ for the full engine) against a running WAF; all 50 must be blocked. See
 | `src/waf/engine/mod.rs` | Integration — `WafEngine::inspect_hpp` |
 | `src/proxy/mod.rs` | Pipeline wiring — query + body inspected once the body is available |
 | `src/bin/attack.rs` | DAST sweeps `sweep_hpp_get` / `sweep_hpp_post` over `HPP_PAYLOADS` |
-| `rules/cmc/config.yaml` | Default config — `HPP_detect: true` |
+| `conf/filter.yaml` | Default config — `HPP_detect: true` |

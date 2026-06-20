@@ -1,0 +1,70 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kraken-waf-ui
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: kraken-waf-ui }
+  template:
+    metadata:
+      labels: { app: kraken-waf-ui }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: waf-ui
+          image: krakenwaf-ui-lab:2.46.0
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: WAF_UPSTREAM
+              value: http://replace-in-overlay.invalid
+            - name: RORSCHACH_CLIENT_ID
+              value: kraken-ui
+            - name: KRAKEN_UI_PASSWORD_KEY_ID
+              value: lab-v1
+            - name: KRAKEN_UI_ADMIN_EMAIL
+              value: admin@example.invalid
+            - name: KRAKEN_UI_OPERATOR_EMAIL
+              value: operator@example.invalid
+          envFrom:
+            - secretRef: { name: kraken-lab-secrets }
+          ports:
+            - { name: waf-https, containerPort: 8443 }
+            - { name: ui-https, containerPort: 3443 }
+          readinessProbe:
+            httpGet: { path: /health, port: ui-https, scheme: HTTPS }
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+          volumeMounts:
+            - { name: waf-logs, mountPath: /opt/krakenwaf/logs }
+            - { name: ui-db, mountPath: /opt/kraken-ui/db }
+            - { name: ui-logs, mountPath: /opt/kraken-ui/log }
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { cpu: "2", memory: 2Gi }
+      volumes:
+        - name: waf-logs
+          emptyDir: {}
+        - name: ui-db
+          emptyDir: {}
+        - name: ui-logs
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kraken-waf-ui
+spec:
+  selector: { app: kraken-waf-ui }
+  ports:
+    - { name: protected-app, port: 8443, targetPort: waf-https }
+    - { name: admin-ui, port: 3443, targetPort: ui-https }

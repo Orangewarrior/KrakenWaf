@@ -82,7 +82,7 @@ like `union select` or `' or '1'='1`, this is a non-issue (no metacharacters)
 This file is owned by the
 [`Detect_bots_n_scanners`](cmc/detect_bots_n_scanners.md) CMC module. It is
 loaded at WAF startup only when `Detect_bots_n_scanners: true` is set under
-`CMC-Rules` in `rules/cmc/config.yaml`; with the module disabled the file is
+`CMC-Rules` in `conf/filter.yaml`; with the module disabled the file is
 ignored entirely.
 
 Each non-empty, non-comment line is treated as a **plain substring** of the

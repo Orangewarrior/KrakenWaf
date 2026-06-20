@@ -488,7 +488,7 @@ impl WafEngine {
     ///
     /// `query` is the raw query string (without the leading `?`); `body` is the
     /// raw request body as text. The module is a no-op (returns `Allow`) when it
-    /// is disabled in `rules/cmc/config.yaml`.
+    /// is disabled in `conf/filter.yaml`.
     #[must_use]
     pub fn inspect_hpp(&self, query: &str, body: &str) -> Decision {
         match self.cmc_manager.inspect_hpp(query, body) {
@@ -503,7 +503,7 @@ impl WafEngine {
     /// `body` is the raw request body as text. Returns `Decision::Block` with a
     /// High-severity finding on the first detection, otherwise `Decision::Allow`.
     /// The module is a no-op (returns `Allow`) when disabled in
-    /// `rules/cmc/config.yaml`.
+    /// `conf/filter.yaml`.
     #[must_use]
     pub fn inspect_open_redirect_rfi(&self, query: &str, body: &str) -> Decision {
         match self.cmc_manager.inspect_open_redirect_rfi(query, body) {

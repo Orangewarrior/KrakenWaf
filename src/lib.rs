@@ -7,6 +7,7 @@ pub mod body_decode;
 pub mod cli;
 pub mod error;
 pub mod ffi;
+pub mod filter_config;
 pub mod limits;
 pub mod logging;
 pub mod metrics;

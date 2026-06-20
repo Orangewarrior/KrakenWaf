@@ -108,7 +108,7 @@ languages under `custom-languages-params`. Each enabled language adds its list
 to the search set **in addition to** English.
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 multiple-languages-params: true
 custom-languages-params:
   russian: false
@@ -142,11 +142,11 @@ Notes:
 ## Enabling the module
 
 Add `Open_redirect_n_RFI_detect: true` to your CMC config (default
-`rules/cmc/config.yaml`) under `CMC-Rules:` and load it with `--cmc-load`.
+`conf/filter.yaml`) under `CMC-Rules:` and load it with `--cmc-load`.
 Setting it to `false` (the default) disables the module entirely.
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 CMC-Rules:
   # … other modules …
   Open_redirect_n_RFI_detect: true   # ← add this line
@@ -157,7 +157,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 ---

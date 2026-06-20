@@ -86,7 +86,7 @@ When the module is enabled the WAF:
 ## Action Policy
 
 The module respects the global `Untrust` level configured in
-`rules/cmc/config.yaml`:
+`conf/filter.yaml`:
 
 | `Untrust` | Action | Severity |
 |---|---|---|
@@ -98,7 +98,7 @@ The module respects the global `Untrust` level configured in
 ## Configuration
 
 Enable the module by adding `Detect_bad_artifacts: true` under `CMC-Rules` in
-`rules/cmc/config.yaml`:
+`conf/filter.yaml`:
 
 ```yaml
 global-options:
@@ -108,7 +108,7 @@ CMC-Rules:
   Detect_bad_artifacts: true
 ```
 
-The module is **enabled** in the default `rules/cmc/config.yaml` shipped with
+The module is **enabled** in the default `conf/filter.yaml` shipped with
 KrakenWaf. It can be disabled by setting `Detect_bad_artifacts: false` or
 removing the key.
 

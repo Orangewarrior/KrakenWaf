@@ -20,7 +20,7 @@ All three honour the same path flags the server uses, and those flags are
 | `--ratelimit-by-file-conf <path>` | `conf/ratelimit.yaml` |
 | `--websocket-conf <path>` | `conf/websocket.yaml` |
 | `--rules-dir <path>` | rule-set directory (default `./rules`) |
-| `--cmc-load <path>` | optional CMC config |
+| `--cmc-load <path>` | filter/CMC config (default `conf/filter.yaml`) |
 
 When a flag is omitted the command falls back to the conventional
 `conf/<name>.yaml` under the working directory (and the default `./rules`).
@@ -46,7 +46,7 @@ What it checks:
 | `websocket` | `conf/websocket.yaml` | lenient load + `validate()` (defaults) |
 | `banning` | `conf/banning.yaml` | validated relative to the working dir |
 | `update` | `conf/update.yaml` | skipped when absent |
-| `cmc` | `--cmc-load <path>` | only when the flag is supplied |
+| `filter` | `conf/filter.yaml` or `--cmc-load <path>` | validated automatically |
 
 Output (`✓` valid, `✗` invalid, `-` absent → defaults):
 
@@ -150,7 +150,8 @@ rules validate: loading from ./rules
 rules validate: OK
 ```
 
-When `--cmc-load <path>` is supplied the CMC config is validated too. If the
+The default filter/CMC config is validated automatically; `--cmc-load <path>`
+selects an alternative. If the
 rule set parses but contains **no request-matching rules**, the command prints a
 warning (the WAF would start but report `NOT READY` on `/readyz`).
 

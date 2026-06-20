@@ -68,7 +68,7 @@ Place response rules in `rules/regex/body_regex.json` (or
 | `TeePrefix` | `application/octet-stream`, unknown or missing content type | Retains and inspects only `response_inspect_prefix_bytes` (64 KiB default), then streams the remainder. |
 
 The streaming limits live under `memory-limits` in
-`rules/cmc/config.yaml`. A response with a declared `Content-Length` above its
+`conf/filter.yaml`. A response with a declared `Content-Length` above its
 selected limit is rejected before forwarding. For chunked responses, KrakenWaf
 counts bytes during forwarding and terminates the response if the cap is
 crossed.

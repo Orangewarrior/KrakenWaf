@@ -1,0 +1,41 @@
+services:
+  dvwa:
+    image: vulnerables/web-dvwa
+    container_name: kraken-lab-dvwa
+    networks: [kraken-lab]
+
+  waf-ui:
+    build:
+      context: ../..
+      dockerfile: deploy/WAF_n_WEB_UI/Containerfile
+    image: krakenwaf-ui-lab:2.46.0
+    container_name: kraken-lab-waf-ui
+    depends_on: [dvwa]
+    environment: &lab-environment
+      WAF_UPSTREAM: http://dvwa:80
+      BEARER_PASSWORD: KrakenLabBearer-ChangeMe
+      RORSCHACH_SECRET_EVEN: YWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYWFhYQ
+      RORSCHACH_SECRET_ODD: YmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYmJiYg
+      RORSCHACH_CLIENT_ID: kraken-ui
+      KRAKEN_UI_PASSWORD_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+      KRAKEN_UI_PASSWORD_KEY_ID: lab-v1
+      KRAKEN_UI_SESSION_KEY: MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWYwMTIzNDU2Nzg5YWJjZGVmMDEyMzQ1Njc4OWFiY2RlZg==
+      KRAKEN_UI_ADMIN_PASSWORD: "Tentacle-Root!2026"
+      KRAKEN_UI_ADMIN_EMAIL: admin@example.invalid
+      KRAKEN_UI_OPERATOR_PASSWORD: "DeepCurrent!2026"
+      KRAKEN_UI_OPERATOR_EMAIL: operator@example.invalid
+    ports:
+      - "8443:8443"
+      - "3443:3443"
+    volumes:
+      - waf-logs:/opt/krakenwaf/logs
+      - ui-db:/opt/kraken-ui/db
+      - ui-logs:/opt/kraken-ui/log
+    networks: [kraken-lab]
+
+networks:
+  kraken-lab: {}
+volumes:
+  waf-logs: {}
+  ui-db: {}
+  ui-logs: {}

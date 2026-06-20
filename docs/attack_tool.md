@@ -60,7 +60,7 @@ cargo run -- \
   --listen 0.0.0.0:8080 \
   --upstream http://127.0.0.1:9077 \
   --rules-dir ./rules \
-  --cmc-load ./rules/cmc/config.yaml \
+  --cmc-load ./conf/filter.yaml \
   --enable-libinjection-sqli \
   --enable-libinjection-xss \
   --rate-limit-per-minute 100000
@@ -176,7 +176,7 @@ over each direction; a `200` is a real bypass to fix in the detector or normaliz
 Scanner UAs are drawn from `rules/user_agents/scanners.txt` (subset of 15).
 Note: scanner-UA blocking is now owned by the
 [`Detect_bots_n_scanners`](cmc/detect_bots_n_scanners.md) CMC module — start
-the WAF with `--cmc-load rules/cmc/config.yaml` for these payloads to be
+the WAF with `--cmc-load conf/filter.yaml` for these payloads to be
 blocked.
 
 ---

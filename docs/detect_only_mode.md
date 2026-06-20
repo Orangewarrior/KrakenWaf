@@ -19,7 +19,7 @@ Detect-only mode lets KrakenWaf run all inspection engines against live traffic 
 cargo run -- \
   --no-tls \
   --mode detect-only \
-  --cmc-load ./rules/cmc/config.yaml \
+  --cmc-load ./conf/filter.yaml \
   --listen 0.0.0.0:8080 \
   --upstream http://127.0.0.1:9077
 ```

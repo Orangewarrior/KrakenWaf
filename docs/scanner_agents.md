@@ -10,7 +10,7 @@ derived from the **OWASP Core Rule Set** (CRS)
 > `rules/user_agents/scanners.txt` is consumed exclusively by it.
 > The module is opt-in: set `Detect_bots_n_scanners: true` (or `false` to
 > disable scanner-UA blocking entirely) under `CMC-Rules` in
-> [`rules/cmc/config.yaml`](../rules/cmc/config.yaml). Blocking is also
+> [`conf/filter.yaml`](../conf/filter.yaml). Blocking is also
 > gated by the global `Untrust` level (≥ 60 blocks; < 60 silent-logs).
 > See [`docs/cmc/detect_bots_n_scanners.md`](cmc/detect_bots_n_scanners.md)
 > for the full action-policy matrix and severity rationale.
@@ -66,6 +66,6 @@ WAF restart.
 
 To disable scanner-UA blocking entirely, set
 `Detect_bots_n_scanners: false` under `CMC-Rules` in
-`rules/cmc/config.yaml` (or omit the key altogether). Removing or emptying
+`conf/filter.yaml` (or omit the key altogether). Removing or emptying
 `scanners.txt` while leaving the module enabled is also tolerated — the
 module logs a load error at startup and disables itself.

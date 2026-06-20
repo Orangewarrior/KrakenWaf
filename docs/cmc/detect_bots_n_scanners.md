@@ -11,7 +11,7 @@ commix, Acunetix, Havij, …).
 The module replaces the previously hard-wired scanner-UA block that lived
 inside the WAF detection engine. All scanner-UA matching now flows through
 this single CMC module — toggling `Detect_bots_n_scanners: false` in
-`rules/cmc/config.yaml` disables scanner-UA blocking entirely, without
+`conf/filter.yaml` disables scanner-UA blocking entirely, without
 recompilation.
 
 ---
@@ -63,7 +63,7 @@ When the module is enabled the WAF:
 ## Action Policy
 
 The module honours the global `Untrust` level configured in
-`rules/cmc/config.yaml`:
+`conf/filter.yaml`:
 
 | `Untrust` | Action | Severity |
 |---|---|---|
@@ -83,7 +83,7 @@ The log includes the matched pattern (e.g. `pattern=nikto`), the full
 ## Configuration
 
 Enable the module by adding `Detect_bots_n_scanners: true` under `CMC-Rules`
-in `rules/cmc/config.yaml`:
+in `conf/filter.yaml`:
 
 ```yaml
 global-options:

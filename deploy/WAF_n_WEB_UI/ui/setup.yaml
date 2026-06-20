@@ -1,0 +1,12 @@
+---
+cert-ca: /opt/krakenwaf/certs/cert.pem
+key: /opt/krakenwaf/certs/key.pem
+listen: "0.0.0.0:3443"
+db-ui: /opt/kraken-ui/db/kraken-ui.sqlite
+db-waf-alerts: /opt/krakenwaf/logs/db/vulns_alert.db
+waf-endpoint: "https://127.0.0.1:4343"
+waf-cert-ca: /opt/krakenwaf/certs/cert.pem
+waf-rule-endpoint: "https://127.0.0.1:4342"
+waf-rule-cert-ca: /opt/krakenwaf/certs/cert.pem
+log-dir: /opt/kraken-ui/log
+session-timeout-minutes: 30

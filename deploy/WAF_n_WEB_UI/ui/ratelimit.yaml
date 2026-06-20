@@ -1,0 +1,14 @@
+---
+enabled: true
+requests_per_second: 10
+burst_size: 300
+max_coroutines_per_ip: 32
+tls_handshake_timeout_secs: 10
+connection_timeout_secs: 30
+max_tracked_ips: 10000
+backend: sqlite
+fail_open: false
+sqlite:
+  path: /opt/kraken-ui/db/kraken-ui-ratelimit.sqlite
+  busy_timeout_ms: 2000
+  cleanup_interval_requests: 1024

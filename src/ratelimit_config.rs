@@ -61,7 +61,7 @@ pub struct RateLimitConfig {
 
     /// Maximum simultaneous TCP connections the WAF accepts. `0` in the file
     /// (or absent) is treated as `None`, deferring to `--max-connections`, then
-    /// to `rules/cmc/config.yaml :: memory-limits.max_connections`, and finally
+    /// to `conf/filter.yaml :: memory-limits.max_connections`, and finally
     /// to a value derived from system RAM at startup.
     #[serde(default, deserialize_with = "deser_opt_nonzero_usize")]
     pub max_connections: Option<usize>,
@@ -75,14 +75,14 @@ pub struct RateLimitConfig {
 
     /// Maximum request body the WAF buffers + inspects (bytes). `0`/absent is
     /// `None`, deferring to `--max-body-bytes`, then to
-    /// `rules/cmc/config.yaml :: memory-limits.max_request_body_buffered_bytes`
+    /// `conf/filter.yaml :: memory-limits.max_request_body_buffered_bytes`
     /// (built-in default 8 MiB).
     #[serde(default, deserialize_with = "deser_opt_nonzero_usize")]
     pub max_body_bytes: Option<usize>,
 
     /// Hard ceiling on the upstream response body the WAF buffers (bytes).
     /// `0`/absent is `None`, deferring to `--max-upstream-response-bytes`, then
-    /// to `rules/cmc/config.yaml :: memory-limits.max_response_body_buffered_bytes`
+    /// to `conf/filter.yaml :: memory-limits.max_response_body_buffered_bytes`
     /// (built-in default 8 MiB).
     #[serde(default, deserialize_with = "deser_opt_nonzero_usize")]
     pub max_upstream_response_bytes: Option<usize>,

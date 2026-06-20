@@ -178,7 +178,7 @@ pub const HOT_PARAMS_PORTUGUESE: &[&str] = &[
 ];
 
 /// Which optional localized hot-parameter lists are active. Mirrors the
-/// `custom-languages-params` map in `rules/cmc/config.yaml`. By default every
+/// `custom-languages-params` map in `conf/filter.yaml`. By default every
 /// language is disabled (English only); a language list is added to the search
 /// set only when its flag is `true` **and** `multiple-languages-params` is on.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

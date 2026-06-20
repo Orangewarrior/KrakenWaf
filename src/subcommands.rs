@@ -75,12 +75,15 @@ fn config_validate(cli: &Cli, root: &Path) -> Result<()> {
         skipped("update", &update_path);
     }
 
-    // CMC config — only when --cmc-load was supplied.
-    if let Some(cmc_path) = cli.cmc_load.as_deref() {
-        let path = PathBuf::from(cmc_path);
-        report("cmc", &path,
-            crate::cmc::CmcConfig::from_file(&path).map(|_| ()), &mut failures);
-    }
+    // Filter/CMC config — explicit override or the automatically loaded file.
+    let filter_path = resolved_path(cli.cmc_load.as_deref(), root, "conf/filter.yaml");
+    report(
+        "filter",
+        &filter_path,
+        crate::filter_config::FilterConfigFactory::create(root, cli.cmc_load.as_deref())
+            .map(|_| ()),
+        &mut failures,
+    );
 
     if failures == 0 {
         println!("\nconfig validate: OK — all configuration files are valid");

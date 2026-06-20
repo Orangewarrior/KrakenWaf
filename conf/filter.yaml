@@ -129,3 +129,31 @@ memory-limits:
   # max_connections (optional): pin the TCP accept cap. Comment out to let
   # KrakenWaf derive it from system RAM at startup.
   # max_connections: 1024
+
+# Enable libinjection SQL injection detection in the filter engine.
+# Set to false to disable this detection context.
+libinjection-sqli: true
+
+# Enable libinjection cross-site scripting detection in the filter engine.
+# Set to false to disable this detection context.
+libinjection-xss: true
+
+# Enable the Vectorscan engine. Set to false to disable it. When true, the
+# binary must be compiled with the `vectorscan-engine` Cargo feature.
+vectorscan: true
+
+# Enable all individually selected modules under CMC-Rules in the filter
+# engine. Set to false to disable the complete CMC module context.
+cmc-modules: true
+
+# Default directory containing the WAF rules. An explicit --rules-dir value
+# takes precedence over this setting.
+rules-dir: ./rules
+
+# Default allow-path policy file. An explicit --allow-paths value takes
+# precedence over this setting.
+allowpaths: ./rules/allowpaths/lists.yaml
+
+# Enable debug-level KrakenWaf logging. Set to false to use info-level logging.
+# An explicit --verbose flag always enables verbose logging.
+verbose: true

@@ -63,10 +63,10 @@ the network perimeter.
 ## Enabling the module
 
 Add `Anti_passwd_leak: true` to your CMC config file (default location
-`rules/cmc/config.yaml`) and load it with the `--cmc-load` flag:
+`conf/filter.yaml`) and load it with the `--cmc-load` flag:
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 CMC-Rules:
   SQLi_comments_detect: true
   Overflow_detect: true
@@ -88,7 +88,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 To enable Vectorscan SIMD acceleration (requires `vectorscan-engine` Cargo feature):
@@ -98,7 +98,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml \
+  --cmc-load conf/filter.yaml \
   --enable-vectorscan
 ```
 
@@ -208,4 +208,4 @@ bodies:
 | `src/cmc/anti_passwd_leak.rs` | Detector, `PASSWD_TOKENS`, `SHADOW_TOKENS`, `MultiMatcher`, Aho-Corasick/Vectorscan backends, unit tests |
 | `src/cmc/mod.rs` | Module registration, `CmcConfig` field, `CmcManager` field, `inspect_response_body()` entry point |
 | `src/waf/engine.rs` | Integration — `inspect_response_body()` called at the end of `inspect_response()` |
-| `rules/cmc/config.yaml` | Default config — `Anti_passwd_leak: true` |
+| `conf/filter.yaml` | Default config — `Anti_passwd_leak: true` |

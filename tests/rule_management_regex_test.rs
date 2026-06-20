@@ -131,7 +131,7 @@ fn spawn_waf_rm(waf_port: u16, rm_port: u16, backend_port: u16) -> WafGuard {
     let upstream = format!("http://127.0.0.1:{backend_port}");
     let rm_port_s = rm_port.to_string();
     let metrics_port_s = pick_free_port().to_string();
-    let cmc = format!("{root}/rules/cmc/config.yaml");
+    let cmc = format!("{root}/conf/filter.yaml");
     let rules_dir_s = rules_dir.to_string_lossy().to_string();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_krakenwaf"));

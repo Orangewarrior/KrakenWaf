@@ -46,7 +46,7 @@ The `engine` label corresponds to the detection subsystem:
 | `keyword` | Aho-Corasick keyword matcher |
 | `regex` | Compiled regex rules |
 
-The `module` label for `engine="cmc"` is the CMC module name as it appears in `rules/cmc/config.yaml` (e.g. `sqli_comments_detect`, `java_deserialize_detect`).
+The `module` label for `engine="cmc"` is the CMC module name as it appears in `conf/filter.yaml` (e.g. `sqli_comments_detect`, `java_deserialize_detect`).
 
 ## Grafana dashboard query examples
 

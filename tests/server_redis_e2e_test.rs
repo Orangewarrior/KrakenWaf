@@ -186,7 +186,7 @@ fn unique_ip(seed: u32) -> String {
 fn spawn_waf_redis_tls(waf_port: u16, rl_limit: u32, tolerance: u32) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
-    let cmc_config = format!("{project_root}/rules/cmc/config.yaml");
+    let cmc_config = format!("{project_root}/conf/filter.yaml");
     let listen = format!("127.0.0.1:{waf_port}");
     let upstream = format!("http://{}", backend_addr());
 

@@ -14,7 +14,16 @@ inspection entirely. This is useful for:
 > the network or application level (IP allowlists, authentication middleware,
 > mTLS, etc.).
 
-## CLI flag
+## Configuration
+
+The shipped `conf/filter.yaml` sets:
+
+```yaml
+allowpaths: ./rules/allowpaths/lists.yaml
+```
+
+The policy is therefore loaded automatically. Use the CLI flag only to select
+an alternative file; it has higher precedence:
 
 ```
 krakenwaf --allow-paths rules/allowpaths/lists.yaml

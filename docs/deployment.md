@@ -7,6 +7,23 @@
 > [admin_commands.md](admin_commands.md). WebSocket (`ws://`/`wss://`) controls
 > are in [websocket.md](websocket.md).
 
+## Automatic configuration loading
+
+KrakenWAF loads `conf/proxy.yaml`, `conf/filter.yaml`, `conf/ratelimit.yaml`,
+`conf/banning.yaml`, and `conf/websocket.yaml` automatically when they are
+present under the working directory. A zero-argument launch therefore uses the
+complete checked-in configuration set. Explicit CLI arguments override file
+values, and each file-selection flag can point to an alternative path.
+
+## Combined KrakenWAF and Kraken UI labs
+
+Disposable Docker Compose and Kubernetes profiles for DVWA and OWASP Juice Shop
+are available under [`deploy/WAF_n_WEB_UI`](../deploy/WAF_n_WEB_UI). Each profile
+runs one vulnerable application container or pod and one combined KrakenWAF +
+Kraken UI container or pod. The combined service includes test admin/operator
+accounts, shared observability credentials, and live CMC/regex rule management.
+The checked-in credentials are lab-only and must not be reused in production.
+
 ## Rate limiting at the edge
 KrakenWAF rate limits by the observed client IP. When deployed directly on the TCP edge this is the socket peer address and requires no header trust chain.
 
@@ -20,9 +37,9 @@ Only requests whose TCP peer IP belongs to a configured trusted CIDR will be all
 
 ## Proxy configuration file (`conf/proxy.yaml`)
 
-The proxy-level flags can be loaded as a group from a YAML file via
-`--external-proxy-conf` (passed bare it auto-loads `conf/proxy.yaml`), keeping
-the command line terse and the topology version-controlled:
+The proxy-level flags are loaded automatically from `conf/proxy.yaml`. Use
+`--external-proxy-conf <path>` to select another file while keeping the command
+line terse and the topology version-controlled:
 
 ```yaml
 listen : 0.0.0.0:443

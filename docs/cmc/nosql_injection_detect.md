@@ -49,10 +49,10 @@ the numeric-equality scan always runs in plain Rust regardless of engine.
 ## Enabling the module
 
 Add `NOSQL_injection_detect: true` to your CMC config file (default location
-`rules/cmc/config.yaml`) and load it with the `--cmc-load` flag:
+`conf/filter.yaml`) and load it with the `--cmc-load` flag:
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 CMC-Rules:
   SQLi_comments_detect: true
   Overflow_detect: true
@@ -73,7 +73,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 To enable the Vectorscan SIMD engine (requires `vectorscan-engine` Cargo feature):
@@ -83,7 +83,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml \
+  --cmc-load conf/filter.yaml \
   --enable-vectorscan
 ```
 
@@ -175,4 +175,4 @@ admin query builder):
 | `src/cmc/nosql_injection_detect.rs` | Detector, list tables, Aho-Corasick/Vectorscan matchers, numeric equality scan, unit tests |
 | `src/cmc/mod.rs` | Module registration, `CmcConfig` field, `CmcManager` field, `inspect()` call |
 | `src/waf/engine.rs` | Integration — `inspect()` called in the main WAF pipeline |
-| `rules/cmc/config.yaml` | Default config — `NOSQL_injection_detect: true` |
+| `conf/filter.yaml` | Default config — `NOSQL_injection_detect: true` |

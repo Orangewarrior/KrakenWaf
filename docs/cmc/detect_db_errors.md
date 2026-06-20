@@ -76,7 +76,7 @@ When the module is enabled the WAF:
 ## Action: Block vs Monitor
 
 The module respects the global `untrust_level` configured in
-`rules/cmc/config.yaml`:
+`conf/filter.yaml`:
 
 | `untrust_level` | Detection action |
 |---|---|
@@ -92,7 +92,7 @@ once they have confidence in the pattern set.
 ## Configuration
 
 Enable the module by adding `Detect_db_errors: true` under `CMC-Rules` in
-`rules/cmc/config.yaml`:
+`conf/filter.yaml`:
 
 ```yaml
 global-options:

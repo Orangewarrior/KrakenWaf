@@ -1,6 +1,7 @@
 # KrakenWaf — Proxy Configuration
 # ─────────────────────────────────────────────────────────────────────────────
-# Load with:  --external-proxy-conf conf/proxy.yaml
+# Loaded automatically at startup. Use --external-proxy-conf <path> to select
+# an alternative file.
 #
 # This file mirrors the proxy-related CLI flags so a deployment can keep the
 # command line terse and version-control its proxy topology. Resolution order
@@ -18,11 +19,11 @@
 #     internal header disabled; an empty `upstream-timeout-secs` keeps the
 #     built-in 15 s default.
 
-listen : 127.0.0.1:443
-upstream : https://127.0.0.1:8080 # host defined by the user
+listen : 127.0.0.1:8443
+upstream : http://127.0.0.1:8080 # local application default
 upstream-timeout-secs: # when empty, defaults to a value defined by the WAF
 upstream-ca: # empty -> trusts only public CAs; PEM path to trust a private upstream CA
-allow-private-upstream: false # disabled
+allow-private-upstream: true # required for the default loopback upstream
 debug-proxy-dev: false # true -> persist diagnostic proxy errors in logs/proxy_errors_dev/proxy_errors.jsonl
 internal-header-name: # empty: disabled by default
 real-ip-header: X-Forwarded-For

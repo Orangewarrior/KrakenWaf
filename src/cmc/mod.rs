@@ -167,6 +167,15 @@ pub const CMC_MODULE_KEYS: &[&str] = &[
 ];
 
 impl CmcConfig {
+    /// Disable every CMC module while retaining global thresholds and language
+    /// settings. This implements the top-level `cmc-modules` filter switch.
+    pub fn disable_all_modules(&mut self) {
+        for key in CMC_MODULE_KEYS {
+            let changed = self.set_module(key, false);
+            debug_assert!(changed, "CMC_MODULE_KEYS contains an unknown module");
+        }
+    }
+
     /// Return the current enable state of the module named `key`, or `None` when
     /// `key` is not a recognised CMC module. `key` uses the public JSON / YAML
     /// names listed in [`CMC_MODULE_KEYS`].
@@ -1895,7 +1904,7 @@ CMC-Rules:
     fn shipped_config_parses_and_enables_module() {
         let content = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/rules/cmc/config.yaml"
+            "/conf/filter.yaml"
         ))
         .expect("read shipped CMC config");
         let cfg = parse_lenient_yaml(&content).expect("parse shipped config");

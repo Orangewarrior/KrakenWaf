@@ -1,6 +1,6 @@
 //! End-to-end coverage for the file-driven configuration inputs added for the
-//! `--external-proxy-conf` / `conf/proxy.yaml` and the new `conf/ratelimit.yaml`
-//! connection/body-size knobs.
+//! automatically discovered `conf/proxy.yaml`, `conf/filter.yaml`, and
+//! `conf/ratelimit.yaml` inputs.
 //!
 //! Topology
 //! --------
@@ -9,9 +9,9 @@
 //! The WAF is spawned **without** `--listen`, `--upstream`, `--no-tls`,
 //! `--allow-private-upstream`, `--header-protection-injection`, or `--blockmsg`
 //! on the command line. Every one of those must come from `conf/proxy.yaml`
-//! (loaded via `--external-proxy-conf`), so a successful proxied request proves
-//! the file was honoured. The body-size cap likewise comes only from
-//! `conf/ratelimit.yaml` (loaded via `--ratelimit-by-file-conf`).
+//! so a successful proxied request proves the automatically discovered file was
+//! honoured. The body-size cap likewise comes only from the automatically
+//! loaded `conf/ratelimit.yaml` file.
 
 use axum::{routing::get, routing::post, Router};
 use reqwest::StatusCode;
@@ -125,15 +125,23 @@ fn spawn_waf_from_files(workdir: &Path, waf_port: u16, backend_port: u16) -> Waf
     );
     fs::write(workdir.join("conf/ratelimit.yaml"), ratelimit_yaml).expect("write ratelimit.yaml");
 
+    // conf/filter.yaml is also auto-loaded. Vectorscan is deliberately enabled
+    // so non-Vectorscan builds exercise the required startup diagnostic sink.
+    fs::write(
+        workdir.join("conf/filter.yaml"),
+        format!(
+            "libinjection-sqli: true\n\
+             libinjection-xss: true\n\
+             vectorscan: true\n\
+             cmc-modules: false\n\
+             rules-dir: {rules_dir}\n\
+             allowpaths: ''\n\
+             verbose: false\n"
+        ),
+    )
+    .expect("write filter.yaml");
+
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
-        .args([
-            "--external-proxy-conf",
-            "conf/proxy.yaml",
-            "--ratelimit-by-file-conf",
-            "conf/ratelimit.yaml",
-            "--rules-dir",
-            &rules_dir,
-        ])
         .current_dir(workdir)
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -180,6 +188,23 @@ async fn proxy_and_ratelimit_files_drive_behavior() {
 
     let client = http_client();
     wait_for_waf(&client, waf_port).await;
+
+    if !cfg!(feature = "vectorscan-engine") {
+        let error_log = tmp.path().join("log/console/error.jsonl");
+        for _ in 0..50 {
+            if fs::read_to_string(&error_log)
+                .is_ok_and(|content| content.contains("compiled without the 'vectorscan-engine' feature"))
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let content = fs::read_to_string(&error_log).expect("read Vectorscan error log");
+        assert!(
+            content.contains("compiled without the 'vectorscan-engine' feature"),
+            "missing Vectorscan build-mismatch diagnostic: {content}"
+        );
+    }
 
     let base = format!("http://127.0.0.1:{waf_port}");
 
@@ -256,8 +281,6 @@ async fn proxy_and_ratelimit_files_drive_behavior() {
 /// the health endpoint never comes up.
 #[tokio::test]
 async fn invalid_proxy_config_aborts_startup() {
-    let project_root = env!("CARGO_MANIFEST_DIR");
-    let rules_dir = format!("{project_root}/rules");
     let tmp = tempfile::tempdir().expect("tempdir");
     fs::create_dir_all(tmp.path().join("conf")).expect("mkdir conf");
     // `listen` is not a socket address → validation failure.
@@ -268,12 +291,6 @@ async fn invalid_proxy_config_aborts_startup() {
     .expect("write bad proxy.yaml");
 
     let mut child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
-        .args([
-            "--external-proxy-conf",
-            "conf/proxy.yaml",
-            "--rules-dir",
-            &rules_dir,
-        ])
         .current_dir(tmp.path())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

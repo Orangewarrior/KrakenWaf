@@ -1,0 +1,45 @@
+FROM docker.io/library/rust:1.95-bookworm AS builder
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends clang git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build/krakenwaf
+COPY Cargo.toml Cargo.lock build.rs ./
+COPY ffi ./ffi
+COPY src ./src
+RUN cargo build --release --locked --bin krakenwaf
+
+ARG KRAKEN_UI_REF=c5b81e6f5bd339e9f87110fd11857518e1ab738d
+RUN git clone https://github.com/Orangewarrior/kraken-ui.git /build/kraken-ui \
+    && cd /build/kraken-ui \
+    && git checkout --detach "${KRAKEN_UI_REF}" \
+    && cargo build --release --locked --bin kraken-ui
+
+FROM docker.io/library/debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --home-dir /home/kraken kraken
+
+COPY --from=builder /build/krakenwaf/target/release/krakenwaf /usr/local/bin/krakenwaf
+COPY --from=builder /build/kraken-ui/target/release/kraken-ui /usr/local/bin/kraken-ui
+COPY --from=builder /build/kraken-ui/src/view/static /build/kraken-ui/src/view/static
+COPY conf /opt/krakenwaf/conf
+COPY rules /opt/krakenwaf/rules
+COPY alert /opt/krakenwaf/alert
+COPY certs /opt/krakenwaf/certs
+COPY deploy/WAF_n_WEB_UI/ui/setup.yaml /opt/kraken-ui/conf/setup.yaml
+COPY deploy/WAF_n_WEB_UI/ui/ratelimit.yaml /opt/kraken-ui/conf/ratelimit.yaml
+COPY deploy/WAF_n_WEB_UI/entrypoint.sh /usr/local/bin/waf-ui-entrypoint
+
+RUN chmod 0755 /usr/local/bin/waf-ui-entrypoint \
+    && mkdir -p /opt/krakenwaf/logs/db /opt/kraken-ui/db /opt/kraken-ui/log \
+    && chown -R kraken:kraken /opt/krakenwaf /opt/kraken-ui /build/kraken-ui
+
+USER kraken
+WORKDIR /opt/krakenwaf
+EXPOSE 8443 3443 4343 4342
+VOLUME ["/opt/krakenwaf/logs", "/opt/kraken-ui/db", "/opt/kraken-ui/log"]
+ENTRYPOINT ["/usr/local/bin/waf-ui-entrypoint"]

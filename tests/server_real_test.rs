@@ -351,7 +351,7 @@ fn spawn_waf(waf_port: u16, extra_args: &[&str]) -> WafGuard {
 
 fn spawn_waf_with_cmc(waf_port: u16) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
-    let cmc_config = format!("{project_root}/rules/cmc/config.yaml");
+    let cmc_config = format!("{project_root}/conf/filter.yaml");
     spawn_waf(waf_port, &["--cmc-load", &cmc_config])
 }
 
@@ -771,7 +771,7 @@ async fn sqli_payload_sweep_get() {
 /// Send a GET with a benign query param but a scanner User-Agent from
 /// scanners.txt — the UA alone must trigger a block (HTTP 403). Scanner
 /// blocking lives in the `Detect_bots_n_scanners` CMC module and is only
-/// active when that module is enabled in `rules/cmc/config.yaml`, so the
+/// active when that module is enabled in `conf/filter.yaml`, so the
 /// WAF is started with `--cmc-load` here.
 #[tokio::test]
 async fn scanner_ua_sweep() {
@@ -2343,7 +2343,7 @@ const OPEN_REDIRECT_RFI_PAYLOADS: &[&str] = &[
 /// the Open Redirect / RFI detector alongside the SIMD scanning path.
 fn spawn_waf_with_cmc_vectorscan(waf_port: u16) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
-    let cmc_config = format!("{project_root}/rules/cmc/config.yaml");
+    let cmc_config = format!("{project_root}/conf/filter.yaml");
     spawn_waf(
         waf_port,
         &["--cmc-load", &cmc_config, "--enable-vectorscan"],

@@ -1,4 +1,50 @@
 
+## [2.46.0] - 2026-06-20
+
+> **Configuration and lab-deployment release.** Consolidates filter-engine and
+> CMC configuration under `conf/filter.yaml`, enables zero-argument startup from
+> the shipped `conf/` directory, and adds combined KrakenWAF + Kraken UI labs.
+
+### Added
+
+- **Factory-built filter configuration.** `FilterConfigFactory` loads and
+  validates `conf/filter.yaml`, builds the CMC configuration, and applies the
+  documented CLI-over-file precedence.
+- **Top-level filter switches:** `libinjection-sqli`, `libinjection-xss`,
+  `vectorscan`, `cmc-modules`, `rules-dir`, `allowpaths`, and `verbose`. Every
+  Boolean switch documents that `false` disables its context.
+- **Vectorscan build-mismatch diagnostics.** Enabling Vectorscan in YAML on a
+  binary compiled without `vectorscan-engine` emits an error to stderr and to
+  `log/console/error.jsonl`; available fallback engines continue running.
+- **Combined WAF + UI test deployments** under `deploy/WAF_n_WEB_UI`, with
+  Docker Compose and Kubernetes/Kustomize profiles for DVWA and OWASP Juice
+  Shop. The UI bootstraps lab-only admin and operator accounts through its
+  supported account and CSRF-protected ACL flows.
+- **End-to-end regression test** that starts `demo_server`, places KrakenWAF in
+  front of it, runs the complete `attack` sweep, and requires the all-blocked
+  result.
+
+### Changed
+
+- Moved the former `rules/cmc/config.yaml` configuration and memory-limit block
+  to `conf/filter.yaml`. Source comments, module documentation, tests, examples,
+  CI paths, and README links now use the new location.
+- A normal launch automatically discovers `conf/proxy.yaml`,
+  `conf/filter.yaml`, `conf/ratelimit.yaml`, `conf/banning.yaml`, and
+  `conf/websocket.yaml`. Explicit CLI arguments remain authoritative, and
+  missing implicit files retain compatibility defaults.
+- `config validate` now validates the default filter configuration even when
+  `--cmc-load` is not supplied.
+- Repository version bumped from `2.45.0` to `2.46.0`.
+
+### Validation
+
+- Filter factory unit tests cover Boolean switches, the CMC master switch,
+  path defaults, and explicit CLI precedence.
+- Configuration integration tests prove automatic proxy and rate-limit loading
+  without file-selection arguments.
+- The `demo_server` + `attack` end-to-end workflow passes with zero bypasses.
+
 ## [2.45.0] - 2026-06-19
 
 > **AppSec hardening release.** Closes a per-request DNS-amplification DoS on
@@ -408,7 +454,7 @@
   `TeePrefix`, inspecting a 64 KiB prefix before streaming the remainder.
   Streamed bodies are counted against a separate 1 GiB default ceiling, and an
   oversized advertised `Content-Length` is rejected before forwarding.
-- **Response streaming limits (`src/limits.rs`, `rules/cmc/config.yaml`).**
+- **Response streaming limits (`src/limits.rs`, `conf/filter.yaml`).**
   Added `max_streamed_response_bytes` and
   `response_inspect_prefix_bytes`. This prevents large downloads, images,
   videos, PDFs, archives, and malicious upstreams from forcing full-response
@@ -764,7 +810,7 @@
 - Every detection blocks the attacker (HTTP 403) and is logged to all outputs
   (raw, JSONL, SQLite).
 
-### Multi-language hot parameters (`src/cmc/mod.rs`, `rules/cmc/config.yaml`)
+### Multi-language hot parameters (`src/cmc/mod.rs`, `conf/filter.yaml`)
 
 - New top-level config block: `multiple-languages-params: true|false` (master
   switch) and `custom-languages-params:` flag map for `russian`, `japanese`,
@@ -793,7 +839,7 @@
   `inspect_buffered_request_body` in `src/proxy.rs`, alongside the HPP check, so
   both GET query strings and POST bodies are covered.
 - Config: `Open_redirect_n_RFI_detect` key added under `CMC-Rules:` in
-  `rules/cmc/config.yaml` (set `false` to disable; disabled by default in code).
+  `conf/filter.yaml` (set `false` to disable; disabled by default in code).
 
 ### Tests
 
@@ -1041,7 +1087,7 @@
 - Built successfully with `cargo build --features vectorscan-engine`.
 - Ran a real local WAF sweep with `--enable-vectorscan`,
   `--enable-libinjection-sqli`, `--enable-libinjection-xss`, CMC config loaded
-  from `rules/cmc/config.yaml`, backend `target/debug/demo_server`, and
+  from `conf/filter.yaml`, backend `target/debug/demo_server`, and
   `target/debug/attack --concurrency 50`.
 - Result: `577` total requests, `577` blocked, `0` bypassed, `0` errors,
   `0` score failures, status `ALL PAYLOADS BLOCKED`.
@@ -1073,14 +1119,14 @@
 > the existing untrust scoring, so a clear duplicate blocks at the shipped
 > `Untrust >= 60` gate and is reported to the JSONL, raw, and SQLite sinks like
 > every other CMC finding. The module is toggled with `HPP_detect` in
-> `rules/cmc/config.yaml` (no-op when `false`/absent). To make the detector
+> `conf/filter.yaml` (no-op when `false`/absent). To make the detector
 > encoding-bypass resistant, the **global normalizer was hardened** with UTF-16
 > LE/BE transcoding (BOM and interleaved-NUL ASCII) added ahead of the existing
 > recursive percent-decoding — a change that benefits every CMC module and rule.
 > Full `cargo test` suite passes (0 failures; new HPP + UTF-16 unit tests) and
 > `cargo clippy --all-targets` is clean.
 
-### New CMC module — `HPP_detect` (`src/cmc/hpp_detect.rs`, `src/cmc/mod.rs`, `rules/cmc/config.yaml`)
+### New CMC module — `HPP_detect` (`src/cmc/hpp_detect.rs`, `src/cmc/mod.rs`, `conf/filter.yaml`)
 
 - **Detection.** For the query string and the body independently: normalize via
   the global `normalize_str`, gate on `>= 2` `=` characters, parse keys, and
@@ -1091,7 +1137,7 @@
 - **Severity / blocking.** `CMC HTTP Parameter Pollution detection`, `Critical`,
   [CWE-235](https://cwe.mitre.org/data/definitions/235.html); blocks at
   `Untrust >= 60` and logs to JSONL + raw + SQLite via the shared finding path.
-- **Config.** New `HPP_detect` key in `rules/cmc/config.yaml` and the matching
+- **Config.** New `HPP_detect` key in `conf/filter.yaml` and the matching
   `hpp_detect` field on `CmcConfig` (`from_map("HPP_detect")`); disabled when the
   flag is `false` or absent.
 - **Pipeline.** `WafEngine::inspect_hpp(query, body)` is invoked from
@@ -1167,7 +1213,7 @@
   **`max_upstream_response_bytes`**. When the corresponding flag is omitted the
   value is loaded from the file into the limiting context. Resolution order
   (highest wins): CLI flag → `conf/ratelimit.yaml` →
-  `rules/cmc/config.yaml :: memory-limits` → built-in default. Behaviour at the
+  `conf/filter.yaml :: memory-limits` → built-in default. Behaviour at the
   shipped defaults is unchanged.
 - `--connection-timeout-secs` is now **optional** (`Option<u64>`), matching the
   pattern already used by `--tls-handshake-timeout-secs` and
@@ -1176,7 +1222,7 @@
   instead of the raw CLI field.
 - The byte/connection caps use a `0` sentinel in the file meaning "defer to the
   next source", so the auto-discovered `conf/ratelimit.yaml` never silently
-  clobbers an operator's `rules/cmc/config.yaml` memory-limits.
+  clobbers an operator's `conf/filter.yaml` memory-limits.
   `connection_timeout_secs` ships its real `30` s default and must be `>= 1`.
 - New resolvers `RateLimitConfig::effective_max_connections` /
   `effective_connection_timeout_secs` / `effective_max_body_bytes` /
@@ -1577,11 +1623,11 @@
 ### Memory-pressure overhaul (drastically lower defaults)
 
 - New module `src/limits.rs` centralises every buffering ceiling and is
-  loaded from `rules/cmc/config.yaml :: memory-limits` (or
+  loaded from `conf/filter.yaml :: memory-limits` (or
   `conf/limits.yaml` as a fallback) at startup. Sits alongside the
   inflight-byte accounting added in 2.28.0 (which gates *concurrent*
   buffering); the new knobs cap *per-request* buffer sizes.
-- New YAML knobs (see `rules/cmc/config.yaml`):
+- New YAML knobs (see `conf/filter.yaml`):
   - `max_request_body_buffered_bytes` — default **8 MiB** (was 100 MiB).
   - `max_response_body_buffered_bytes` — default **8 MiB** (was 100 MiB).
   - `max_streaming_inspection_window_bytes` — default 256 KiB.
@@ -1702,7 +1748,7 @@ dedicated CMC module: [`Detect_bots_n_scanners`](docs/cmc/detect_bots_n_scanners
 (CWE-200, **Low** severity).
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 global-options:
   Untrust: 60                    # >= 60 blocks; < 60 silent-logs
 
@@ -1735,7 +1781,7 @@ CMC-Rules:
   companion) are removed — the engine no longer owns scanner-UA matching.
   The single source of truth is the `Detect_bots_n_scanners` CMC module.
 * Tests: `tests/server_real_test.rs::scanner_ua_sweep` now spawns the WAF
-  with `--cmc-load rules/cmc/config.yaml` (scanner-UA blocking is no longer
+  with `--cmc-load conf/filter.yaml` (scanner-UA blocking is no longer
   the default). A new companion test,
   `scanner_ua_not_blocked_when_cmc_disabled`, asserts that with the module
   off, representative scanner UAs (Nmap, OpenVAS, wfuzz, gobuster,
@@ -1864,7 +1910,7 @@ New YAML fields under `conf/ratelimit.yaml`:
 Existing fields `rate_limit_per_minute` and `max_coroutines_per_ip` keep the
 same priority chain.
 
-#### Detection-engine globals configurable via `rules/cmc/config.yaml`
+#### Detection-engine globals configurable via `conf/filter.yaml`
 
 The two detection-engine flags now have matching YAML fields under
 `global-options` in the CMC config file:
@@ -1875,7 +1921,7 @@ The two detection-engine flags now have matching YAML fields under
 Resolution order:
 
 ```
-CLI flag (highest)  >  rules/cmc/config.yaml global-options  >  built-in default
+CLI flag (highest)  >  conf/filter.yaml global-options  >  built-in default
 ```
 
 ### Changed
@@ -2129,9 +2175,9 @@ CLI flag (highest)  >  rules/cmc/config.yaml global-options  >  built-in default
 - Action gated by global `Untrust` level:
   - `>= 60` (default) → **block** (HTTP 403), log to raw / JSONL / SQLite (`High`).
   - `< 60` → **silent log** only; request is forwarded. Finding logged via `tracing::warn!`.
-- Activated by adding `Detect_bad_artifacts: true` to `rules/cmc/config.yaml`.
+- Activated by adding `Detect_bad_artifacts: true` to `conf/filter.yaml`.
   **Disabled by default** for backwards compatibility; enabled in the default
-  config file at `rules/cmc/config.yaml`.
+  config file at `conf/filter.yaml`.
 - 10 new demo routes added to `demo_server` (`.env`, `.git/config`,
   `wp-config.php`, `proc/cpuinfo`, `.aws/credentials`, `config.json`,
   `.ssh/id_rsa`, `debug.log`, `composer.json`, `.htpasswd`).
@@ -2186,7 +2232,7 @@ CLI flag (highest)  >  rules/cmc/config.yaml global-options  >  built-in default
   `CmcResponseDecision::SilentReplace { finding, body }` CMC variant
   propagate the modified body from the CMC layer all the way to the proxy,
   which updates `Content-Length` before forwarding.
-- Activated by adding `Silent_sql_errors: true` to `rules/cmc/config.yaml`.
+- Activated by adding `Silent_sql_errors: true` to `conf/filter.yaml`.
   **Disabled by default** for backwards compatibility.
 - 10 new `/leak/static/*` routes added to `demo_server` for manual testing
   and the attack sweep tool. `attack` now exercises all 10 paths against
@@ -2209,7 +2255,7 @@ CLI flag (highest)  >  rules/cmc/config.yaml global-options  >  built-in default
 ### Changed
 
 - Version bumped 2.20.0 → 2.21.0 (Cargo.toml, Cargo.lock, README).
-- `rules/cmc/config.yaml` ships with `Silent_sql_errors: true` by default
+- `conf/filter.yaml` ships with `Silent_sql_errors: true` by default
   alongside the other CMC modules.
 
 ---
@@ -2244,7 +2290,7 @@ CLI flag (highest)  >  rules/cmc/config.yaml global-options  >  built-in default
   - `Untrust ≥ 60` (default) → **block** response (HTTP 403) + log to raw/JSONL/SQLite.
   - `Untrust < 60` → **monitor** — upstream response is forwarded to the client but
     the finding is written to all log outputs (new `Decision::Monitor` engine variant).
-- Activated by adding `Detect_db_errors: true` to `rules/cmc/config.yaml`.
+- Activated by adding `Detect_db_errors: true` to `conf/filter.yaml`.
   **Disabled by default** for backwards compatibility.
 - New `Decision::Monitor(Box<Finding>)` WAF engine variant (in addition to existing
   `Allow` and `Block`) represents detections that should be logged but not blocked.
@@ -2371,7 +2417,7 @@ on both incoming requests and upstream responses.
 **Modified files:**
 - `src/cmc/mod.rs` — new module, `DfaConfig.java_deserialize_detect`, `DfaConfig.untrust_level`, `DfaManager.java_deserialize`, `DfaManager::inspect_java_deser()`, updated `parse_lenient_yaml()` for `global-options`.
 - `src/waf/engine.rs` — `inspect_java_deser` called in both request and response pipelines.
-- `rules/cmc/config.yaml` — added `global-options.Untrust: 60`, `Java_deserialize_detect: true`.
+- `conf/filter.yaml` — added `global-options.Untrust: 60`, `Java_deserialize_detect: true`.
 - `src/bin/demo_server.rs` — new `/java-deser` POST endpoint.
 - `src/bin/attack.rs` — 10 Java deserialization payloads + `sweep_java_deser()` with `Content-Type` header.
 - `tests/server_real_test.rs` — 6 integration tests covering block/allow/disabled scenarios.
@@ -2411,7 +2457,7 @@ on both incoming requests and upstream responses.
 - `src/waf/engine.rs`: `inspect_response_body()` hooked into `inspect_response()`
   after the existing keyword/regex body checks, operating on the raw (non-URL-decoded)
   response body.
-- `rules/cmc/config.yaml`: `Anti_passwd_leak: true` added to the default config.
+- `conf/filter.yaml`: `Anti_passwd_leak: true` added to the default config.
 - `src/bin/demo_server.rs`: two new routes added:
   - `GET /leak/passwd` — returns a realistic 4-line `/etc/passwd` dump.
   - `GET /leak/shadow` — returns a realistic 3-line `/etc/shadow` dump.
@@ -2455,7 +2501,7 @@ on both incoming requests and upstream responses.
 - `src/cmc/mod.rs`: `inspect_uri(method, path)` method added to `DfaManager`; called from
   `inspect_early()` before the full request payload is assembled — zero body-read latency.
 - `src/waf/engine.rs`: `inspect_uri()` hooked into `inspect_early()`.
-- `rules/cmc/config.yaml`: `Anti_exposed_backup: true` added to the default config.
+- `conf/filter.yaml`: `Anti_exposed_backup: true` added to the default config.
 - `src/bin/demo_server.rs`: wildcard `/*path` GET route added so the attack-sweep tool
   can distinguish a WAF bypass (HTTP 200) from a WAF block (HTTP 403).
 - `src/bin/attack.rs`: `BACKUP_URI_PAYLOADS` list (20 paths) + `sweep_backup_uris()` function
@@ -2497,7 +2543,7 @@ on both incoming requests and upstream responses.
 - `src/cmc/overflow_detect.rs`: removed `&'static` from `X86_PATTERNS`, `X64_PATTERNS`, `ARM_PATTERNS` const type annotations. References in `const` items are always `'static` implicitly.
 
 #### CI — attack-sweep WAF start command
-- `.github/workflows/security.yml`: added `--cmc-load $GITHUB_WORKSPACE/rules/cmc/config.yaml` (activates all 9 CMC detectors) and `--rate-limit-per-minute 100000` (prevents GCRA from blocking score-engine "allow" cases at concurrency 25).
+- `.github/workflows/security.yml`: added `--cmc-load $GITHUB_WORKSPACE/conf/filter.yaml` (activates all 9 CMC detectors) and `--rate-limit-per-minute 100000` (prevents GCRA from blocking score-engine "allow" cases at concurrency 25).
 
 #### CI — SCA made advisory-only
 - `cargo-audit` and `cargo-deny` jobs now use `continue-on-error: true`, matching the policy already in place for Semgrep and OSV Scanner. Findings surface in the job log and GitHub Security tab without blocking the workflow.
@@ -2586,7 +2632,7 @@ on both incoming requests and upstream responses.
 #### XXE attack CMC coverage
 - Added `src/cmc/xxe_attack_detect.rs` to detect XXE attacks by requiring at least one marker from list A (`ENTITY`, `xi:include`) and at least one marker from list B (`xxe`, `SYSTEM`, `etc/password`, `eval`, `exfil`, `xmlns:xi`, `send`, `DOCTYPE`, `soap`, `file`).
 - Added UTF-16LE/BE recovery for NUL-interleaved request text produced after URL decoding encoded XML payload bytes.
-- The CMC can be enabled with `XXE_attack_detect: true` in `rules/cmc/config.yaml`.
+- The CMC can be enabled with `XXE_attack_detect: true` in `conf/filter.yaml`.
 - When the `vectorscan-engine` feature is compiled and `--enable-vectorscan` is set, the XXE detector uses Vectorscan for literal list matching.
 - Extended `src/bin/attack.rs` with 15 XXE attack payloads and GET/POST sweeps, including a UTF-16LE percent-encoded payload.
 
@@ -2604,7 +2650,7 @@ on both incoming requests and upstream responses.
 #### NoSQL injection CMC coverage
 - Added `src/cmc/nosql_injection_detect.rs` to detect NoSQL injection by requiring at least one marker from list A (`$gt`, `$where`, `$or`, `$and`, `selector`, `this.password.match`, `&&`, `||`, and related operators) and at least one marker from list B (`true`, `admin`, `pass`, `user`, `null`, `sleep(`, `%00`, `{}`, `.insert`, `dropDatabase(`, equality probes, and related values).
 - Added support for `==[1-9]` and `== [1-9]` as list B matches.
-- The CMC can be enabled with `NOSQL_injection_detect: true` in `rules/cmc/config.yaml`.
+- The CMC can be enabled with `NOSQL_injection_detect: true` in `conf/filter.yaml`.
 - When the `vectorscan-engine` feature is compiled and `--enable-vectorscan` is set, the NoSQL detector uses Vectorscan for literal list matching and keeps the numeric equality CMC check for the digit pattern.
 - Extended `src/bin/attack.rs` with 15 NoSQL injection payloads and GET/POST sweeps.
 
@@ -2620,7 +2666,7 @@ on both incoming requests and upstream responses.
 ### Added
 
 #### CMC attack sweeps in real WAF tests
-- Added end-to-end CMC sweeps in `tests/server_real_test.rs` with `--cmc-load rules/cmc/config.yaml` enabled.
+- Added end-to-end CMC sweeps in `tests/server_real_test.rs` with `--cmc-load conf/filter.yaml` enabled.
 - Added GET and POST coverage for Overflow, SSTI, SSI injection, and ESI injection payloads so URI and request body inspection are both validated through the real KrakenWAF subprocess.
 - Extended `src/bin/attack.rs` to send the same CMC-focused payload families in GET and POST attack sweeps.
 
@@ -2639,12 +2685,12 @@ on both incoming requests and upstream responses.
 
 #### CRLF injection CMC coverage
 - Added `src/cmc/crlf_injection_detect.rs` to detect CRLF injection and HTTP response-splitting payloads.
-- The CMC can be enabled with `CRLF_injection_detect: true` in `rules/cmc/config.yaml`.
+- The CMC can be enabled with `CRLF_injection_detect: true` in `conf/filter.yaml`.
 - Added coverage for raw CR/LF, URL-encoded, double/triple-encoded, `%u000d/%u000a`, `\u000d/\u000a`, Unicode newline bypasses, and injected HTTP header/status/body patterns from the payload-box CRLF injection list.
 
 #### Request smuggling CMC coverage
 - Added `src/cmc/request_smuggling_detect.rs` to detect request smuggling indicators in headers, URI, and body content.
-- The CMC can be enabled with `Request_Smuggling_detect: true` in `rules/cmc/config.yaml`.
+- The CMC can be enabled with `Request_Smuggling_detect: true` in `conf/filter.yaml`.
 - Added detection for `Transfer-Encoding: chunked`, `X-Session-Hijack: true`, `Content-Length` values `<= 4`, and injected `Transfer-Encoding: chunked` patterns in request bodies or URI parameters.
 
 ### Fixed
@@ -2918,7 +2964,7 @@ on both incoming requests and upstream responses.
 ## 2.7.20
 
 - added safe CMC modules under `src/cmc` for SQLi comment evasion, repeated-character overflow, SSTI, SSI injection and ESI injection
-- added lenient YAML CMC config loader with `--cmc-load` and example config at `rules/cmc/config.yaml`
+- added lenient YAML CMC config loader with `--cmc-load` and example config at `conf/filter.yaml`
 - integrated CMC findings into the normal KrakenWAF block pipeline, including JSONL, raw critical log and SQLite evidence storage
 - documented CMC schema and runtime behavior in `docs/cmc/schema.md`
 

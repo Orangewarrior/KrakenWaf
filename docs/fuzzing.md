@@ -16,7 +16,7 @@ rustup install nightly
 |---|---|
 | `cmc_inspect` | Full CMC module pipeline — all 12 detectors + Java deserialise scoring |
 | `url_decode` | Multi-pass URL-decode normalisation via the CMC inspection entry-point |
-| `parse_rules` | Lenient YAML parser for `rules/cmc/config.yaml` |
+| `parse_rules` | Lenient YAML parser for `conf/filter.yaml` |
 
 ## Running
 

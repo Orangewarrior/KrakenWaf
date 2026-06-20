@@ -109,7 +109,7 @@ fn spawn_waf_rm(
 ) -> WafGuard {
     let root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{root}/rules");
-    let cmc = format!("{root}/rules/cmc/config.yaml");
+    let cmc = format!("{root}/conf/filter.yaml");
     let listen = format!("127.0.0.1:{waf_port}");
     let upstream = format!("http://127.0.0.1:{backend_port}");
     let rm_port_s = rm_port.to_string();

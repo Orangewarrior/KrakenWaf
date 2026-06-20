@@ -69,10 +69,10 @@ The module runs two independent sub-detectors on each inspected string.
 ## Enabling the module
 
 Add `Overflow_detect: true` to your CMC config file (default location
-`rules/cmc/config.yaml`) and load it with the `--cmc-load` flag:
+`conf/filter.yaml`) and load it with the `--cmc-load` flag:
 
 ```yaml
-# rules/cmc/config.yaml
+# conf/filter.yaml
 CMC-Rules:
   SQLi_comments_detect: true
   Overflow_detect: true
@@ -93,7 +93,7 @@ krakenwaf \
   --no-tls \
   --listen 0.0.0.0:8443 \
   --upstream http://127.0.0.1:8080 \
-  --cmc-load rules/cmc/config.yaml
+  --cmc-load conf/filter.yaml
 ```
 
 To disable, set the value to `false` or remove the line entirely.
@@ -183,4 +183,4 @@ Options to address false positives:
 | `src/cmc/overflow_detect.rs` | Detector implementation, opcode tables, unit tests |
 | `src/cmc/mod.rs` | Module registration, `CmcConfig` field, `CmcManager` field, `inspect()` calls |
 | `src/waf/engine.rs` | Integration — `inspect()` called in the main WAF pipeline |
-| `rules/cmc/config.yaml` | Default config — `Overflow_detect: true` |
+| `conf/filter.yaml` | Default config — `Overflow_detect: true` |
