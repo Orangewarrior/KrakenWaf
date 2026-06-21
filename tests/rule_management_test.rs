@@ -118,6 +118,9 @@ fn spawn_waf_rm(
     let metrics_port_s = pick_free_port().to_string();
 
     let tmp = tempfile::tempdir().expect("waf tempdir");
+    let allowpaths_file = tmp.path().join("allowpaths.yaml");
+    std::fs::write(&allowpaths_file, "allow: []\n").expect("write allowpaths.yaml");
+    let allowpaths = allowpaths_file.to_string_lossy().into_owned();
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_krakenwaf"));
     cmd.args([
         "--no-tls",
@@ -130,6 +133,8 @@ fn spawn_waf_rm(
         &rules_dir,
         "--cmc-load",
         &cmc,
+        "--allow-paths",
+        &allowpaths,
         "--rule-management-port",
         &rm_port_s,
         "--metrics-port",

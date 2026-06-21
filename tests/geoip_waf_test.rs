@@ -90,7 +90,11 @@ fn spawn_geo_waf(waf_port: u16, backend_port: u16) -> Option<WafGuard> {
     spawn_geo_waf_with_active(waf_port, backend_port, true)
 }
 
-fn spawn_geo_waf_with_active(waf_port: u16, backend_port: u16, geo_active: bool) -> Option<WafGuard> {
+fn spawn_geo_waf_with_active(
+    waf_port: u16,
+    backend_port: u16,
+    geo_active: bool,
+) -> Option<WafGuard> {
     let project_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let db_src = project_root.join("db/geo/GeoLite2-City.mmdb");
     if !db_src.exists() {
@@ -125,6 +129,7 @@ fn spawn_geo_waf_with_active(waf_port: u16, backend_port: u16, geo_active: bool)
 
     let rules_dir = project_root.join("rules");
     let listen = format!("127.0.0.1:{waf_port}");
+    let metrics_port = pick_free_port().to_string();
     let upstream = format!("http://127.0.0.1:{backend_port}");
 
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
@@ -133,6 +138,8 @@ fn spawn_geo_waf_with_active(waf_port: u16, backend_port: u16, geo_active: bool)
             "--allow-private-upstream",
             "--listen",
             &listen,
+            "--metrics-port",
+            &metrics_port,
             "--upstream",
             &upstream,
             "--rules-dir",
@@ -148,10 +155,7 @@ fn spawn_geo_waf_with_active(waf_port: u16, backend_port: u16, geo_active: bool)
         .spawn()
         .expect("spawn krakenwaf");
 
-    Some(WafGuard {
-        child,
-        tmpdir,
-    })
+    Some(WafGuard { child, tmpdir })
 }
 
 async fn wait_for_waf(client: &reqwest::Client, port: u16) {
@@ -190,10 +194,7 @@ async fn geo_country_saved_in_sqlite_for_external_ip() {
     // Send a classic SQL injection payload. The WAF (libinjection) will block it.
     // X-Forwarded-For: 8.8.8.8 → Google DNS → United States / North America
     let resp = client
-        .get(format!(
-            "{}/search?q=' OR 1=1--",
-            waf_base(waf_port)
-        ))
+        .get(format!("{}/search?q=' OR 1=1--", waf_base(waf_port)))
         .header("x-forwarded-for", "8.8.8.8")
         .send()
         .await
@@ -209,11 +210,11 @@ async fn geo_country_saved_in_sqlite_for_external_ip() {
     tokio::time::sleep(Duration::from_millis(800)).await;
 
     // Read the SQLite DB from the WAF's temp workdir.
-    let db_path = waf
-        .tmpdir
-        .path()
-        .join("logs/db/vulns_alert.db");
-    assert!(db_path.exists(), "SQLite DB must exist after a blocked request");
+    let db_path = waf.tmpdir.path().join("logs/db/vulns_alert.db");
+    assert!(
+        db_path.exists(),
+        "SQLite DB must exist after a blocked request"
+    );
 
     let conn = Connection::open(&db_path).expect("open vulns_alert.db");
     let (country, continent): (String, String) = conn
@@ -250,7 +251,10 @@ async fn geo_country_saved_for_european_ip() {
     wait_for_waf(&client, waf_port).await;
 
     let resp = client
-        .get(format!("{}/search?q=1 UNION SELECT 1,2,3--", waf_base(waf_port)))
+        .get(format!(
+            "{}/search?q=1 UNION SELECT 1,2,3--",
+            waf_base(waf_port)
+        ))
         .header("x-forwarded-for", "185.220.101.34")
         .send()
         .await

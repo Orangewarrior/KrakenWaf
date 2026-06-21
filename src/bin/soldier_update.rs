@@ -1,7 +1,8 @@
 use clap::Parser;
 use krakenwaf::update::{
-    default_config_path, log_update_action, log_update_error,
-    update_addr_list_from_config_with_reporter, update_kraken_waf, StderrUpdateReporter,
+    default_config_path, load_update_config, log_update_action, log_update_error,
+    update_addr_list_from_config_with_reporter, update_kraken_waf_with_config,
+    StderrUpdateReporter,
 };
 use std::path::PathBuf;
 
@@ -57,7 +58,11 @@ async fn main() -> anyhow::Result<()> {
         action,
         &target,
         "started",
-        &format!("config={}, repo_root={}", config.display(), cli.repo_root.display()),
+        &format!(
+            "config={}, repo_root={}",
+            config.display(),
+            cli.repo_root.display()
+        ),
     );
 
     let result = if cli.kraken_update {
@@ -65,20 +70,28 @@ async fn main() -> anyhow::Result<()> {
             "[soldier_update] updating KrakenWaf checkout at {}",
             cli.repo_root.display()
         );
-        update_kraken_waf(&cli.repo_root)
+        let update_config = load_update_config(&config)?;
+        update_kraken_waf_with_config(&cli.repo_root, &update_config.kraken_waf)
     } else {
         eprintln!(
             "[soldier_update] updating addr-list '{target}' using config {}",
             config.display()
         );
-        update_addr_list_from_config_with_reporter(&cli.repo_root, &config, &target, &reporter).await
+        update_addr_list_from_config_with_reporter(&cli.repo_root, &config, &target, &reporter)
+            .await
     };
 
     // Record the outcome of the action.
     match &result {
         Ok(()) => log_update_action(&cli.repo_root, action, &target, "success", "completed"),
         Err(err) => {
-            log_update_action(&cli.repo_root, action, &target, "error", &format!("{err:#}"));
+            log_update_action(
+                &cli.repo_root,
+                action,
+                &target,
+                "error",
+                &format!("{err:#}"),
+            );
             log_update_error(&cli.repo_root, err);
         }
     }

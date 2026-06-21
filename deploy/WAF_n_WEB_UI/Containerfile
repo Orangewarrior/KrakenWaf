@@ -1,31 +1,45 @@
 FROM docker.io/library/rust:1.95-alpine AS builder
 
 # musl/Alpine build toolchain. build-base+musl-dev (cc) cover the vendored
-# libinjection (build.rs) and the bundled SQLite; cmake/perl/go are required by
-# aws-lc-sys (pulled in via rustls' default features); clang/llvm + LIBCLANG_PATH
-# satisfy bindgen; git clones kraken-ui.
+# libinjection (build.rs) and bundled SQLite; cmake/boost/ragel support
+# vectorscan-rs; cmake/perl/go support aws-lc-sys and the kraken-ui patch;
+# clang/llvm + LIBCLANG_PATH satisfy bindgen; git clones kraken-ui.
 RUN apk add --no-cache \
-        build-base musl-dev linux-headers \
-        cmake make perl go bash \
-        clang clang-dev llvm-dev \
-        git pkgconfig openssl-dev
+        bash \
+        boost-dev \
+        build-base \
+        clang \
+        clang-dev \
+        cmake \
+        git \
+        go \
+        linux-headers \
+        llvm-dev \
+        make \
+        musl-dev \
+        openssl-dev \
+        perl \
+        pkgconfig \
+        ragel
 ENV LIBCLANG_PATH=/usr/lib
 
 WORKDIR /build/krakenwaf
 COPY Cargo.toml Cargo.lock build.rs ./
 COPY ffi ./ffi
 COPY src ./src
-RUN cargo build --release --locked --bin krakenwaf
+RUN cargo build --release --locked --features vectorscan-engine --bin krakenwaf
 
 ARG KRAKEN_UI_REF=c5b81e6f5bd339e9f87110fd11857518e1ab738d
 RUN git clone https://github.com/Orangewarrior/kraken-ui.git /build/kraken-ui \
     && cd /build/kraken-ui \
     && git checkout --detach "${KRAKEN_UI_REF}" \
+    && perl -0pi -e 's/use anyhow::\\{Context, bail\\};/use anyhow::Context;/' src/security/headers.rs \
+    && perl -0pi -e 's/\\n\\s*if headers\\.is_empty\\(\\) \\{\\n\\s*bail!\\(\"security header file cannot be empty\"\\);\\n\\s*\\}\\n/\\n/' src/security/headers.rs \
     && cargo build --release --locked --bin kraken-ui
 
 FROM docker.io/library/alpine:3.21
 
-RUN apk add --no-cache ca-certificates curl openssl \
+RUN apk add --no-cache ca-certificates curl libstdc++ openssl redis \
     && addgroup -g 10001 kraken \
     && adduser -D -u 10001 -G kraken -h /home/kraken kraken
 
@@ -36,22 +50,45 @@ COPY conf /opt/krakenwaf/conf
 COPY rules /opt/krakenwaf/rules
 COPY alert /opt/krakenwaf/alert
 COPY certs /opt/krakenwaf/certs
+COPY rules/headers_http/relax.headers /opt/krakenwaf/conf/headers_sec.txt
+COPY deploy/WAF_n_WEB_UI/waf/banning.yaml /opt/krakenwaf/conf/banning.yaml
+COPY deploy/WAF_n_WEB_UI/waf/ratelimit.yaml /opt/krakenwaf/conf/ratelimit.yaml
 COPY deploy/WAF_n_WEB_UI/ui/setup.yaml /opt/kraken-ui/conf/setup.yaml
 COPY deploy/WAF_n_WEB_UI/ui/ratelimit.yaml /opt/kraken-ui/conf/ratelimit.yaml
 COPY deploy/WAF_n_WEB_UI/entrypoint.sh /usr/local/bin/waf-ui-entrypoint
 
 RUN chmod 0755 /usr/local/bin/waf-ui-entrypoint \
     && mkdir -p /opt/krakenwaf/certs /opt/krakenwaf/logs/db /opt/kraken-ui/db /opt/kraken-ui/log \
+        /opt/redis/conf /opt/redis/data /opt/redis/tls /run/secrets/krakenwaf \
     && { { [ -s /opt/krakenwaf/certs/cert.pem ] && [ -s /opt/krakenwaf/certs/key.pem ]; } \
         || openssl req -x509 -nodes -days 365 -newkey rsa:4096 \
             -keyout /opt/krakenwaf/certs/key.pem \
             -out /opt/krakenwaf/certs/cert.pem \
             -config /opt/krakenwaf/rules/tls/localhost.cnf; } \
+    && openssl genrsa -out /opt/redis/tls/ca.key 4096 \
+    && openssl req -x509 -new -nodes -key /opt/redis/tls/ca.key \
+        -sha256 -days 3650 -out /opt/redis/tls/ca.crt \
+        -subj "/CN=krakenwaf-local-redis-ca" \
+    && openssl genrsa -out /opt/redis/tls/server.key 4096 \
+    && openssl req -new -key /opt/redis/tls/server.key \
+        -out /tmp/redis-server.csr \
+        -subj "/CN=localhost" \
+    && printf '%s\n' 'subjectAltName=DNS:localhost,IP:127.0.0.1' > /tmp/redis-san.ext \
+    && openssl x509 -req -in /tmp/redis-server.csr \
+        -CA /opt/redis/tls/ca.crt \
+        -CAkey /opt/redis/tls/ca.key \
+        -CAcreateserial \
+        -out /opt/redis/tls/server.crt \
+        -days 3650 -sha256 -extfile /tmp/redis-san.ext \
+    && cp /opt/redis/tls/ca.crt /usr/local/share/ca-certificates/krakenwaf-redis-ca.crt \
+    && update-ca-certificates \
+    && rm -f /tmp/redis-server.csr /tmp/redis-san.ext /opt/redis/tls/ca.srl \
     && chmod 600 /opt/krakenwaf/certs/key.pem \
-    && chown -R kraken:kraken /opt/krakenwaf /opt/kraken-ui /build/kraken-ui
+    && chmod 600 /opt/redis/tls/ca.key /opt/redis/tls/server.key \
+    && chown -R kraken:kraken /opt/krakenwaf /opt/kraken-ui /opt/redis /run/secrets/krakenwaf /build/kraken-ui
 
 USER kraken
 WORKDIR /opt/krakenwaf
-EXPOSE 8443 3443 4343 4342
+EXPOSE 8443 3443 4343 4342 6380
 VOLUME ["/opt/krakenwaf/logs", "/opt/kraken-ui/db", "/opt/kraken-ui/log"]
 ENTRYPOINT ["/usr/local/bin/waf-ui-entrypoint"]

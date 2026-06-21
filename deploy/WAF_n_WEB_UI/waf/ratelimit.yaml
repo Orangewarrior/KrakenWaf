@@ -1,0 +1,18 @@
+rate_limit_per_minute: 240
+max_coroutines_per_ip: 64
+body_frame_timeout_secs: 30
+tls_handshake_timeout_secs: 10
+http_header_read_timeout_secs: 10
+max_inflight_body_bytes: 1073741824
+max_per_ip_body_bytes: 209715200
+max_connections: 0
+connection_timeout_secs: 30
+max_body_bytes: 0
+max_upstream_response_bytes: 0
+redis:
+  url: "rediss://localhost:6380/0"
+  pool_size: 4
+  key_prefix: "krakenwaf:rl"
+  window_secs: 60
+  ca_cert_path: "/opt/redis/tls/ca.crt"
+  fail_open: false

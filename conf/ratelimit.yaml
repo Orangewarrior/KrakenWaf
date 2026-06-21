@@ -20,7 +20,7 @@ max_coroutines_per_ip: 64
 # Slowloris protection: per-frame timeout (seconds) when streaming the
 # request body. If the WAF waits longer than this for a single body chunk
 # it returns 408 and drops the connection.
-# Set to 0 to disable the timeout (falls back to a static safety limit).
+# Must be >= 1. `0` is rejected at startup because this guard is required.
 # Overridden by --body-frame-timeout-secs when present.
 # Default: 30
 body_frame_timeout_secs: 30

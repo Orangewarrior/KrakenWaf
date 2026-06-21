@@ -250,12 +250,18 @@ impl RateLimitConfig {
     ///
     /// # Errors
     /// Returns a descriptive error when a populated field holds a value that
-    /// would break the limiter (currently: `connection_timeout_secs == 0`).
+    /// would break a required guard.
     pub fn validate(&self) -> Result<()> {
         if let Some(0) = self.connection_timeout_secs {
             bail!(
                 "`connection_timeout_secs` must be >= 1 (got 0); 0 would time out \
                  every client connection immediately"
+            );
+        }
+        if let Some(0) = self.body_frame_timeout_secs {
+            bail!(
+                "`body_frame_timeout_secs` must be >= 1 (got 0); disabling the request-body \
+                 slowloris guard is not supported"
             );
         }
 
@@ -267,13 +273,6 @@ impl RateLimitConfig {
                 target: "krakenwaf",
                 "tls_handshake_timeout_secs is 0 — the TLS-handshake slowloris guard is DISABLED; \
                  a slow client can hold a connection open indefinitely during the handshake"
-            );
-        }
-        if self.body_frame_timeout_secs == Some(0) {
-            warn!(
-                target: "krakenwaf",
-                "body_frame_timeout_secs is 0 — the request-body slowloris guard is DISABLED; \
-                 a slow client can trickle a body indefinitely"
             );
         }
         if self.http_header_read_timeout_secs == Some(0) {
@@ -364,11 +363,21 @@ impl RedisConfig {
 
 // ── Defaults ──────────────────────────────────────────────────────────────────
 
-fn default_max_coroutines() -> usize { 64 }
-fn default_pool_size() -> usize { 4 }
-fn default_window_secs() -> u64 { 60 }
-fn default_key_prefix() -> String { "krakenwaf:rl".to_string() }
-fn default_redis_fail_open() -> bool { true }
+fn default_max_coroutines() -> usize {
+    64
+}
+fn default_pool_size() -> usize {
+    4
+}
+fn default_window_secs() -> u64 {
+    60
+}
+fn default_key_prefix() -> String {
+    "krakenwaf:rl".to_string()
+}
+fn default_redis_fail_open() -> bool {
+    true
+}
 
 /// Deserialise an optional u32 where 0 and the absent case are both `None`.
 fn deser_opt_nonzero_u32<'de, D>(d: D) -> Result<Option<u32>, D::Error>
@@ -409,10 +418,7 @@ mod tests {
             cfg.effective_max_inflight_body_bytes(None),
             1024 * 1024 * 1024
         );
-        assert_eq!(
-            cfg.effective_max_per_ip_body_bytes(None),
-            200 * 1024 * 1024
-        );
+        assert_eq!(cfg.effective_max_per_ip_body_bytes(None), 200 * 1024 * 1024);
     }
 
     #[test]
@@ -522,6 +528,16 @@ max_upstream_response_bytes: 2097152
     }
 
     #[test]
+    fn validate_rejects_zero_body_frame_timeout() {
+        let cfg: RateLimitConfig =
+            serde_yaml::from_str("body_frame_timeout_secs: 0").expect("yaml parses");
+        let err = cfg
+            .validate()
+            .expect_err("zero body timeout must be rejected");
+        assert!(err.to_string().contains("body_frame_timeout_secs"));
+    }
+
+    #[test]
     fn validate_accepts_default_and_populated() {
         assert!(RateLimitConfig::default().validate().is_ok());
         let cfg: RateLimitConfig =
@@ -574,7 +590,10 @@ max_upstream_response_bytes: 2097152
             "redis:\n  url: rediss://user:secret@redis.example:6380\n",
         ] {
             let config: RateLimitConfig = serde_yaml::from_str(yaml).expect("YAML parses");
-            assert!(config.validate().is_err(), "configuration must be rejected: {yaml}");
+            assert!(
+                config.validate().is_err(),
+                "configuration must be rejected: {yaml}"
+            );
         }
     }
 

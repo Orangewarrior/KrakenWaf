@@ -1,18 +1,18 @@
-mod builder;
 mod body;
+mod builder;
 mod enforcement;
 mod real_ip;
-mod trusted_proxy;
 mod trace_context;
+mod trusted_proxy;
 
-pub use builder::ProxyClientBuilder;
-pub use body::WafBody;
 pub(crate) use body::full_body;
+pub use body::WafBody;
 use body::{limited_body, BodyTracker};
+pub use builder::ProxyClientBuilder;
 use enforcement::{derive_block_reason, derive_module_label};
 pub(crate) use real_ip::effective_client_ip;
-pub use trusted_proxy::{parse_trusted_proxy_cidr, parse_trusted_proxy_cidrs};
 use trace_context::build_traceparent;
+pub use trusted_proxy::{parse_trusted_proxy_cidr, parse_trusted_proxy_cidrs};
 
 use crate::{
     allowpaths::PathDecision,
@@ -71,11 +71,6 @@ const MAX_FORWARDED_HEADERS: usize = 100;
 
 /// Hard ceiling on the cumulative bytes of forwarded headers (name + value sum).
 const MAX_FORWARDED_HEADER_BYTES: usize = 32 * 1024;
-
-/// Maximum wall-clock time we wait for a single body frame from the client. Bounds the
-/// memory + connection cost of a slowloris-style streaming body that trickles bytes to
-/// keep the inspection loop alive indefinitely.
-const BODY_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 type UpstreamConnector = hyper_rustls::HttpsConnector<HttpConnector>;
 type UpstreamClient = Client<UpstreamConnector, Full<Bytes>>;
@@ -152,7 +147,9 @@ enum BodyInspectionError {
         finding: Box<Finding>,
         partial_body: Bytes,
     },
-    Timeout,
+    Timeout {
+        timeout_secs: u64,
+    },
     Other(anyhow::Error),
 }
 
@@ -169,10 +166,9 @@ impl std::fmt::Display for BodyInspectionError {
                 write!(f, "request body exceeded route limit of {limit} bytes")
             }
             Self::Blocked { .. } => write!(f, "request blocked during streaming inspection"),
-            Self::Timeout => write!(
+            Self::Timeout { timeout_secs } => write!(
                 f,
-                "request body frame did not arrive within {} seconds",
-                BODY_FRAME_TIMEOUT.as_secs()
+                "request body frame did not arrive within {timeout_secs} seconds"
             ),
             Self::Other(err) => write!(f, "{err}"),
         }
@@ -354,16 +350,15 @@ impl ProxyClient {
         if let Some(rejection) = state.waf.rate_limit_finding(&context).await {
             let event = build_event(&context, &rejection.finding, None);
             if let Some(response) = Self::log_and_enforce_with(
-                    state,
-                    event,
-                    EnforcementPolicy::RateLimit {
-                        retry_after: rejection
-                            .decision
-                            .retry_after()
-                            .unwrap_or(std::time::Duration::from_secs(1)),
-                    },
-                )
-            {
+                state,
+                event,
+                EnforcementPolicy::RateLimit {
+                    retry_after: rejection
+                        .decision
+                        .retry_after()
+                        .unwrap_or(std::time::Duration::from_secs(1)),
+                },
+            ) {
                 return response;
             }
         }
@@ -508,7 +503,7 @@ impl ProxyClient {
                 // Silent mode or allowlisted path: forward whatever body was accumulated.
                 partial_body
             }
-            Err(BodyInspectionError::Timeout) => {
+            Err(BodyInspectionError::Timeout { .. }) => {
                 return block_content_response(
                     state,
                     StatusCode::REQUEST_TIMEOUT,
@@ -526,7 +521,9 @@ impl ProxyClient {
         };
 
         if !skip_inspection {
-            if let Some(response) = Self::inspect_buffered_request_body(state, &context, &body_bytes) {
+            if let Some(response) =
+                Self::inspect_buffered_request_body(state, &context, &body_bytes)
+            {
                 return response;
             }
         }
@@ -774,11 +771,7 @@ impl ProxyClient {
                 (StatusCode::TOO_MANY_REQUESTS, Some(retry_after))
             }
         };
-        let mut response = block_content_response(
-            state,
-            status,
-            "Blocked by KrakenWaf",
-        );
+        let mut response = block_content_response(state, status, "Blocked by KrakenWaf");
         if let Some(delay) = retry_after {
             let seconds = delay
                 .as_secs()
@@ -925,17 +918,16 @@ impl ProxyClient {
                 }
                 let mut bytes = body_buf.freeze();
                 if let Some(response) = Self::inspect_upstream_response(
-                        state,
-                        status,
-                        &resp_headers_map,
-                        &mut response_builder,
-                        &mut bytes,
-                        true,
-                        &method_str,
-                        &uri,
-                        request_id,
-                    )
-                {
+                    state,
+                    status,
+                    &resp_headers_map,
+                    &mut response_builder,
+                    &mut bytes,
+                    true,
+                    &method_str,
+                    &uri,
+                    request_id,
+                ) {
                     return Ok(response);
                 }
                 let mut built = response_builder.body(full_body(bytes)).map_err(|err| {
@@ -948,17 +940,16 @@ impl ProxyClient {
                 ensure_advertised_length_within_limit(advertised_length, max_bytes)?;
                 let mut empty = Bytes::new();
                 if let Some(response) = Self::inspect_upstream_response(
-                        state,
-                        status,
-                        &resp_headers_map,
-                        &mut response_builder,
-                        &mut empty,
-                        false,
-                        &method_str,
-                        &uri,
-                        request_id,
-                    )
-                {
+                    state,
+                    status,
+                    &resp_headers_map,
+                    &mut response_builder,
+                    &mut empty,
+                    false,
+                    &method_str,
+                    &uri,
+                    request_id,
+                ) {
                     return Ok(response);
                 }
                 let mut built = response_builder
@@ -978,17 +969,16 @@ impl ProxyClient {
                     read_response_prefix(response_body, inspect_prefix_bytes, max_bytes).await?;
                 let original_prefix_len = prefix.len();
                 if let Some(response) = Self::inspect_upstream_response(
-                        state,
-                        status,
-                        &resp_headers_map,
-                        &mut response_builder,
-                        &mut prefix,
-                        false,
-                        &method_str,
-                        &uri,
-                        request_id,
-                    )
-                {
+                    state,
+                    status,
+                    &resp_headers_map,
+                    &mut response_builder,
+                    &mut prefix,
+                    false,
+                    &method_str,
+                    &uri,
+                    request_id,
+                ) {
                     return Ok(response);
                 }
                 adjust_streaming_content_length(
@@ -1104,8 +1094,8 @@ impl ProxyClient {
 /// 100 MiB body into 12 500 redundant passes over the same payload — an
 /// amplification-vector that this refactor closes. The new shape is:
 ///
-/// 1. Read frames until EOF or `body_limit` is exceeded (frame-level
-///    `BODY_FRAME_TIMEOUT` still guards against slowloris).
+/// 1. Read frames until EOF or `body_limit` is exceeded. The startup-resolved
+///    frame timeout still guards against slowloris.
 /// 2. Apply `Content-Encoding` decoders (gzip / br / deflate / zstd) with
 ///    a zip-bomb expansion-ratio guard.
 /// 3. If `Content-Type` is `multipart/form-data`, inspect each text part plus
@@ -1131,17 +1121,17 @@ async fn accumulate_body_frames(
         .or_insert_with(|| Arc::new(AtomicUsize::new(0)))
         .clone();
     let mut tracker = BodyTracker::new(Arc::clone(&state.inflight_body_bytes), ip_counter);
-    let frame_timeout = if state.body_frame_timeout_secs > 0 {
-        std::time::Duration::from_secs(state.body_frame_timeout_secs)
-    } else {
-        BODY_FRAME_TIMEOUT
-    };
+    let frame_timeout = std::time::Duration::from_secs(state.body_frame_timeout_secs);
     let mut acc = BytesMut::new();
     loop {
         let frame = match tokio::time::timeout(frame_timeout, body.frame()).await {
             Ok(Some(frame)) => frame.map_err(|err| BodyInspectionError::Other(err.into()))?,
             Ok(None) => break,
-            Err(_) => return Err(BodyInspectionError::Timeout),
+            Err(_) => {
+                return Err(BodyInspectionError::Timeout {
+                    timeout_secs: state.body_frame_timeout_secs,
+                });
+            }
         };
         if let Some(chunk) = frame.data_ref() {
             if acc.len() + chunk.len() > ctx.body_limit {
@@ -2504,7 +2494,10 @@ mod multipart_inspect_tests {
         // A text attack payload smuggled under image/png must NOT be skipped
         // entirely — the bounded prefix is scanned so the matcher can fire.
         let p = part(Some("image/png"), b"<script>alert(1)</script>");
-        assert_eq!(multipart_part_inspect_bytes(&p), b"<script>alert(1)</script>");
+        assert_eq!(
+            multipart_part_inspect_bytes(&p),
+            b"<script>alert(1)</script>"
+        );
     }
 
     #[test]
@@ -2522,7 +2515,10 @@ mod multipart_inspect_tests {
         let mut body = vec![0u8; BINARY_PART_INSPECT_PREFIX + 100];
         body[10] = b'X';
         let p = part(None, &body);
-        assert_eq!(multipart_part_inspect_bytes(&p).len(), BINARY_PART_INSPECT_PREFIX);
+        assert_eq!(
+            multipart_part_inspect_bytes(&p).len(),
+            BINARY_PART_INSPECT_PREFIX
+        );
     }
 
     #[test]
@@ -2536,7 +2532,11 @@ mod multipart_inspect_tests {
         body.extend_from_slice(b"<script>alert(1)</script>");
         let p = part(None, &body);
         let inspected = multipart_part_inspect_bytes(&p);
-        assert_eq!(inspected.len(), body.len(), "text-sniffing part is inspected in full");
+        assert_eq!(
+            inspected.len(),
+            body.len(),
+            "text-sniffing part is inspected in full"
+        );
         assert!(inspected.ends_with(b"<script>alert(1)</script>"));
     }
 

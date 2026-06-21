@@ -62,7 +62,7 @@ rate_limit_per_minute: 240
 max_coroutines_per_ip: 64
 
 # Slowloris protection: per-frame timeout (seconds) when streaming the
-# request body. 0 disables.
+# request body. Must be >= 1; 0 is rejected.
 body_frame_timeout_secs: 30
 
 # Anti-Slowloris (TLS accept path): max seconds to wait for a client to
@@ -141,7 +141,7 @@ built-in default
 |-------|------|---------|-------------|
 | `rate_limit_per_minute` | u32 | 240 | Per-IP request budget per 60 s window. `0` defers to CLI flag or default. |
 | `max_coroutines_per_ip` | usize | 64 | Maximum in-flight connections per IP. `0` disables. |
-| `body_frame_timeout_secs` | u64 | 30 | Per-frame timeout (s) when streaming the request body — anti-Slowloris. `0` disables. Overridden by `--body-frame-timeout-secs`. |
+| `body_frame_timeout_secs` | u64 | 30 | Per-frame timeout (s) when streaming the request body — anti-Slowloris. Must be `>= 1`; `0` is rejected. Overridden by `--body-frame-timeout-secs`. |
 | `tls_handshake_timeout_secs` | u64 | 10 | Max time (s) to wait for a client to finish the TLS handshake before dropping the connection — anti-Slowloris on the accept path. TLS mode only. `0` disables (not recommended). Overridden by `--tls-handshake-timeout-secs`. |
 | `http_header_read_timeout_secs` | u64 | 10 | Max time (s) to receive a complete HTTP/1 request line and header block. Runs before request-level limiting. `0` disables (not recommended). Overridden by `--http-header-read-timeout-secs`. |
 | `max_inflight_body_bytes` | usize | 1073741824 (1 GiB) | Global in-flight body byte cap across all clients. `0` disables. Overridden by `--max-inflight-body-bytes`. |

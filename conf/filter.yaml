@@ -15,8 +15,8 @@ global-options:
   Anomaly_threshold: 600
 
   # Per-request wall-clock cap on WAF inspection (milliseconds). When > 0
-  # and the deadline elapses, inspection stops scanning additional views and
-  # the request proceeds with whatever findings were produced so far.
+  # and the deadline elapses, inspection blocks fail-closed with a deadline
+  # finding and writes logs/filter/deadline.jsonl.
   # 0 disables the deadline.
   # Overridden by --max-inspection-ms when present.
   # Default: 0 (disabled)

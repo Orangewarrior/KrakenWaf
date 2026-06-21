@@ -160,6 +160,53 @@ fn spawn_protected_waf() -> (WafGuard, u16) {
     )
 }
 
+/// Boot a WAF that relies only on the legacy `rules/addr/allowlist.txt`
+/// observability gate. The in-tree allowlist permits loopback, so a request
+/// from a trusted loopback proxy carrying a foreign `X-Forwarded-For` must be
+/// evaluated against the effective client IP, not the peer IP.
+fn spawn_legacy_allowlist_waf() -> (WafGuard, u16) {
+    let project_root = env!("CARGO_MANIFEST_DIR");
+    let rules_dir = format!("{project_root}/rules");
+    let waf_port = pick_free_port();
+    let metrics_port = pick_free_port();
+    let listen = format!("127.0.0.1:{waf_port}");
+    let upstream = format!("http://{}", backend_addr());
+
+    let tmpdir = tempfile::tempdir().expect("tmpdir");
+    let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
+        .args([
+            "--no-tls",
+            "--allow-private-upstream",
+            "--listen",
+            &listen,
+            "--upstream",
+            &upstream,
+            "--rules-dir",
+            &rules_dir,
+            "--metrics-port",
+            &metrics_port.to_string(),
+            "--trusted-proxy-cidrs",
+            "127.0.0.0/8",
+            "--real-ip-header",
+            "X-Forwarded-For",
+        ])
+        .env("BEARER_PASSWORD", TOKEN)
+        .current_dir(tmpdir.path())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn krakenwaf");
+
+    (
+        WafGuard {
+            child,
+            _tmpdir: tmpdir,
+            metrics_port,
+        },
+        waf_port,
+    )
+}
+
 fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .timeout(Duration::from_secs(15))
@@ -284,6 +331,29 @@ async fn foreign_ip_is_forbidden_even_with_valid_token() {
         resp.status(),
         StatusCode::FORBIDDEN,
         "a source IP outside the allowlist must get 403, regardless of token"
+    );
+}
+
+/// Regression for the legacy allowlist path: behind a trusted proxy, the
+/// fallback `rules/addr/allowlist.txt` gate must check the effective client IP.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_allowlist_checks_effective_ip_not_proxy_peer() {
+    ensure_backend();
+    let (waf, waf_port) = spawn_legacy_allowlist_waf();
+    let client = http_client();
+    wait_for_waf(&client, waf_port).await;
+
+    let resp = client
+        .get(metrics_url(waf.metrics_port))
+        .header("X-Forwarded-For", "203.0.113.9")
+        .header("Authorization", format!("Bearer {TOKEN}"))
+        .send()
+        .await
+        .expect("request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "legacy observability allowlist must evaluate the effective client IP"
     );
 }
 

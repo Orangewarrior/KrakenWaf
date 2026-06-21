@@ -267,8 +267,14 @@ fn ensure_backend() {
                             "/leak/static/ole-db-sql-server",
                             get(leak_static_ole_db_sql_server),
                         )
-                        .route("/leak/static/db2-cli-driver", get(leak_static_db2_cli_driver))
-                        .route("/leak/static/psql-exception", get(leak_static_psql_exception))
+                        .route(
+                            "/leak/static/db2-cli-driver",
+                            get(leak_static_db2_cli_driver),
+                        )
+                        .route(
+                            "/leak/static/psql-exception",
+                            get(leak_static_psql_exception),
+                        )
                         .route("/leak/static/sybase-msg", get(leak_static_sybase_msg))
                         .route("/leak/static/npgsql", get(leak_static_npgsql))
                         .route(
@@ -319,11 +325,15 @@ fn spawn_waf(waf_port: u16, extra_args: &[&str]) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
     let listen = format!("127.0.0.1:{waf_port}");
+    let metrics_port = pick_free_port().to_string();
     let upstream = format!("http://{}", backend_addr());
 
     // Each WAF instance gets its own temp workdir so their SQLite databases
     // don't conflict when tests run in parallel.
     let tmpdir = tempfile::tempdir().expect("failed to create temp dir for WAF");
+    let allowpaths_file = tmpdir.path().join("allowpaths.yaml");
+    std::fs::write(&allowpaths_file, "allow: []\n").expect("write allowpaths.yaml");
+    let allowpaths = allowpaths_file.to_string_lossy().into_owned();
 
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
         .args([
@@ -331,10 +341,14 @@ fn spawn_waf(waf_port: u16, extra_args: &[&str]) -> WafGuard {
             "--allow-private-upstream",
             "--listen",
             &listen,
+            "--metrics-port",
+            &metrics_port,
             "--upstream",
             &upstream,
             "--rules-dir",
             &rules_dir,
+            "--allow-paths",
+            &allowpaths,
         ])
         .args(extra_args)
         .current_dir(tmpdir.path())
@@ -1873,9 +1887,8 @@ async fn cmc_detect_db_errors_disabled_allows_response() {
 /// `Detect_db_errors` so it does not pre-empt the silent path.
 fn write_silent_only_config(tmpdir: &std::path::Path, untrust: u8) -> std::path::PathBuf {
     let path = tmpdir.join("silent_only.yaml");
-    let content = format!(
-        "global-options:\n  Untrust: {untrust}\n\nCMC-Rules:\n  Silent_sql_errors: true\n"
-    );
+    let content =
+        format!("global-options:\n  Untrust: {untrust}\n\nCMC-Rules:\n  Silent_sql_errors: true\n");
     std::fs::write(&path, content).expect("write silent_only config");
     path
 }
@@ -1884,6 +1897,7 @@ fn spawn_waf_silent_only(waf_port: u16, untrust: u8) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
     let listen = format!("127.0.0.1:{waf_port}");
+    let metrics_port = pick_free_port().to_string();
     let upstream = format!("http://{}", backend_addr());
     let tmpdir = tempfile::tempdir().expect("failed to create temp dir for WAF");
     let cmc_config = write_silent_only_config(tmpdir.path(), untrust);
@@ -1893,6 +1907,8 @@ fn spawn_waf_silent_only(waf_port: u16, untrust: u8) -> WafGuard {
             "--allow-private-upstream",
             "--listen",
             &listen,
+            "--metrics-port",
+            &metrics_port,
             "--upstream",
             &upstream,
             "--rules-dir",
@@ -1930,7 +1946,9 @@ async fn assert_scrubbed(waf_port: u16, path: &str, fingerprint: &str) {
         .map(|v| v.to_str().expect("ascii").to_string());
     let body = resp.bytes().await.expect("body").to_vec();
     assert!(
-        !body.windows(fingerprint.len()).any(|w| w == fingerprint.as_bytes()),
+        !body
+            .windows(fingerprint.len())
+            .any(|w| w == fingerprint.as_bytes()),
         "fingerprint '{fingerprint}' must NOT appear in scrubbed body for {path}: {:?}",
         String::from_utf8_lossy(&body),
     );
@@ -2077,7 +2095,10 @@ async fn silent_allows_clean_response() {
         .expect("request failed");
     assert_eq!(resp.status(), StatusCode::OK);
     let body = resp.text().await.expect("body");
-    assert!(!body.is_empty(), "clean response should pass through unchanged");
+    assert!(
+        !body.is_empty(),
+        "clean response should pass through unchanged"
+    );
 }
 
 // ─── Detect_bad_artifacts CMC tests ──────────────────────────────────────────
@@ -2102,6 +2123,7 @@ fn spawn_waf_artifact_only(port: u16, untrust: u8) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
     let listen = format!("127.0.0.1:{port}");
+    let metrics_port = pick_free_port().to_string();
     let upstream = format!("http://{}", backend_addr());
     let tmpdir = tempfile::tempdir().expect("failed to create temp dir for WAF");
     let cmc_config = write_artifact_only_config(&tmpdir, untrust);
@@ -2111,6 +2133,8 @@ fn spawn_waf_artifact_only(port: u16, untrust: u8) -> WafGuard {
             "--allow-private-upstream",
             "--listen",
             &listen,
+            "--metrics-port",
+            &metrics_port,
             "--upstream",
             &upstream,
             "--rules-dir",
@@ -2364,11 +2388,9 @@ async fn cmc_open_redirect_rfi_payload_sweep_get_and_post() {
         // GET: append the raw query string verbatim so encodings reach the WAF
         // undecoded (reqwest's `.query()` would re-encode them).
         let get_url = format!("{}/test_get?{payload}", waf_base(port));
-        let get_resp = client
-            .get(&get_url)
-            .send()
-            .await
-            .unwrap_or_else(|e| panic!("GET failed for open-redirect/RFI payload {payload:?}: {e}"));
+        let get_resp = client.get(&get_url).send().await.unwrap_or_else(|e| {
+            panic!("GET failed for open-redirect/RFI payload {payload:?}: {e}")
+        });
         assert_eq!(
             get_resp.status(),
             StatusCode::FORBIDDEN,
@@ -2382,7 +2404,9 @@ async fn cmc_open_redirect_rfi_payload_sweep_get_and_post() {
             .body((*payload).to_string())
             .send()
             .await
-            .unwrap_or_else(|e| panic!("POST failed for open-redirect/RFI payload {payload:?}: {e}"));
+            .unwrap_or_else(|e| {
+                panic!("POST failed for open-redirect/RFI payload {payload:?}: {e}")
+            });
         assert_eq!(
             post_resp.status(),
             StatusCode::FORBIDDEN,
@@ -2403,7 +2427,10 @@ async fn cmc_open_redirect_rfi_clean_local_path_allowed() {
     wait_for_waf(&client, port).await;
 
     let resp = client
-        .get(format!("{}/test_get?book=orange_blue&homepage=/test/local", waf_base(port)))
+        .get(format!(
+            "{}/test_get?book=orange_blue&homepage=/test/local",
+            waf_base(port)
+        ))
         .send()
         .await
         .expect("request failed");

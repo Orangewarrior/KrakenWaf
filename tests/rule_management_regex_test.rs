@@ -133,6 +133,9 @@ fn spawn_waf_rm(waf_port: u16, rm_port: u16, backend_port: u16) -> WafGuard {
     let metrics_port_s = pick_free_port().to_string();
     let cmc = format!("{root}/conf/filter.yaml");
     let rules_dir_s = rules_dir.to_string_lossy().to_string();
+    let allowpaths_file = tmp.path().join("allowpaths.yaml");
+    std::fs::write(&allowpaths_file, "allow: []\n").expect("write allowpaths.yaml");
+    let allowpaths = allowpaths_file.to_string_lossy().into_owned();
 
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_krakenwaf"));
     cmd.args([
@@ -146,6 +149,8 @@ fn spawn_waf_rm(waf_port: u16, rm_port: u16, backend_port: u16) -> WafGuard {
         &rules_dir_s,
         "--cmc-load",
         &cmc,
+        "--allow-paths",
+        &allowpaths,
         "--rule-management-port",
         &rm_port_s,
         "--metrics-port",
@@ -249,7 +254,10 @@ async fn regex_view_returns_each_managed_file() {
 
     let client = http_client();
     wait_for_backend(&client, backend_port).await;
-    assert!(wait_for_health(&client, waf_port, 180).await, "WAF not ready");
+    assert!(
+        wait_for_health(&client, waf_port, 180).await,
+        "WAF not ready"
+    );
 
     let view = "/rule/control/regex/view";
 
@@ -269,7 +277,10 @@ async fn regex_view_returns_each_managed_file() {
         let resp = post_rm(&client, rm_port, view, payload.as_bytes()).await;
         assert_eq!(resp.status(), StatusCode::OK, "name={name}");
         let body = resp.text().await.expect("body");
-        assert!(body.contains("\"status\":\"ok\""), "name={name} body={body}");
+        assert!(
+            body.contains("\"status\":\"ok\""),
+            "name={name} body={body}"
+        );
     }
 }
 
@@ -282,7 +293,10 @@ async fn regex_view_requires_token_and_rejects_unknown_name() {
     let _waf = spawn_waf_rm(waf_port, rm_port, backend_port);
 
     let client = http_client();
-    assert!(wait_for_health(&client, waf_port, 180).await, "WAF not ready");
+    assert!(
+        wait_for_health(&client, waf_port, 180).await,
+        "WAF not ready"
+    );
 
     let view = "/rule/control/regex/view";
 
@@ -302,7 +316,13 @@ async fn regex_view_requires_token_and_rejects_unknown_name() {
     assert!(body.contains("unknown_rule"), "body={body}");
 
     // An unknown JSON field → generic 400.
-    let resp = post_rm(&client, rm_port, view, br#"{"rule_view":"body_regex","x":1}"#).await;
+    let resp = post_rm(
+        &client,
+        rm_port,
+        view,
+        br#"{"rule_view":"body_regex","x":1}"#,
+    )
+    .await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
@@ -316,7 +336,10 @@ async fn regex_update_replaces_rules_and_blocks_in_real_time() {
 
     let client = http_client();
     wait_for_backend(&client, backend_port).await;
-    assert!(wait_for_health(&client, waf_port, 180).await, "WAF not ready");
+    assert!(
+        wait_for_health(&client, waf_port, 180).await,
+        "WAF not ready"
+    );
 
     // A distinctive payload that no shipped rule matches.
     let marker = "zzkrakenregexmarkerzz";
@@ -345,7 +368,10 @@ async fn regex_update_replaces_rules_and_blocks_in_real_time() {
     // The on-disk copy was rewritten with the new rule (old rules discarded).
     let on_disk =
         std::fs::read_to_string(waf.rules_dir.join("regex/body_regex.json")).expect("read file");
-    assert!(on_disk.contains(marker), "on-disk file must contain new rule");
+    assert!(
+        on_disk.contains(marker),
+        "on-disk file must contain new rule"
+    );
     assert!(
         !on_disk.contains("Command injection separators body"),
         "old rules must be gone"
@@ -377,7 +403,10 @@ async fn regex_update_scanners_and_vectorscan() {
     let waf = spawn_waf_rm(waf_port, rm_port, backend_port);
 
     let client = http_client();
-    assert!(wait_for_health(&client, waf_port, 180).await, "WAF not ready");
+    assert!(
+        wait_for_health(&client, waf_port, 180).await,
+        "WAF not ready"
+    );
 
     // scanners.txt uses the line-list shape `{ "lines": [...] }`.
     let scanners = "/rule/control/regex/update/scanners";
@@ -411,7 +440,10 @@ async fn regex_update_rejects_empty_malformed_and_out_of_scope() {
     let waf = spawn_waf_rm(waf_port, rm_port, backend_port);
 
     let client = http_client();
-    assert!(wait_for_health(&client, waf_port, 180).await, "WAF not ready");
+    assert!(
+        wait_for_health(&client, waf_port, 180).await,
+        "WAF not ready"
+    );
 
     // Empty rule set → 400 invalid_rules, file untouched.
     let update = "/rule/control/regex/update/body_regex";
@@ -431,8 +463,7 @@ async fn regex_update_rejects_empty_malformed_and_out_of_scope() {
     let resp = post_rm(&client, rm_port, update, bad_regex).await;
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 
-    let after =
-        std::fs::read_to_string(waf.rules_dir.join("regex/body_regex.json")).expect("read");
+    let after = std::fs::read_to_string(waf.rules_dir.join("regex/body_regex.json")).expect("read");
     assert_eq!(before, after, "rejected updates must not modify the file");
 
     // Out-of-scope name: `rules` maps to the real, unmanaged rules.json → 400,

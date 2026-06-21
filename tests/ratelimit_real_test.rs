@@ -107,14 +107,20 @@ fn spawn_waf(waf_port: u16, backend_port: u16, extra_args: &[&str]) -> WafGuard 
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
     let tmpdir = tempfile::tempdir().expect("tempdir");
+    let metrics_port = pick_free_port().to_string();
 
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
         .args([
             "--no-tls",
             "--allow-private-upstream",
-            "--listen", &format!("127.0.0.1:{waf_port}"),
-            "--upstream", &format!("http://{}", backend_addr(backend_port)),
-            "--rules-dir", &rules_dir,
+            "--listen",
+            &format!("127.0.0.1:{waf_port}"),
+            "--metrics-port",
+            &metrics_port,
+            "--upstream",
+            &format!("http://{}", backend_addr(backend_port)),
+            "--rules-dir",
+            &rules_dir,
         ])
         .args(extra_args)
         .current_dir(tmpdir.path())
@@ -123,7 +129,10 @@ fn spawn_waf(waf_port: u16, backend_port: u16, extra_args: &[&str]) -> WafGuard 
         .spawn()
         .expect("failed to spawn krakenwaf binary");
 
-    WafGuard { child, _tmpdir: tmpdir }
+    WafGuard {
+        child,
+        _tmpdir: tmpdir,
+    }
 }
 
 fn http_client() -> reqwest::Client {
@@ -140,7 +149,12 @@ async fn wait_for_waf(client: &reqwest::Client, port: u16) {
     // for actual test requests is 25 s, controlled by `http_client()`.
     let health = format!("{}/__krakenwaf/health", waf_base(port));
     for _ in 0..150 {
-        if let Ok(r) = client.get(&health).timeout(Duration::from_millis(500)).send().await {
+        if let Ok(r) = client
+            .get(&health)
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await
+        {
             if r.status().is_success() {
                 return;
             }
@@ -165,10 +179,17 @@ async fn local_rate_limit_blocks_burst() {
     let mut blocked = 0u32;
     for _ in 0..6 {
         let status = client.get(&url).send().await.expect("request").status();
-        if status == StatusCode::OK { allowed += 1; } else { blocked += 1; }
+        if status == StatusCode::OK {
+            allowed += 1;
+        } else {
+            blocked += 1;
+        }
     }
     assert!(allowed >= 3, "at least 3 requests must pass; got {allowed}");
-    assert!(blocked >= 1, "at least 1 request must be rate-limited; got {blocked}");
+    assert!(
+        blocked >= 1,
+        "at least 1 request must be rate-limited; got {blocked}"
+    );
 }
 
 #[tokio::test]
@@ -196,16 +217,29 @@ async fn ratelimit_by_file_conf_sets_rate_limit() {
     let port = alloc_waf_port();
 
     let conf = NamedTempFile::new().expect("tempfile");
-    std::fs::write(conf.path(), "rate_limit_per_minute: 2\nmax_coroutines_per_ip: 0\n")
-        .expect("write conf");
+    std::fs::write(
+        conf.path(),
+        "rate_limit_per_minute: 2\nmax_coroutines_per_ip: 0\n",
+    )
+    .expect("write conf");
 
-    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(
+        port,
+        bp,
+        &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()],
+    );
     let client = http_client();
     wait_for_waf(&client, port).await;
 
     let url = format!("{}/ping", waf_base(port));
-    assert_eq!(client.get(&url).send().await.unwrap().status(), StatusCode::OK);
-    assert_eq!(client.get(&url).send().await.unwrap().status(), StatusCode::OK);
+    assert_eq!(
+        client.get(&url).send().await.unwrap().status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        client.get(&url).send().await.unwrap().status(),
+        StatusCode::OK
+    );
     assert_eq!(
         client.get(&url).send().await.unwrap().status(),
         StatusCode::TOO_MANY_REQUESTS,
@@ -226,7 +260,10 @@ async fn rate_limit_is_enforced_in_detect_only_mode() {
     wait_for_waf(&client, port).await;
 
     let url = format!("{}/ping", waf_base(port));
-    assert_eq!(client.get(&url).send().await.unwrap().status(), StatusCode::OK);
+    assert_eq!(
+        client.get(&url).send().await.unwrap().status(),
+        StatusCode::OK
+    );
     let response = client.get(&url).send().await.unwrap();
     assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
     assert!(response.headers().contains_key("retry-after"));
@@ -239,13 +276,22 @@ async fn cli_rate_limit_overrides_file_conf() {
 
     // File says limit=1 but CLI says 5 — CLI wins.
     let conf = NamedTempFile::new().expect("tempfile");
-    std::fs::write(conf.path(), "rate_limit_per_minute: 1\nmax_coroutines_per_ip: 0\n")
-        .expect("write conf");
+    std::fs::write(
+        conf.path(),
+        "rate_limit_per_minute: 1\nmax_coroutines_per_ip: 0\n",
+    )
+    .expect("write conf");
 
-    let _waf = spawn_waf(port, bp, &[
-        "--ratelimit-by-file-conf", conf.path().to_str().unwrap(),
-        "--rate-limit-per-minute", "5",
-    ]);
+    let _waf = spawn_waf(
+        port,
+        bp,
+        &[
+            "--ratelimit-by-file-conf",
+            conf.path().to_str().unwrap(),
+            "--rate-limit-per-minute",
+            "5",
+        ],
+    );
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -268,10 +314,17 @@ async fn max_coroutines_per_ip_blocks_excess_concurrent() {
 
     // Set a very high rate limit so the GCRA never fires; test only concurrency.
     let conf = NamedTempFile::new().expect("tempfile");
-    std::fs::write(conf.path(), "rate_limit_per_minute: 10000\nmax_coroutines_per_ip: 2\n")
-        .expect("write conf");
+    std::fs::write(
+        conf.path(),
+        "rate_limit_per_minute: 10000\nmax_coroutines_per_ip: 2\n",
+    )
+    .expect("write conf");
 
-    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(
+        port,
+        bp,
+        &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()],
+    );
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -288,11 +341,19 @@ async fn max_coroutines_per_ip_blocks_excess_concurrent() {
 
     let mut statuses = Vec::new();
     for h in handles {
-        if let Ok(Ok(s)) = h.await { statuses.push(s); }
+        if let Ok(Ok(s)) = h.await {
+            statuses.push(s);
+        }
     }
 
-    let too_many = statuses.iter().filter(|&&s| s == StatusCode::TOO_MANY_REQUESTS).count();
-    assert!(too_many >= 1, "expected at least one 429 with cap=2; got {statuses:?}");
+    let too_many = statuses
+        .iter()
+        .filter(|&&s| s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
+    assert!(
+        too_many >= 1,
+        "expected at least one 429 with cap=2; got {statuses:?}"
+    );
 }
 
 #[tokio::test]
@@ -301,10 +362,17 @@ async fn max_coroutines_per_ip_zero_disables_limit() {
     let port = alloc_waf_port();
 
     let conf = NamedTempFile::new().expect("tempfile");
-    std::fs::write(conf.path(), "rate_limit_per_minute: 10000\nmax_coroutines_per_ip: 0\n")
-        .expect("write conf");
+    std::fs::write(
+        conf.path(),
+        "rate_limit_per_minute: 10000\nmax_coroutines_per_ip: 0\n",
+    )
+    .expect("write conf");
 
-    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(
+        port,
+        bp,
+        &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()],
+    );
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -319,7 +387,9 @@ async fn max_coroutines_per_ip_zero_disables_limit() {
 
     let mut statuses = Vec::new();
     for h in handles {
-        if let Ok(Ok(s)) = h.await { statuses.push(s); }
+        if let Ok(Ok(s)) = h.await {
+            statuses.push(s);
+        }
     }
 
     assert!(
@@ -350,7 +420,10 @@ async fn attack_burst_is_rate_limited() {
         }
     }
     assert!(allowed >= 5, "GCRA must allow at least 5; got {allowed}");
-    assert!(blocked >= 1, "burst attack must trigger blocking; got {blocked}");
+    assert!(
+        blocked >= 1,
+        "burst attack must trigger blocking; got {blocked}"
+    );
 }
 
 /// Scanner attack: attacker rotates user-agents — rate-limiting is per-IP,
@@ -382,9 +455,14 @@ async fn attack_scanner_rate_limited_regardless_of_ua() {
             .await
             .map_or(StatusCode::INTERNAL_SERVER_ERROR, |r| r.status());
         // GCRA is an operational control and returns 429 independently of WAF mode.
-        if status != StatusCode::OK { blocked += 1; }
+        if status != StatusCode::OK {
+            blocked += 1;
+        }
         if i >= 3 {
-            assert!(blocked >= 1, "rate limit must fire even with varied user-agents");
+            assert!(
+                blocked >= 1,
+                "rate limit must fire even with varied user-agents"
+            );
         }
     }
 }
@@ -403,7 +481,11 @@ async fn attack_concurrent_flood_is_throttled() {
     )
     .expect("write conf");
 
-    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(
+        port,
+        bp,
+        &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()],
+    );
     let client = http_client();
     wait_for_waf(&client, port).await;
 
@@ -418,11 +500,16 @@ async fn attack_concurrent_flood_is_throttled() {
 
     let mut statuses = Vec::new();
     for h in handles {
-        if let Ok(Ok(s)) = h.await { statuses.push(s); }
+        if let Ok(Ok(s)) = h.await {
+            statuses.push(s);
+        }
     }
 
     let ok_count = statuses.iter().filter(|&&s| s == StatusCode::OK).count();
-    let limited = statuses.iter().filter(|&&s| s == StatusCode::TOO_MANY_REQUESTS).count();
+    let limited = statuses
+        .iter()
+        .filter(|&&s| s == StatusCode::TOO_MANY_REQUESTS)
+        .count();
     assert!(
         limited >= 1,
         "flood of 20 concurrent requests must trigger throttling; ok={ok_count} limited={limited}"
@@ -446,14 +533,20 @@ async fn incomplete_headers_do_not_consume_request_concurrency_budget() {
     )
     .expect("write conf");
 
-    let _waf = spawn_waf(port, bp, &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()]);
+    let _waf = spawn_waf(
+        port,
+        bp,
+        &["--ratelimit-by-file-conf", conf.path().to_str().unwrap()],
+    );
     let client = http_client();
     wait_for_waf(&client, port).await;
 
     let waf_addr = format!("127.0.0.1:{port}");
 
     // Open a raw TCP connection and stop before the terminating CRLF.
-    let mut slow_conn = tokio::net::TcpStream::connect(&waf_addr).await.expect("tcp connect");
+    let mut slow_conn = tokio::net::TcpStream::connect(&waf_addr)
+        .await
+        .expect("tcp connect");
     slow_conn
         .write_all(b"GET /ping HTTP/1.1\r\nHost: 127.0.0.1\r\n")
         .await

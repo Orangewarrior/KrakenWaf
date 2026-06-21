@@ -6,8 +6,17 @@ max_coroutines_per_ip: 32
 tls_handshake_timeout_secs: 10
 connection_timeout_secs: 30
 max_tracked_ips: 10000
-backend: sqlite
+backend: redis
 fail_open: false
+redis:
+  host: localhost
+  port: 6380
+  database: 0
+  tls: true
+  key_prefix: "kraken-ui:ratelimit:"
+  connect_timeout_secs: 3
+  response_timeout_secs: 2
+  retries: 2
 sqlite:
   path: /opt/kraken-ui/db/kraken-ui-ratelimit.sqlite
   busy_timeout_ms: 2000

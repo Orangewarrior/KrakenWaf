@@ -1,4 +1,3 @@
-
 use crate::{
     allowpaths::AllowPathConfig,
     banning::BanManager,
@@ -65,7 +64,7 @@ pub struct AppState {
     /// Per-IP hard cap on in-flight body bytes. 0 = disabled.
     pub max_per_ip_body_bytes: usize,
     /// Resolved per-frame body inactivity timeout (seconds). Anti-Slowloris.
-    /// 0 disables the timeout. Resolved from CLI flag, then YAML, then 30 s.
+    /// Always >= 1. Resolved from CLI flag, then YAML, then 30 s.
     pub body_frame_timeout_secs: u64,
     /// Resolved client-connection timeout (seconds). Bounds how long a single
     /// accepted connection may stay open. Resolved from `--connection-timeout-secs`,

@@ -13,11 +13,18 @@ editable [scheduler flow](diagrams/krakenwaf-scheduler-flow.drawio)
 start of a new minute it reloads `conf/update.yaml`, validates every configured
 five-field cron expression, and collects matching jobs in this fixed order:
 
-1. `soldier_update --kraken-update`
+1. `soldier_update --kraken-update`, only when `KrakenWaf.ref` is explicitly set
 2. `soldier_update --addr-list blocklist`
 3. `soldier_update --addr-list firehol`
 4. `soldier_update --addr-list spamhaus`
 5. `soldier_update --addr-list maxmind-geo`, when `maxmind-geo.active` is true
+
+Source-code updates are opt-in. Leaving `KrakenWaf.ref` unset disables the
+scheduled `--kraken-update` job while keeping threat-list and GeoIP updates
+active. When enabled, `soldier_update` fetches the configured ref, verifies the
+fetched commit with `git verify-commit` by default, and only then performs
+`git merge --ff-only FETCH_HEAD`. Prefer signed release tags or an internally
+mirrored repository with a managed Git/GPG trust store.
 
 Jobs execute sequentially as child processes in the configured repository
 root. This avoids overlapping writes from one scheduler instance, but multiple

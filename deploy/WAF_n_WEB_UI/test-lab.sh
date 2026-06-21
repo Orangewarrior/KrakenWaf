@@ -71,8 +71,12 @@ cleanup() {
 }
 trap cleanup EXIT
 
-# curl helper: -k because the lab uses a self-signed cert; print the HTTP status.
-status() { curl -k -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" 2>/dev/null || echo "000"; }
+# curl helper: -k because the lab uses a self-signed cert; print one HTTP status code.
+status() {
+    local code
+    code="$(curl -k -s -o /dev/null -w '%{http_code}' --max-time 10 "$@" 2>/dev/null || true)"
+    printf '%s\n' "${code:-000}"
+}
 body()   { curl -k -s --max-time 10 "$@" 2>/dev/null || true; }
 
 wait_for() { # wait_for <url> <timeout_secs>
@@ -139,6 +143,27 @@ RM_CODE="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui \
     curl -k -s -o /dev/null -w '%{http_code}' --max-time 8 \
     https://127.0.0.1:4342/rule/control/cmc/list 2>/dev/null || echo 000)"
 check "rule-management control plane up & enforcing Rorschach auth" "401" "${RM_CODE}"
+
+# 6. Embedded Redis is up with TLS + auth and serves the shared WAF/UI backend.
+REDIS_PING="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui sh -lc '
+    redis-cli --tls --cacert /opt/redis/tls/ca.crt \
+      --user "$(tr -d "\n" < /run/secrets/krakenwaf/REDIS_USERNAME)" \
+      --pass "$(tr -d "\n" < /run/secrets/krakenwaf/REDIS_PASSWORD)" \
+      -h localhost -p 6380 ping
+' 2>/dev/null || echo FAIL)"
+check "embedded Redis up with TLS + auth" "PONG" "${REDIS_PING}"
+
+# 7. A scanner User-Agent is blocked and then short-circuited by the BAN list.
+BAN_ATTACK="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui sh -lc '
+    curl -k -s -o /dev/null -w "%{http_code}" --max-time 10 \
+      -A "nikto/2.1.6" -H "X-Forwarded-For: 10.10.10.10" https://127.0.0.1:8443/
+' 2>/dev/null || echo 000)"
+check "scanner UA blocked through WAF" "403" "${BAN_ATTACK}"
+BAN_FOLLOWUP="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui sh -lc '
+    curl -k -s -o /dev/null -w "%{http_code}" --max-time 10 \
+      -A "Mozilla/5.0" -H "X-Forwarded-For: 10.10.10.10" https://127.0.0.1:8443/
+' 2>/dev/null || echo 000)"
+check "BAN list re-blocks same client IP" "403" "${BAN_FOLLOWUP}"
 
 echo
 echo "Test accounts (lab only):"

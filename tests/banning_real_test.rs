@@ -47,6 +47,8 @@ use std::{
 };
 use tempfile::TempDir;
 
+static BAN_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 // ─── Port helpers ────────────────────────────────────────────────────────────
 
 fn pick_free_port() -> u16 {
@@ -113,6 +115,7 @@ fn spawn_waf(waf_port: u16, banning_yaml: &str) -> WafGuard {
     let rules_dir = format!("{project_root}/rules");
     let cmc_config = format!("{project_root}/conf/filter.yaml");
     let listen = format!("127.0.0.1:{waf_port}");
+    let metrics_port = pick_free_port().to_string();
     let upstream = format!("http://{}", backend_addr());
 
     let tmpdir = tempfile::tempdir().expect("tempdir");
@@ -120,6 +123,9 @@ fn spawn_waf(waf_port: u16, banning_yaml: &str) -> WafGuard {
     // directory at startup.
     fs::create_dir_all(tmpdir.path().join("conf")).expect("mkdir conf");
     fs::write(tmpdir.path().join("conf/banning.yaml"), banning_yaml).expect("write banning.yaml");
+    let allowpaths_file = tmpdir.path().join("allowpaths.yaml");
+    fs::write(&allowpaths_file, "allow: []\n").expect("write allowpaths.yaml");
+    let allowpaths = allowpaths_file.to_string_lossy().into_owned();
 
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
         .args([
@@ -127,12 +133,16 @@ fn spawn_waf(waf_port: u16, banning_yaml: &str) -> WafGuard {
             "--allow-private-upstream",
             "--listen",
             &listen,
+            "--metrics-port",
+            &metrics_port,
             "--upstream",
             &upstream,
             "--rules-dir",
             &rules_dir,
             "--cmc-load",
             &cmc_config,
+            "--allow-paths",
+            &allowpaths,
             "--trusted-proxy-cidrs",
             "127.0.0.0/8",
             "--real-ip-header",
@@ -149,7 +159,7 @@ fn spawn_waf(waf_port: u16, banning_yaml: &str) -> WafGuard {
 
 async fn wait_for_waf(client: &reqwest::Client, waf_port: u16) {
     let health_url = format!("{}/__krakenwaf/health", waf_base(waf_port));
-    for _ in 0..60 {
+    for _ in 0..180 {
         if client
             .get(&health_url)
             .timeout(Duration::from_millis(500))
@@ -221,6 +231,7 @@ Ban_context:
 /// by the BAN-list short-circuit at the server layer with HTTP 403.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn nikto_request_then_clean_request_is_banned() {
+    let _serial = BAN_TEST_LOCK.lock().await;
     ensure_backend();
     let port = pick_free_port();
     let waf = spawn_waf(port, yaml_fast_track());
@@ -228,9 +239,16 @@ async fn nikto_request_then_clean_request_is_banned() {
     // Health-poll up front; on timeout dump the WAF logs from tmpdir.
     let health_url = format!("{}/__krakenwaf/health", waf_base(port));
     let mut ready = false;
-    for _ in 0..60 {
-        if client.get(&health_url).timeout(Duration::from_millis(500)).send().await.is_ok() {
-            ready = true; break;
+    for _ in 0..180 {
+        if client
+            .get(&health_url)
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await
+            .is_ok()
+        {
+            ready = true;
+            break;
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
     }
@@ -297,6 +315,7 @@ async fn nikto_request_then_clean_request_is_banned() {
 /// blocks reached the tolerance threshold).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn three_blocks_triggers_ban_on_fourth_request() {
+    let _serial = BAN_TEST_LOCK.lock().await;
     ensure_backend();
     let port = pick_free_port();
     let _waf = spawn_waf(port, yaml_threshold());
@@ -359,6 +378,7 @@ async fn three_blocks_triggers_ban_on_fourth_request() {
 /// not on the loopback peer address.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn banning_is_per_ip_other_clients_unaffected() {
+    let _serial = BAN_TEST_LOCK.lock().await;
     ensure_backend();
     let port = pick_free_port();
     let _waf = spawn_waf(port, yaml_fast_track());

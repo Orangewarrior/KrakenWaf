@@ -1,0 +1,99 @@
+[+] Building 3377.1s (30/30) FINISHED
+ => [internal] load local bake definitions                                                  0.0s
+ => => reading from stdin 553B                                                              0.0s
+ => [internal] load build definition from Containerfile                                     0.1s
+ => => transferring dockerfile: 2.35kB                                                      0.0s
+ => [internal] load metadata for docker.io/library/debian:bookworm-slim                     2.3s
+ => [internal] load metadata for docker.io/library/rust:1.95-bookworm                       3.3s
+ => [internal] load .dockerignore                                                           0.1s
+ => => transferring context: 2B                                                             0.0s
+ => [internal] load build context                                                           0.4s
+ => => transferring context: 33.87MB                                                        0.1s
+ => [builder 1/8] FROM docker.io/library/rust:1.95-bookworm@sha256:6258907abe69656e41cd  2363.8s
+ => => resolve docker.io/library/rust:1.95-bookworm@sha256:6258907abe69656e41cd992e0b705cd  0.1s
+ => => sha256:84b63b001b79624dce7fce0cce36bf41c353c8b72bcfaffeec9c7 215.22MB / 215.22MB  2359.7s
+ => => sha256:0ce041001b8968f31ff00bb8f9dbd68f72d4bdc378a1309e38eb3 211.59MB / 211.59MB  2280.4s
+ => => sha256:a234579dfb0d2a4c7e869bc6c39c06f306aa019f90ec3e79f682671 64.40MB / 64.40MB  1090.5s
+ => => sha256:2e51c50554dce9c9549d76c40bfea45780a8342aea81ba8b270ba1bf 24.04MB / 24.04MB  389.5s
+ => => sha256:4887723d153cfd7fd9e356c8730311c36a64e4f9329f9d3ae1929e05 48.50MB / 48.50MB  850.7s
+ => => extracting sha256:4887723d153cfd7fd9e356c8730311c36a64e4f9329f9d3ae1929e05715f2e73   1.3s
+ => => extracting sha256:2e51c50554dce9c9549d76c40bfea45780a8342aea81ba8b270ba1bf46a2aec5   0.5s
+ => => extracting sha256:a234579dfb0d2a4c7e869bc6c39c06f306aa019f90ec3e79f682671badaeb4f3   1.6s
+ => => extracting sha256:0ce041001b8968f31ff00bb8f9dbd68f72d4bdc378a1309e38eb3dfe97cc1498   4.2s
+ => => extracting sha256:84b63b001b79624dce7fce0cce36bf41c353c8b72bcfaffeec9c724aaea3bf89   3.5s
+ => [stage-1  1/14] FROM docker.io/library/debian:bookworm-slim@sha256:96e378d7e6531ac9a  429.5s
+ => => resolve docker.io/library/debian:bookworm-slim@sha256:96e378d7e6531ac9a15ad505478fc  0.1s
+ => => sha256:b9136609bef0128191aa157637b98dd7b98e52154ca60c18258d6595 28.24MB / 28.24MB  428.3s
+ => => extracting sha256:b9136609bef0128191aa157637b98dd7b98e52154ca60c18258d65957a01c6d0   0.9s
+ => [stage-1  2/14] RUN apt-get update     && apt-get install -y --no-install-recommends  992.3s
+ => [builder 2/8] RUN apt-get update     && apt-get install -y --no-install-recommends c  292.5s
+ => [builder 3/8] WORKDIR /build/krakenwaf                                                  0.1s
+ => [builder 4/8] COPY Cargo.toml Cargo.lock build.rs ./                                    0.2s
+ => [builder 5/8] COPY ffi ./ffi                                                            0.1s
+ => [builder 6/8] COPY src ./src                                                            0.2s
+ => [builder 7/8] RUN cargo build --release --locked --bin krakenwaf                      464.7s
+ => [builder 8/8] RUN git clone https://github.com/Orangewarrior/kraken-ui.git /build/kr  245.0s
+ => [stage-1  3/14] COPY --from=builder /build/krakenwaf/target/release/krakenwaf /usr/loc  0.2s
+ => [stage-1  4/14] COPY --from=builder /build/kraken-ui/target/release/kraken-ui /usr/loc  0.1s
+ => [stage-1  5/14] COPY --from=builder /build/kraken-ui/src/view/static /build/kraken-ui/  0.1s
+ => [stage-1  6/14] COPY conf /opt/krakenwaf/conf                                           0.1s
+ => [stage-1  7/14] COPY rules /opt/krakenwaf/rules                                         0.2s
+ => [stage-1  8/14] COPY alert /opt/krakenwaf/alert                                         0.1s
+ => [stage-1  9/14] COPY certs /opt/krakenwaf/certs                                         0.1s
+ => [stage-1 10/14] COPY deploy/WAF_n_WEB_UI/ui/setup.yaml /opt/kraken-ui/conf/setup.yaml   0.1s
+ => [stage-1 11/14] COPY deploy/WAF_n_WEB_UI/ui/ratelimit.yaml /opt/kraken-ui/conf/ratelim  0.1s
+ => [stage-1 12/14] COPY deploy/WAF_n_WEB_UI/entrypoint.sh /usr/local/bin/waf-ui-entrypoin  0.1s
+ => [stage-1 13/14] RUN chmod 0755 /usr/local/bin/waf-ui-entrypoint     && mkdir -p /opt/k  0.3s
+ => [stage-1 14/14] WORKDIR /opt/krakenwaf                                                  0.2s
+ => exporting to image                                                                      4.4s
+ => => exporting layers                                                                     2.9s
+ => => exporting manifest sha256:ad07a8bc4ff9d37a87c39c79078e882855e4a25d537a17cb8f3f976d9  0.0s
+ => => exporting config sha256:6e9c11f76e04826a60d0c002dce10a68b65489a6d2f7463cdb581e287fe  0.0s
+ => => exporting attestation manifest sha256:daaead49b48b20e3a674dfacd800f488249bd91b718cd  0.1s
+ => => exporting manifest list sha256:da55e43299ad5c6c1f57eafed402772f32e6d759787c575a344f  0.0s
+ => => naming to docker.io/library/krakenwaf-ui-lab:2.46.0                                  0.0s
+ => => unpacking to docker.io/library/krakenwaf-ui-lab:2.46.0                               1.3s
+ => resolving provenance for metadata file                                                  0.0s
+[+] up 7/7
+ ✔ Image krakenwaf-ui-lab:2.46.0   Built                                                  3377.2s
+ ✔ Network waf_n_web_ui_kraken-lab Created                                                   0.1s
+ ✔ Volume waf_n_web_ui_waf-logs    Created                                                   0.0s
+ ✔ Volume waf_n_web_ui_ui-db       Created                                                   0.0s
+ ✔ Volume waf_n_web_ui_ui-logs     Created                                                   0.0s
+ ✔ Container kraken-lab-dvwa       Started                                                   0.7s
+ ✔ Container kraken-lab-waf-ui     Started                                                   0.6s
+▶ Waiting for Kraken UI health endpoint…
+▶ Waiting for the WAF-protected endpoint…
+
+▶ Running checks
+  FAIL: Kraken UI /health (expected 200, got 000000)
+  FAIL: Kraken UI login page (expected 200, got 000000)
+  FAIL: login page has no csrf_token
+  PASS: benign request through the WAF (got 000000)
+  FAIL: WAF blocks SQLi payload (expected 403, got 000000)
+  FAIL: WAF blocks XSS payload (expected 403, got 000000)
+  FAIL: rule-management control plane up & enforcing Rorschach auth (expected 401, got 000000)
+
+Test accounts (lab only):
+  admin    / Tentacle-Root!2026
+  operator / DeepCurrent!2026
+  UI: https://localhost:3443/kraken_ui/login
+
+6 CHECK(S) FAILED ✗  — recent logs:
+kraken-lab-dvwa    | [+] Starting mysql...
+kraken-lab-waf-ui  | Error: failed to load conf/ratelimit.yaml
+kraken-lab-waf-ui  |
+kraken-lab-waf-ui  | Caused by:
+kraken-lab-waf-ui  |     0: invalid YAML in conf/ratelimit.yaml
+kraken-lab-waf-ui  |     1: missing field `redis` at line 2 column 1
+kraken-lab-waf-ui  |
+kraken-lab-waf-ui  |  _  __                _                __        ___    ______
+kraken-lab-waf-ui  | | |/ /_ __ __ _  ___ | | _____ _ __    \ \      / / \  |  ____|
+kraken-lab-waf-ui  | | ' /| '__/ _` |/ _ \| |/ / _ \ '_ \    \ \ /\ / / _ \ | |__
+kraken-lab-waf-ui  | | . \| | | (_| | (_) |   <  __/ | | |    \ V  V / ___ \|  __|
+kraken-lab-waf-ui  | |_|\_\_|  \__,_|\___/|_|\_\___|_| |_|     \_/\_/_/   \_\_|
+kraken-lab-waf-ui  |
+kraken-lab-waf-ui  | KrakenWaf - Tokio + TLS + streaming inspection + AppSec-first logging
+kraken-lab-waf-ui  |
+kraken-lab-waf-ui  | ERROR: Vectorscan was enabled in conf/filter.yaml, but this binary was compiled without the 'vectorscan-engine' feature; the Vectorscan engine is unavailable
+▶ Tearing down the stack…

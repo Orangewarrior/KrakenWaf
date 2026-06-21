@@ -62,7 +62,11 @@ pub enum WalMode {
 
 #[derive(Debug, Clone, Parser)]
 #[command(name = "krakenwaf")]
-#[command(author, version, about = "KrakenWaf - TLS-aware Rust WAF inspired by OctopusWAF")]
+#[command(
+    author,
+    version,
+    about = "KrakenWaf - TLS-aware Rust WAF inspired by OctopusWAF"
+)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct Cli {
     /// Optional administrative sub-command (`config`, `rules`). When supplied
@@ -300,7 +304,7 @@ pub struct Cli {
     /// single body frame before timing out. Overrides the value in
     /// `--ratelimit-by-file-conf` or `conf/ratelimit.yaml`. When absent the
     /// effective value is taken from the config file or defaults to 30 s.
-    #[arg(long = "body-frame-timeout-secs")]
+    #[arg(long = "body-frame-timeout-secs", value_parser = clap::value_parser!(u64).range(1..))]
     pub body_frame_timeout_secs: Option<u64>,
 
     /// Global memory-backpressure cap on in-flight request body bytes.
@@ -321,12 +325,12 @@ pub struct Cli {
 }
 
 impl Cli {
-    #[must_use] 
+    #[must_use]
     pub fn libinjection_sqli_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_sqli
     }
 
-    #[must_use] 
+    #[must_use]
     pub fn libinjection_xss_enabled(&self) -> bool {
         self.enable_libinjection || self.enable_libinjection_xss
     }
@@ -352,22 +356,18 @@ mod tests {
 
     #[test]
     fn parses_http_header_read_timeout() {
-        let cli = Cli::try_parse_from([
-            "krakenwaf",
-            "--http-header-read-timeout-secs",
-            "7",
-        ])
-        .expect("header timeout must parse");
+        let cli = Cli::try_parse_from(["krakenwaf", "--http-header-read-timeout-secs", "7"])
+            .expect("header timeout must parse");
         assert_eq!(cli.http_header_read_timeout_secs, Some(7));
     }
 
     #[test]
     fn rejects_zero_rate_limit() {
-        assert!(Cli::try_parse_from([
-            "krakenwaf",
-            "--rate-limit-per-minute",
-            "0",
-        ])
-        .is_err());
+        assert!(Cli::try_parse_from(["krakenwaf", "--rate-limit-per-minute", "0",]).is_err());
+    }
+
+    #[test]
+    fn rejects_zero_body_frame_timeout() {
+        assert!(Cli::try_parse_from(["krakenwaf", "--body-frame-timeout-secs", "0",]).is_err());
     }
 }

@@ -8,7 +8,10 @@ use krakenwaf::{
         update_addr_list, update_addr_list_from_config, update_spamhaus, CronSchedule,
         UpdateConfig,
     },
-    waf::{rate_limit::{PersistenceMode, RateLimiter}, Decision, InspectionContext, WafEngineConfig, WafEngineFactory},
+    waf::{
+        rate_limit::{PersistenceMode, RateLimiter},
+        Decision, InspectionContext, WafEngineConfig, WafEngineFactory,
+    },
 };
 use std::{
     fs,
@@ -87,6 +90,8 @@ firehol:
     );
     assert_eq!(config.spamhaus.zones, ["sbl", "xbl", "authbl"]);
     assert_eq!(config.kraken_waf.cron, "0 18 */15 * *");
+    assert_eq!(config.kraken_waf.ref_name, None);
+    assert!(config.kraken_waf.require_signed_ref);
     assert_eq!(config.firehol.title, "Firehol");
     assert_eq!(
         config.firehol.lists.url_file.values(),
@@ -113,6 +118,7 @@ fn scheduler_includes_firehol_addr_list_job() {
     let config = UpdateConfig {
         kraken_waf: krakenwaf::update::KrakenWafUpdateConfig {
             cron: "59 23 31 12 6".to_string(),
+            ..Default::default()
         },
         blocklist: krakenwaf::update::AddrListUpdateConfig {
             cron: "59 23 31 12 6".to_string(),
@@ -138,6 +144,70 @@ fn scheduler_includes_firehol_addr_list_job() {
         jobs[0].args,
         vec!["--addr-list".to_string(), "firehol".to_string()]
     );
+}
+
+#[test]
+fn scheduler_skips_kraken_source_update_without_explicit_ref() {
+    let config = UpdateConfig {
+        kraken_waf: krakenwaf::update::KrakenWafUpdateConfig {
+            cron: "0 12 */3 * *".to_string(),
+            ref_name: None,
+            ..Default::default()
+        },
+        blocklist: krakenwaf::update::AddrListUpdateConfig {
+            cron: "59 23 31 12 6".to_string(),
+            ..Default::default()
+        },
+        firehol: krakenwaf::update::AddrListUpdateConfig {
+            cron: "59 23 31 12 6".to_string(),
+            ..Default::default()
+        },
+        spamhaus: krakenwaf::update::SpamhausUpdateConfig {
+            cron: "59 23 31 12 6".to_string(),
+            ..Default::default()
+        },
+        maxmind_geo: krakenwaf::update::MaxmindGeoConfig {
+            active: false,
+            ..Default::default()
+        },
+    };
+
+    let jobs = scheduled_soldier_jobs_for_values(&config, 0, 12, 4, 5, 0).expect("test");
+    assert!(
+        jobs.is_empty(),
+        "source update cron must not schedule without KrakenWaf.ref"
+    );
+}
+
+#[test]
+fn scheduler_includes_kraken_source_update_when_ref_is_explicit() {
+    let config = UpdateConfig {
+        kraken_waf: krakenwaf::update::KrakenWafUpdateConfig {
+            cron: "0 12 */3 * *".to_string(),
+            ref_name: Some("refs/tags/v2.46.0".to_string()),
+            ..Default::default()
+        },
+        blocklist: krakenwaf::update::AddrListUpdateConfig {
+            cron: "59 23 31 12 6".to_string(),
+            ..Default::default()
+        },
+        firehol: krakenwaf::update::AddrListUpdateConfig {
+            cron: "59 23 31 12 6".to_string(),
+            ..Default::default()
+        },
+        spamhaus: krakenwaf::update::SpamhausUpdateConfig {
+            cron: "59 23 31 12 6".to_string(),
+            ..Default::default()
+        },
+        maxmind_geo: krakenwaf::update::MaxmindGeoConfig {
+            active: false,
+            ..Default::default()
+        },
+    };
+
+    let jobs = scheduled_soldier_jobs_for_values(&config, 0, 12, 4, 5, 0).expect("test");
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0].args, vec!["--kraken-update".to_string()]);
 }
 
 #[tokio::test]
@@ -247,10 +317,9 @@ async fn firehol_update_requires_configured_url_files() {
         .await
         .expect_err("test");
 
-    assert!(
-        err.to_string()
-            .contains("firehol.lists.url_file has no URLs configured")
-    );
+    assert!(err
+        .to_string()
+        .contains("firehol.lists.url_file has no URLs configured"));
 }
 
 #[test]
@@ -322,8 +391,13 @@ async fn waf_blocks_spamhaus_ip_and_reports_source_list() {
     assert_eq!(rules.addr_list_entries.len(), 1);
 
     let rl = Arc::new(
-        RateLimiter::new(10_000, std::time::Duration::from_mins(1), &tmp.path().join("rate.bin"), PersistenceMode::Postcard)
-            .expect("test"),
+        RateLimiter::new(
+            10_000,
+            std::time::Duration::from_mins(1),
+            &tmp.path().join("rate.bin"),
+            PersistenceMode::Postcard,
+        )
+        .expect("test"),
     );
     let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
@@ -379,8 +453,13 @@ async fn waf_blocks_firehol_dir_ip_and_reports_source_list() {
     assert_eq!(rules.addr_list_entries.len(), 1);
 
     let rl = Arc::new(
-        RateLimiter::new(10_000, std::time::Duration::from_mins(1), &tmp.path().join("rate.bin"), PersistenceMode::Postcard)
-            .expect("test"),
+        RateLimiter::new(
+            10_000,
+            std::time::Duration::from_mins(1),
+            &tmp.path().join("rate.bin"),
+            PersistenceMode::Postcard,
+        )
+        .expect("test"),
     );
     let engine = WafEngineFactory::create(WafEngineConfig {
         rules,
@@ -491,8 +570,13 @@ async fn waf_blocks_blocklist_dir_ip_and_reports_yaml_title() {
     assert_eq!(rules.addr_list_entries.len(), 1);
 
     let rl = Arc::new(
-        RateLimiter::new(10_000, std::time::Duration::from_mins(1), &tmp.path().join("rate.bin"), PersistenceMode::Postcard)
-            .expect("test"),
+        RateLimiter::new(
+            10_000,
+            std::time::Duration::from_mins(1),
+            &tmp.path().join("rate.bin"),
+            PersistenceMode::Postcard,
+        )
+        .expect("test"),
     );
     let engine = WafEngineFactory::create(WafEngineConfig {
         rules,

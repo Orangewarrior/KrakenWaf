@@ -54,7 +54,9 @@ fn spawn_backend(port: u16) {
                     .route("/clean", get(clean))
                     .route("/sink", post(sink));
                 let addr: SocketAddr = format!("127.0.0.1:{port}").parse().expect("addr");
-                let listener = tokio::net::TcpListener::bind(addr).await.expect("bind backend");
+                let listener = tokio::net::TcpListener::bind(addr)
+                    .await
+                    .expect("bind backend");
                 axum::serve(listener, app).await.expect("serve backend");
             });
     });
@@ -82,6 +84,7 @@ impl Drop for WafGuard {
 fn spawn_waf_from_files(workdir: &Path, waf_port: u16, backend_port: u16) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
+    let metrics_port = pick_free_port();
 
     fs::create_dir_all(workdir.join("conf")).expect("mkdir conf");
 
@@ -108,6 +111,7 @@ fn spawn_waf_from_files(workdir: &Path, waf_port: u16, backend_port: u16) -> Waf
          real-ip-header: X-Forwarded-For\n\
          trusted-proxy-cidrs: 127.0.0.1/32\n\
          no-tls: true # plain HTTP for the test\n\
+         metrics-port: {metrics_port}\n\
          header-protection-injection: headers.txt\n\
          blockmsg: block.html\n"
     );
@@ -192,9 +196,9 @@ async fn proxy_and_ratelimit_files_drive_behavior() {
     if !cfg!(feature = "vectorscan-engine") {
         let error_log = tmp.path().join("log/console/error.jsonl");
         for _ in 0..50 {
-            if fs::read_to_string(&error_log)
-                .is_ok_and(|content| content.contains("compiled without the 'vectorscan-engine' feature"))
-            {
+            if fs::read_to_string(&error_log).is_ok_and(|content| {
+                content.contains("compiled without the 'vectorscan-engine' feature")
+            }) {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -216,7 +220,11 @@ async fn proxy_and_ratelimit_files_drive_behavior() {
         .send()
         .await
         .expect("clean request");
-    assert_eq!(resp.status(), StatusCode::OK, "clean GET should proxy to backend");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "clean GET should proxy to backend"
+    );
     // The header-protection-injection file was applied to the response.
     assert_eq!(
         resp.headers()
@@ -300,7 +308,10 @@ async fn invalid_proxy_config_aborts_startup() {
     // The process should exit (non-zero) rather than bind a listener.
     for _ in 0..50 {
         if let Some(status) = child.try_wait().expect("try_wait") {
-            assert!(!status.success(), "invalid proxy config should fail startup");
+            assert!(
+                !status.success(),
+                "invalid proxy config should fail startup"
+            );
             return;
         }
         std::thread::sleep(Duration::from_millis(100));

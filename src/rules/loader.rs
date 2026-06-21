@@ -400,59 +400,44 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
     let parsed =
         parse_json_with_rule_escape_repair::<RegexBundle>(&content, path, "regex rule file")?;
 
-    // Tolerate individual broken regexes: log and skip the bad rule rather than refusing
-    // to start the WAF. A single typo in one rule must not deny-of-service the entire
-    // ruleset (and by extension every protected route).
-    let compiled: Vec<CompiledDetectionRule> = parsed
-        .rules
-        .into_iter()
-        .enumerate()
-        .filter_map(|(idx, rule)| {
-            if rule.enable == 0 {
-                return None;
-            }
-            let line = idx + 1;
-            let id = if rule.id.is_empty() {
-                format!("{line:05}")
-            } else {
-                rule.id.clone()
-            };
-            match RegexBuilder::new(&rule.rule_match)
-                .size_limit(10_000_000)
-                .dfa_size_limit(2_000_000)
-                .build()
-            {
-                Ok(compiled) => Some(CompiledDetectionRule {
-                    meta: DetectionRule {
-                        id,
-                        title: rule.title,
-                        severity: rule.severity,
-                        score: rule.score,
-                        cwe: rule.cwe,
-                        description: rule.description,
-                        reference_url: rule.url,
-                        rule_match: rule.rule_match,
-                        source: source.to_string(),
-                        line,
-                        http_action: rule.http_action,
-                    },
-                    compiled,
-                }),
-                Err(err) => {
-                    warn!(
-                        target: "krakenwaf",
-                        source = %source,
-                        line = line,
-                        id = %id,
-                        pattern = %rule.rule_match,
-                        error = %err,
-                        "skipping invalid regex rule (WAF will continue without it)"
-                    );
-                    None
-                }
-            }
-        })
-        .collect();
+    let mut compiled = Vec::new();
+    for (idx, rule) in parsed.rules.into_iter().enumerate() {
+        if rule.enable == 0 {
+            continue;
+        }
+        let line = idx + 1;
+        let id = if rule.id.is_empty() {
+            format!("{line:05}")
+        } else {
+            rule.id.clone()
+        };
+        let regex = RegexBuilder::new(&rule.rule_match)
+            .size_limit(10_000_000)
+            .dfa_size_limit(2_000_000)
+            .build()
+            .with_context(|| {
+                format!(
+                    "invalid enabled regex rule {source}:{line} id={id} pattern={pattern:?}",
+                    pattern = rule.rule_match
+                )
+            })?;
+        compiled.push(CompiledDetectionRule {
+            meta: DetectionRule {
+                id,
+                title: rule.title,
+                severity: rule.severity,
+                score: rule.score,
+                cwe: rule.cwe,
+                description: rule.description,
+                reference_url: rule.url,
+                rule_match: rule.rule_match,
+                source: source.to_string(),
+                line,
+                http_action: rule.http_action,
+            },
+            compiled: regex,
+        });
+    }
     Ok(compiled)
 }
 
@@ -474,7 +459,7 @@ mod tests {
     use std::io::Write;
 
     #[test]
-    fn invalid_regex_rule_is_skipped_but_others_load() {
+    fn invalid_enabled_regex_rule_fails_loading() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("regex.json");
         let body = r#"{
@@ -506,12 +491,46 @@ mod tests {
         let mut f = std::fs::File::create(&path).expect("create file");
         f.write_all(body.as_bytes()).expect("write file");
 
-        let rules = load_regex_rules_json(&path, "regex/test.json").expect("loader must not abort");
-        assert_eq!(
-            rules.len(),
-            1,
-            "valid rule should still load even when a sibling rule has bad regex"
-        );
+        let err = load_regex_rules_json(&path, "regex/test.json")
+            .expect_err("enabled invalid regex must fail");
+        assert!(err.to_string().contains("bad-001"));
+    }
+
+    #[test]
+    fn disabled_invalid_regex_rule_is_ignored() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("regex.json");
+        let body = r#"{
+            "rules": [
+                {
+                    "enable": 0,
+                    "id": "disabled-bad",
+                    "title": "disabled broken rule",
+                    "severity": "medium",
+                    "score": 1000,
+                    "cwe": "CWE-693",
+                    "description": "disabled",
+                    "url": "https://example.com",
+                    "rule_match": "(unclosed"
+                },
+                {
+                    "enable": 1,
+                    "id": "good-001",
+                    "title": "good rule",
+                    "severity": "medium",
+                    "score": 1000,
+                    "cwe": "CWE-693",
+                    "description": "valid",
+                    "url": "https://example.com",
+                    "rule_match": "good[a-z]+pattern"
+                }
+            ]
+        }"#;
+        let mut f = std::fs::File::create(&path).expect("create file");
+        f.write_all(body.as_bytes()).expect("write file");
+
+        let rules = load_regex_rules_json(&path, "regex/test.json").expect("loader must pass");
+        assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].meta.id, "good-001");
     }
 

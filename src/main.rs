@@ -5,6 +5,7 @@ mod banning;
 mod body_decode;
 mod cli;
 mod cmc;
+mod effective_config;
 mod error;
 mod ffi;
 mod filter_config;
@@ -49,15 +50,6 @@ use std::{
 };
 use tracing::{error, info, warn};
 use waf::rate_limit::{PersistenceMode, RateLimiter};
-
-/// Built-in fallback port for the dedicated observability listener, used when
-/// neither `--metrics-port` nor `conf/proxy.yaml`'s `metrics-port` supplies one.
-const DEFAULT_METRICS_PORT: u16 = 4343;
-
-/// Built-in fallback port for the dedicated rule-management control-plane
-/// listener, used when neither `--rule-management-port` nor
-/// `conf/proxy.yaml`'s `rule_management_port` supplies one.
-const DEFAULT_RULE_MANAGEMENT_PORT: u16 = 4342;
 
 /// Secret name for the observability bearer token. Resolved file-first
 /// (`BEARER_PASSWORD_FILE` → `/run/secrets/krakenwaf/BEARER_PASSWORD`
@@ -159,6 +151,7 @@ async fn main() -> Result<()> {
         let message = "Vectorscan was enabled in conf/filter.yaml, but this binary was compiled without the 'vectorscan-engine' feature; the Vectorscan engine is unavailable";
         eprintln!("ERROR: {message}");
         error!(target: "krakenwaf", "{message}");
+        cli.enable_vectorscan = false;
     }
     let response_header_policy = Arc::new(match cli.header_protection_injection.as_deref() {
         Some(path) => ResponseHeaderPolicy::from_file(&PathBuf::from(path))?,
@@ -170,10 +163,8 @@ async fn main() -> Result<()> {
     let cmc_config = filter_config.cmc_config();
     // Resolve detection-engine globals before moving cmc_config into the
     // builder. CLI flag > filter.yaml `global-options` > built-in default.
-    let effective_anomaly_threshold =
-        cmc_config.effective_anomaly_threshold(cli.anomaly_threshold);
-    let effective_max_inspection_ms =
-        cmc_config.effective_max_inspection_ms(cli.max_inspection_ms);
+    let effective_anomaly_threshold = cmc_config.effective_anomaly_threshold(cli.anomaly_threshold);
+    let effective_max_inspection_ms = cmc_config.effective_max_inspection_ms(cli.max_inspection_ms);
     // Wrap the CMC manager in a controller so the rule-management control plane
     // can toggle modules in real time (atomic hot-swap of the live manager).
     let cmc_manager = Arc::new(CmcController::new(
@@ -188,8 +179,8 @@ async fn main() -> Result<()> {
     // is disabled and country/continent_name are saved as empty strings.
     let geo_reader: Option<Arc<geo::GeoIpReader>> = {
         let update_config_path = root_dir.join(update::DEFAULT_UPDATE_CONFIG);
-        let geo_active = update::load_update_config(&update_config_path)
-            .map_or(true, |c| c.maxmind_geo.active);
+        let geo_active =
+            update::load_update_config(&update_config_path).map_or(true, |c| c.maxmind_geo.active);
 
         if geo_active {
             let geo_db_path = root_dir.join("db/geo/GeoLite2-City.mmdb");
@@ -358,8 +349,7 @@ async fn main() -> Result<()> {
         max_inflight_body_bytes: rl_config
             .effective_max_inflight_body_bytes(cli.max_inflight_body_bytes),
         ip_body_bytes: Arc::new(DashMap::new()),
-        max_per_ip_body_bytes: rl_config
-            .effective_max_per_ip_body_bytes(cli.max_per_ip_body_bytes),
+        max_per_ip_body_bytes: rl_config.effective_max_per_ip_body_bytes(cli.max_per_ip_body_bytes),
         body_frame_timeout_secs: rl_config
             .effective_body_frame_timeout_secs(cli.body_frame_timeout_secs),
         connection_timeout_secs: rl_config
@@ -382,13 +372,13 @@ async fn main() -> Result<()> {
     // rule-management ports. Load it once here rather than re-reading the file
     // for each port resolution below.
     let proxy_yaml = proxy_config::ProxyConfig::load_from(&root_dir.join("conf/proxy.yaml")).ok();
-    let metrics_port = cli.metrics_port.unwrap_or_else(|| {
-        proxy_yaml
-            .as_ref()
-            .and_then(|cfg| cfg.metrics_port)
-            .unwrap_or(DEFAULT_METRICS_PORT)
-    });
-    let metrics_addr = std::net::SocketAddr::new(cli.listen.ip(), metrics_port);
+    let control_plane_addrs =
+        effective_config::ControlPlaneAddrs::resolve(cli.listen, &cli, proxy_yaml.as_ref());
+    control_plane_addrs.validate_metrics()?;
+    let metrics_addr = control_plane_addrs.metrics;
+    if state.rule_management.is_some() {
+        control_plane_addrs.validate_rule_management()?;
+    }
     let rules_snapshot = state.waf.rules_snapshot();
     server::validate_observability_exposure(
         metrics_addr,
@@ -415,31 +405,22 @@ async fn main() -> Result<()> {
     // --metrics-port → conf/proxy.yaml `metrics-port` → built-in default. It
     // binds the same IP as --listen and, in TLS mode, reuses the listener's TLS
     // store (same certs); under --no-tls it serves plain HTTP.
-    if metrics_addr == cli.listen {
-        warn!(
-            target: "krakenwaf",
-            %metrics_addr,
-            "metrics-port equals the proxy listen port; observability stays inline on the \
-             main port and no separate listener is started"
-        );
+    let obs_state = state.clone();
+    if cli.no_tls {
+        tokio::spawn(async move {
+            if let Err(err) = server::run_metrics_plain(metrics_addr, obs_state).await {
+                error!(target: "krakenwaf", %metrics_addr, "observability listener failed: {err:#}");
+            }
+        });
     } else {
-        let obs_state = state.clone();
-        if cli.no_tls {
-            tokio::spawn(async move {
-                if let Err(err) = server::run_metrics_plain(metrics_addr, obs_state).await {
-                    error!(target: "krakenwaf", %metrics_addr, "observability listener failed: {err:#}");
-                }
-            });
-        } else {
-            let obs_store = tls_store
-                .clone()
-                .expect("tls_store is Some when !cli.no_tls");
-            tokio::spawn(async move {
-                if let Err(err) = server::run_metrics(metrics_addr, obs_store, obs_state).await {
-                    error!(target: "krakenwaf", %metrics_addr, "observability listener failed: {err:#}");
-                }
-            });
-        }
+        let obs_store = tls_store
+            .clone()
+            .expect("tls_store is Some when !cli.no_tls");
+        tokio::spawn(async move {
+            if let Err(err) = server::run_metrics(metrics_addr, obs_store, obs_state).await {
+                error!(target: "krakenwaf", %metrics_addr, "observability listener failed: {err:#}");
+            }
+        });
     }
 
     // ── Rule-management control-plane listener ────────────────────────────────
@@ -449,41 +430,26 @@ async fn main() -> Result<()> {
     // reusing the listener TLS certs (plain HTTP under --no-tls). Protected by
     // the IP allowlist (403) and the Rorschach bearer token (401).
     if state.rule_management.is_some() {
-        let rm_port = cli.rule_management_port.unwrap_or_else(|| {
-            proxy_yaml
-                .as_ref()
-                .and_then(|cfg| cfg.rule_management_port)
-                .unwrap_or(DEFAULT_RULE_MANAGEMENT_PORT)
-        });
-        let rm_addr = std::net::SocketAddr::new(cli.listen.ip(), rm_port);
-        if rm_addr == cli.listen || rm_addr == metrics_addr {
-            warn!(
-                target: "krakenwaf",
-                %rm_addr,
-                "rule_management_port collides with the proxy listen or metrics port; \
-                 the rule-management listener was not started — choose a distinct port"
-            );
+        let rm_addr = control_plane_addrs.rule_management;
+        rule_management::spawn_nonce_janitor(&state);
+        let rm_state = state.clone();
+        if cli.no_tls {
+            tokio::spawn(async move {
+                if let Err(err) = rule_management::run_plain(rm_addr, rm_state).await {
+                    error!(target: "krakenwaf", %rm_addr, "rule-management listener failed: {err:#}");
+                }
+            });
         } else {
-            rule_management::spawn_nonce_janitor(&state);
-            let rm_state = state.clone();
-            if cli.no_tls {
-                tokio::spawn(async move {
-                    if let Err(err) = rule_management::run_plain(rm_addr, rm_state).await {
-                        error!(target: "krakenwaf", %rm_addr, "rule-management listener failed: {err:#}");
-                    }
-                });
-            } else {
-                let rm_store = tls_store
-                    .clone()
-                    .expect("tls_store is Some when !cli.no_tls");
-                tokio::spawn(async move {
-                    if let Err(err) = rule_management::run(rm_addr, rm_store, rm_state).await {
-                        error!(target: "krakenwaf", %rm_addr, "rule-management listener failed: {err:#}");
-                    }
-                });
-            }
-            info!(target: "krakenwaf", %rm_addr, no_tls = cli.no_tls, "rule-management listener bound");
+            let rm_store = tls_store
+                .clone()
+                .expect("tls_store is Some when !cli.no_tls");
+            tokio::spawn(async move {
+                if let Err(err) = rule_management::run(rm_addr, rm_store, rm_state).await {
+                    error!(target: "krakenwaf", %rm_addr, "rule-management listener failed: {err:#}");
+                }
+            });
         }
+        info!(target: "krakenwaf", %rm_addr, no_tls = cli.no_tls, "rule-management listener bound");
     }
 
     info!(
@@ -534,8 +500,7 @@ fn build_ban_manager(
     root_dir: &std::path::Path,
     rate_limiter: &RateLimiter,
 ) -> Result<Arc<BanManager>> {
-    let cfg = banning::BanConfig::load(root_dir)
-        .context("failed to load conf/banning.yaml")?;
+    let cfg = banning::BanConfig::load(root_dir).context("failed to load conf/banning.yaml")?;
 
     if !cfg.enabled {
         info!(target: "krakenwaf", "banning subsystem disabled (Banning_mode: false or conf/banning.yaml absent)");
@@ -559,8 +524,7 @@ fn build_ban_manager(
             security_scanners = cfg.security_scanners,
             "banning subsystem initialised (SQLite backend at logs/db/banning.db)"
         );
-        BanManager::new_sqlite(cfg, root_dir)
-            .context("failed to initialise SQLite ban store")
+        BanManager::new_sqlite(cfg, root_dir).context("failed to initialise SQLite ban store")
     }
 }
 
@@ -598,8 +562,13 @@ async fn build_rate_limiter(
         WalMode::Sqlite => PersistenceMode::Sqlite,
         WalMode::Postcard => PersistenceMode::Postcard,
     };
-    RateLimiter::new(effective_limit, std::time::Duration::from_mins(1), &snapshot_path, persistence)
-        .context("failed to initialise local GCRA rate-limiter")
+    RateLimiter::new(
+        effective_limit,
+        std::time::Duration::from_mins(1),
+        &snapshot_path,
+        persistence,
+    )
+    .context("failed to initialise local GCRA rate-limiter")
 }
 
 /// Resolve the rule-management control-plane access gate.
@@ -623,8 +592,9 @@ fn build_rule_management_gate(
         Some(path) => PathBuf::from(path),
         None => rule_management::default_allowlist_path(rules_root),
     };
-    let allowlist = rule_management::load_allowlist(&allowlist_path)
-        .context("rule-management IP allowlist failed validation; the control plane cannot start")?;
+    let allowlist = rule_management::load_allowlist(&allowlist_path).context(
+        "rule-management IP allowlist failed validation; the control plane cannot start",
+    )?;
 
     let validator = rorschach::RorschachValidator::new(secrets);
     Ok(Some(Arc::new(rule_management::RuleManagementGate {
@@ -674,7 +644,10 @@ fn rate_limit_snapshot_path(root: &std::path::Path, mode: WalMode) -> PathBuf {
     }
 }
 
-fn load_block_message(path: Option<&str>, root: &std::path::Path) -> Result<(Option<Bytes>, String)> {
+fn load_block_message(
+    path: Option<&str>,
+    root: &std::path::Path,
+) -> Result<(Option<Bytes>, String)> {
     match path {
         Some(raw) => {
             let canonical = std::fs::canonicalize(raw)

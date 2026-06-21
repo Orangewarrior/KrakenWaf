@@ -248,12 +248,29 @@ fn default_geo_cron() -> String {
 pub struct KrakenWafUpdateConfig {
     #[serde(default = "default_kraken_cron")]
     pub cron: String,
+    /// Git remote used for source updates. Kept configurable so production can
+    /// point at a mirrored, access-controlled repository.
+    #[serde(default = "default_kraken_remote")]
+    pub remote: String,
+    /// Ref to fetch and install. `None` disables scheduled source updates; this
+    /// makes code updates an explicit opt-in instead of silently tracking a
+    /// moving branch from the internet.
+    #[serde(rename = "ref", default)]
+    pub ref_name: Option<String>,
+    /// Require the fetched commit to pass `git verify-commit` before merging.
+    /// This depends on the host Git/GPG trust store and should remain enabled
+    /// in production.
+    #[serde(default = "default_require_signed_ref")]
+    pub require_signed_ref: bool,
 }
 
 impl Default for KrakenWafUpdateConfig {
     fn default() -> Self {
         Self {
             cron: default_kraken_cron(),
+            remote: default_kraken_remote(),
+            ref_name: None,
+            require_signed_ref: default_require_signed_ref(),
         }
     }
 }
@@ -377,6 +394,14 @@ fn default_kraken_cron() -> String {
     "0 18 */15 * *".to_string()
 }
 
+fn default_kraken_remote() -> String {
+    "https://github.com/Orangewarrior/KrakenWaf".to_string()
+}
+
+const fn default_require_signed_ref() -> bool {
+    true
+}
+
 fn default_spamhaus_cron() -> String {
     "0 12 */3 * *".to_string()
 }
@@ -416,26 +441,87 @@ pub fn load_update_config(path: &Path) -> Result<UpdateConfig> {
         .with_context(|| format!("failed to parse update config {}", path.display()))
 }
 
-/// Update the local `KrakenWaf` checkout from the upstream `main` branch.
+/// Update the local `KrakenWaf` checkout using the default source-update
+/// policy. The default policy deliberately has no ref configured, so this
+/// function fails closed unless a caller supplies a configured policy through
+/// [`update_kraken_waf_with_config`].
 ///
 /// # Errors
-/// Returns an error if `git pull --ff-only` cannot be executed or exits with a
-/// failing status.
+/// Returns an error when no update ref is configured, when Git fails, or when
+/// signature verification is required and the fetched commit is not trusted.
 pub fn update_kraken_waf(repo_root: &Path) -> Result<()> {
-    let status = Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .arg("pull")
-        .arg("--ff-only")
-        .arg("https://github.com/Orangewarrior/KrakenWaf")
-        .arg("main")
-        .status()
-        .context("failed to execute git pull for KrakenWaf update")?;
+    update_kraken_waf_with_config(repo_root, &KrakenWafUpdateConfig::default())
+}
 
-    if !status.success() {
-        anyhow::bail!("git pull failed with status {status}");
+/// Fetch, verify, and fast-forward the local `KrakenWaf` checkout.
+///
+/// # Errors
+/// Returns an error when the policy has no ref configured, when any Git command
+/// fails, or when signature verification is required and `FETCH_HEAD` is not a
+/// trusted signed commit.
+pub fn update_kraken_waf_with_config(
+    repo_root: &Path,
+    config: &KrakenWafUpdateConfig,
+) -> Result<()> {
+    let ref_name = config
+        .ref_name
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "KrakenWaf source update is disabled: set KrakenWaf.ref in conf/update.yaml to \
+                 an explicit signed release tag or trusted branch ref"
+            )
+        })?;
+
+    run_git(
+        repo_root,
+        git_command(repo_root)
+            .arg("fetch")
+            .arg("--force")
+            .arg("--tags")
+            .arg(&config.remote)
+            .arg(ref_name),
+        "fetch KrakenWaf update ref",
+    )?;
+
+    if config.require_signed_ref {
+        run_git(
+            repo_root,
+            git_command(repo_root)
+                .arg("verify-commit")
+                .arg("FETCH_HEAD"),
+            "verify fetched KrakenWaf commit signature",
+        )
+        .context("fetched KrakenWaf ref is not a trusted signed commit; refusing source update")?;
     }
 
+    run_git(
+        repo_root,
+        git_command(repo_root)
+            .arg("merge")
+            .arg("--ff-only")
+            .arg("FETCH_HEAD"),
+        "fast-forward KrakenWaf checkout",
+    )
+}
+
+fn git_command(repo_root: &Path) -> Command {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo_root);
+    command
+}
+
+fn run_git(repo_root: &Path, command: &mut Command, action: &str) -> Result<()> {
+    let status = command
+        .status()
+        .with_context(|| format!("failed to execute git while trying to {action}"))?;
+    if !status.success() {
+        anyhow::bail!(
+            "git failed while trying to {action} in {}: {status}",
+            repo_root.display()
+        );
+    }
     Ok(())
 }
 
@@ -971,8 +1057,9 @@ pub fn scheduled_soldier_jobs_for_values(
 ) -> Result<Vec<ScheduledSoldierJob>> {
     let mut jobs = Vec::new();
 
-    if CronSchedule::parse(&config.kraken_waf.cron)?
-        .matches_values(minute, hour, day, month, weekday)
+    if config.kraken_waf.ref_name.is_some()
+        && CronSchedule::parse(&config.kraken_waf.cron)?
+            .matches_values(minute, hour, day, month, weekday)
     {
         jobs.push(ScheduledSoldierJob {
             args: vec!["--kraken-update".to_string()],
@@ -1200,8 +1287,7 @@ fn extract_mmdb_from_targz(repo_root: &Path, data: &[u8]) -> Result<PathBuf> {
             {
                 let mut out_file = fs::File::create(&tmp_path)
                     .with_context(|| format!("failed to create {}", tmp_path.display()))?;
-                let mut capped =
-                    std::io::Read::take(&mut entry, MAX_GEO_DB_UNPACKED_BYTES + 1);
+                let mut capped = std::io::Read::take(&mut entry, MAX_GEO_DB_UNPACKED_BYTES + 1);
                 let written = std::io::copy(&mut capped, &mut out_file)
                     .context("failed to unpack GeoLite2-City.mmdb")?;
                 if written > MAX_GEO_DB_UNPACKED_BYTES {
@@ -1339,13 +1425,7 @@ pub fn log_update_error(repo_root: &Path, err: &anyhow::Error) {
 ///   `"spamhaus"`, `"maxmind-geo"`.
 /// * `status` — `"started"`, `"success"`, or `"error"`.
 /// * `detail` — free-form human context (config path, error message, …).
-pub fn log_update_action(
-    repo_root: &Path,
-    action: &str,
-    target: &str,
-    status: &str,
-    detail: &str,
-) {
+pub fn log_update_action(repo_root: &Path, action: &str, target: &str, status: &str, detail: &str) {
     let path = repo_root.join(UPDATE_ACTION_LOG);
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
@@ -1532,6 +1612,8 @@ mod traversal_tests {
 
     #[test]
     fn rejects_absolute_paths() {
-        assert!(!tar_entry_path_is_safe(Path::new("/etc/GeoLite2-City.mmdb")));
+        assert!(!tar_entry_path_is_safe(Path::new(
+            "/etc/GeoLite2-City.mmdb"
+        )));
     }
 }

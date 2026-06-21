@@ -1,4 +1,63 @@
 
+## [2.46.1] - 2026-06-21
+
+> **Security hardening and operational correctness release.** Closes the
+> post-review AppSec and architecture findings around observability IP
+> attribution, control-plane listener safety, timeout contracts, source-update
+> provenance, ruleset validation, response-header defaults, and advisory
+> exception hygiene.
+
+### Added
+
+- **Typed control-plane address validation.** Added `ControlPlaneAddrs` to
+  resolve metrics and rule-management listener addresses once and validate
+  cross-port collisions before any listener is opened.
+- **Observability regression coverage.** Added an integration test proving the
+  legacy `rules/addr/allowlist.txt` gate evaluates the trusted-proxy-aware
+  effective client IP, not the load-balancer peer IP.
+- **Response-header baseline defaults.** `ResponseHeaderPolicy::default()` now
+  applies a low-friction secure baseline when no policy file is configured, and
+  explicit empty policy files are rejected.
+- **Advisory-expiry guard.** Added a test requiring every `RUSTSEC-*` advisory
+  ignore in `deny.toml` to carry an explicit `expires=YYYY-MM-DD` deadline.
+- **Source-update policy fields.** `conf/update.yaml` now documents
+  `KrakenWaf.remote`, `KrakenWaf.ref`, and `KrakenWaf.require_signed_ref`.
+
+### Changed
+
+- **Observability allowlist IP attribution.** The fallback legacy allowlist for
+  health and metrics now checks `effective_ip`, honoring configured trusted
+  proxies and real-IP headers consistently with the YAML allow-path policy.
+- **Control-plane collisions are fail-fast.** A metrics port equal to the data
+  plane, or a rule-management port equal to either metrics or data plane, now
+  aborts startup instead of logging a warning and silently disabling a listener.
+- **Request-body frame timeout contract is strict.** `body_frame_timeout_secs`
+  and `--body-frame-timeout-secs` now reject `0`; the request-body slowloris
+  guard must stay enabled and the effective timeout is reflected in timeout
+  errors.
+- **Inspection-deadline documentation aligned.** `Max_inspection_ms` comments
+  now match the engine behavior: deadline expiry blocks fail-closed and writes
+  `logs/filter/deadline.jsonl`.
+- **Source updates are opt-in and verified.** Scheduled KrakenWAF source updates
+  are skipped unless `KrakenWaf.ref` is explicitly configured. `soldier_update`
+  now fetches the configured ref, verifies `FETCH_HEAD` with `git
+  verify-commit` by default, and only then performs a fast-forward merge.
+- **Enabled invalid regex rules fail startup.** The regex rule loader now treats
+  invalid enabled regex rules as fatal instead of logging and skipping them.
+  Disabled invalid rules remain ignored.
+- **Vectorscan build-mismatch state is normalized.** When YAML enables
+  Vectorscan but the binary lacks the `vectorscan-engine` feature, the startup
+  diagnostic remains, and the runtime flag is normalized to disabled.
+- **Advisory ignores have deadlines.** Existing hickory/proc-macro advisory
+  exceptions now include an explicit expiry date.
+- **Repository version bumped from `2.46.0` to `2.46.1`.**
+
+### Validation
+
+- `cargo check`
+- `cargo clippy --all-targets -- -D warnings`
+- `cargo test --lib --bins --tests --quiet`
+
 ## [2.46.0] - 2026-06-20
 
 > **Configuration and lab-deployment release.** Consolidates filter-engine and

@@ -297,7 +297,9 @@ fn enforce_bearer_auth(
         http::header::WWW_AUTHENTICATE,
         http::HeaderValue::from_static("Bearer realm=\"krakenwaf-observability\""),
     );
-    state.response_header_policy.apply(resp.headers_mut(), false);
+    state
+        .response_header_policy
+        .apply(resp.headers_mut(), false);
     Some(resp)
 }
 
@@ -314,6 +316,41 @@ fn metrics_access_allowed(snap: &RuleSet, effective_ip: &str, peer_ip: &str) -> 
         return true;
     }
     ip_is_loopback(effective_ip) || ip_is_loopback(peer_ip)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ObservabilityEndpoint {
+    Livez,
+    Readyz,
+    Metrics,
+}
+
+fn observability_endpoint(path: &str, include_metrics: bool) -> Option<ObservabilityEndpoint> {
+    match path {
+        "/__krakenwaf/livez" | "/livez" => Some(ObservabilityEndpoint::Livez),
+        "/__krakenwaf/health" | "/__krakenwaf/readyz" | "/readyz" => {
+            Some(ObservabilityEndpoint::Readyz)
+        }
+        "/metrics" if include_metrics => Some(ObservabilityEndpoint::Metrics),
+        _ => None,
+    }
+}
+
+fn policy_response(state: &AppState, status: StatusCode, body: &'static str) -> WafResponse {
+    let mut response = plain_response(status, body);
+    state
+        .response_header_policy
+        .apply(response.headers_mut(), false);
+    response
+}
+
+fn rules_ready(snap: &RuleSet) -> bool {
+    !snap.uri_keywords.is_empty()
+        || !snap.header_keywords.is_empty()
+        || !snap.body_keywords.is_empty()
+        || !snap.path_regex.is_empty()
+        || !snap.blocked_ips.is_empty()
+        || !snap.blocked_ip_prefixes.is_empty()
 }
 
 /// Serve the observability endpoints — `/livez`, `/readyz`,
@@ -333,15 +370,7 @@ async fn serve_observability(
     listener_port: u16,
 ) -> Option<WafResponse> {
     let path = req.uri().path();
-    let is_health = path == "/__krakenwaf/health"
-        || path == "/__krakenwaf/livez"
-        || path == "/__krakenwaf/readyz"
-        || path == "/livez"
-        || path == "/readyz";
-    let is_metrics = include_metrics && path == "/metrics";
-    if !(is_health || is_metrics) {
-        return None;
-    }
+    let endpoint = observability_endpoint(path, include_metrics)?;
 
     // Resolve the effective IP (honours X-Forwarded-For + trusted proxy CIDRs)
     // so that IP restrictions apply correctly behind a load balancer.
@@ -354,17 +383,24 @@ async fn serve_observability(
             config.check(path, path, &effective_ip, listener_port),
             PathDecision::Block
         ) {
-            let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-            state.response_header_policy.apply(resp.headers_mut(), false);
-            return Some(resp);
+            return Some(policy_response(
+                state,
+                StatusCode::FORBIDDEN,
+                "Access denied",
+            ));
         }
     }
     // Fallback: allowlist.txt-based restriction (rules/addr/allowlist.txt).
+    // This must use the same trusted-proxy-aware source IP as the YAML
+    // allow-paths gate above; otherwise a load balancer allowlisted as the peer
+    // would implicitly allow every forwarded client.
     let snap = state.waf.rules_snapshot();
-    if !snap.is_ip_allowed(client_ip) {
-        let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-        state.response_header_policy.apply(resp.headers_mut(), false);
-        return Some(resp);
+    if !snap.is_ip_allowed(&effective_ip) {
+        return Some(policy_response(
+            state,
+            StatusCode::FORBIDDEN,
+            "Access denied",
+        ));
     }
     // Bearer-token gate. Only the dedicated observability listener
     // (`include_metrics`) is protected: every endpoint it serves — `/metrics`,
@@ -384,43 +420,38 @@ async fn serve_observability(
     // CPU/allocation sink. Liveness/readiness probes are intentionally exempt so
     // orchestration health checks are never throttled; `is_metrics` is only true
     // for `/metrics` on the dedicated listener (`include_metrics`).
-    if is_metrics {
+    if endpoint == ObservabilityEndpoint::Metrics {
         let decision = state.waf.rate_limit_decision_ip(&effective_ip).await;
         if !decision.is_allowed() {
-        warn!(
-            target: "krakenwaf",
-            ip = %effective_ip,
-            "rate-limited /metrics scrape on the observability port"
-        );
-        let mut resp = plain_response(StatusCode::TOO_MANY_REQUESTS, "Too many requests");
-        let retry_after = decision.retry_after().map_or(1, retry_after_seconds);
-        if let Ok(value) = http::HeaderValue::from_str(&retry_after.to_string()) {
-            resp.headers_mut().insert("Retry-After", value);
-        }
-        state.response_header_policy.apply(resp.headers_mut(), false);
-        return Some(resp);
+            warn!(
+                target: "krakenwaf",
+                ip = %effective_ip,
+                "rate-limited /metrics scrape on the observability port"
+            );
+            let mut resp = plain_response(StatusCode::TOO_MANY_REQUESTS, "Too many requests");
+            let retry_after = decision.retry_after().map_or(1, retry_after_seconds);
+            if let Ok(value) = http::HeaderValue::from_str(&retry_after.to_string()) {
+                resp.headers_mut().insert("Retry-After", value);
+            }
+            state
+                .response_header_policy
+                .apply(resp.headers_mut(), false);
+            return Some(resp);
         }
     }
-    if path == "/__krakenwaf/livez" || path == "/livez" {
-        let mut response = plain_response(StatusCode::OK, "ok");
-        state.response_header_policy.apply(response.headers_mut(), false);
-        return Some(response);
+    if endpoint == ObservabilityEndpoint::Livez {
+        return Some(policy_response(state, StatusCode::OK, "ok"));
     }
-    if path == "/__krakenwaf/health" || path == "/__krakenwaf/readyz" || path == "/readyz" {
-        // Readiness: WAF must have at least one rule loaded.
-        let ready = !snap.uri_keywords.is_empty()
-            || !snap.header_keywords.is_empty()
-            || !snap.body_keywords.is_empty()
-            || !snap.path_regex.is_empty()
-            || !snap.blocked_ips.is_empty()
-            || !snap.blocked_ip_prefixes.is_empty();
-        let mut response = if ready {
-            plain_response(StatusCode::OK, "KrakenWaf OK")
+    if endpoint == ObservabilityEndpoint::Readyz {
+        return Some(if rules_ready(&snap) {
+            policy_response(state, StatusCode::OK, "KrakenWaf OK")
         } else {
-            plain_response(StatusCode::SERVICE_UNAVAILABLE, "KrakenWaf not ready")
-        };
-        state.response_header_policy.apply(response.headers_mut(), false);
-        return Some(response);
+            policy_response(
+                state,
+                StatusCode::SERVICE_UNAVAILABLE,
+                "KrakenWaf not ready",
+            )
+        });
     }
     // /metrics exposes operational intelligence (per-module block counts,
     // latency, which engines fire). Unlike liveness/readiness it must not be
@@ -434,16 +465,20 @@ async fn serve_observability(
             "denied /metrics from non-loopback client with no allowlist configured; \
              add the scraper IP to rules/addr/allowlist.txt to permit remote scraping"
         );
-        let mut resp = plain_response(StatusCode::FORBIDDEN, "Access denied");
-        state.response_header_policy.apply(resp.headers_mut(), false);
-        return Some(resp);
+        return Some(policy_response(
+            state,
+            StatusCode::FORBIDDEN,
+            "Access denied",
+        ));
     }
     let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/plain; version=0.0.4; charset=utf-8")
         .body(full_body(Bytes::from(state.metrics.render_prometheus())))
         .unwrap_or_else(|_| plain_response(StatusCode::OK, ""));
-    state.response_header_policy.apply(response.headers_mut(), false);
+    state
+        .response_header_policy
+        .apply(response.headers_mut(), false);
     Some(response)
 }
 
@@ -470,10 +505,12 @@ async fn serve_observability_conn<I>(
             let resp = serve_observability(&req, &state, &client_ip, true, listener_port)
                 .await
                 .unwrap_or_else(|| {
-                let mut resp = plain_response(StatusCode::NOT_FOUND, "Not found");
-                state.response_header_policy.apply(resp.headers_mut(), false);
-                resp
-            });
+                    let mut resp = plain_response(StatusCode::NOT_FOUND, "Not found");
+                    state
+                        .response_header_policy
+                        .apply(resp.headers_mut(), false);
+                    resp
+                });
             Ok::<_, std::convert::Infallible>(resp)
         }
     });
@@ -689,7 +726,10 @@ pub async fn run(
                         |res| res.map_err(TlsAcceptOutcome::Failed),
                     )
             } else {
-                acceptor.accept(stream).await.map_err(TlsAcceptOutcome::Failed)
+                acceptor
+                    .accept(stream)
+                    .await
+                    .map_err(TlsAcceptOutcome::Failed)
             };
             match accepted {
                 Ok(tls_stream) => {
@@ -805,11 +845,7 @@ pub async fn run_plain(listener_addr: std::net::SocketAddr, state: Arc<AppState>
 }
 
 #[allow(clippy::too_many_lines)]
-async fn handle(
-    req: Request<Incoming>,
-    state: Arc<AppState>,
-    client_ip: String,
-) -> WafResponse {
+async fn handle(req: Request<Incoming>, state: Arc<AppState>, client_ip: String) -> WafResponse {
     // Liveness/readiness probes bypass per-IP concurrency and backpressure gates
     // and are still answered inline on the data-plane port (load balancers and
     // k8s probe the serving port). `/metrics`, however, is *not* served here: it
@@ -839,7 +875,9 @@ async fn handle(
                 banned_until,
             );
             let mut resp = plain_response(StatusCode::FORBIDDEN, "Banned by KrakenWaf");
-            state.response_header_policy.apply(resp.headers_mut(), false);
+            state
+                .response_header_policy
+                .apply(resp.headers_mut(), false);
             return resp;
         }
     }
@@ -868,7 +906,9 @@ async fn handle(
             );
             resp.headers_mut()
                 .insert("Retry-After", http::HeaderValue::from_static("5"));
-            state.response_header_policy.apply(resp.headers_mut(), false);
+            state
+                .response_header_policy
+                .apply(resp.headers_mut(), false);
             record_rate_limit_block(&state, &effective_ip);
             return resp;
         }
@@ -895,7 +935,9 @@ async fn handle(
             );
             resp.headers_mut()
                 .insert("Retry-After", http::HeaderValue::from_static("5"));
-            state.response_header_policy.apply(resp.headers_mut(), false);
+            state
+                .response_header_policy
+                .apply(resp.headers_mut(), false);
             return resp;
         }
     }
@@ -921,7 +963,9 @@ async fn handle(
             );
             resp.headers_mut()
                 .insert("Retry-After", http::HeaderValue::from_static("5"));
-            state.response_header_policy.apply(resp.headers_mut(), false);
+            state
+                .response_header_policy
+                .apply(resp.headers_mut(), false);
             return resp;
         }
     }
@@ -952,22 +996,27 @@ fn record_rate_limit_block(state: &AppState, ip: &str) {
 #[cfg(test)]
 mod tests {
     use super::{
-        constant_time_eq, extract_bearer, retry_after_seconds,
-        validate_observability_exposure,
+        constant_time_eq, extract_bearer, retry_after_seconds, validate_observability_exposure,
     };
     use crate::{allowpaths::AllowPathConfig, rules::RuleSet};
     use http::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 
     fn headers_with_auth(value: &str) -> HeaderMap {
         let mut h = HeaderMap::new();
-        h.insert(AUTHORIZATION, HeaderValue::from_str(value).expect("header value"));
+        h.insert(
+            AUTHORIZATION,
+            HeaderValue::from_str(value).expect("header value"),
+        );
         h
     }
 
     #[test]
     fn retry_after_rounds_up_to_whole_seconds() {
         assert_eq!(retry_after_seconds(std::time::Duration::from_nanos(1)), 1);
-        assert_eq!(retry_after_seconds(std::time::Duration::from_millis(1_001)), 2);
+        assert_eq!(
+            retry_after_seconds(std::time::Duration::from_millis(1_001)),
+            2
+        );
         assert_eq!(retry_after_seconds(std::time::Duration::from_secs(5)), 5);
     }
 
@@ -1028,7 +1077,9 @@ mod tests {
         let addr = "0.0.0.0:4343".parse().expect("socket address");
         let error = validate_observability_exposure(addr, false, None, &RuleSet::default())
             .expect_err("public unprotected metrics must fail");
-        assert!(error.to_string().contains("refusing to expose observability"));
+        assert!(error
+            .to_string()
+            .contains("refusing to expose observability"));
     }
 
     #[test]
@@ -1059,8 +1110,7 @@ mod tests {
     #[test]
     fn port_scoped_only_addrs_protects_public_bind() {
         let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(temp.path().join("metrics.txt"), "127.0.0.1\n")
-            .expect("write allowlist");
+        std::fs::write(temp.path().join("metrics.txt"), "127.0.0.1\n").expect("write allowlist");
         std::fs::write(
             temp.path().join("lists.yaml"),
             r"allow:
@@ -1073,9 +1123,8 @@ mod tests {
 ",
         )
         .expect("write allow paths");
-        let allow_paths =
-            AllowPathConfig::from_file(&temp.path().join("lists.yaml"), temp.path())
-                .expect("load allow paths");
+        let allow_paths = AllowPathConfig::from_file(&temp.path().join("lists.yaml"), temp.path())
+            .expect("load allow paths");
 
         validate_observability_exposure(
             "0.0.0.0:4343".parse().expect("socket address"),

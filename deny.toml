@@ -14,14 +14,14 @@ ignore = [
     # drops the `LookupIp` iterator, and splits code into `hickory-net`, so it
     # cannot be a drop-in bump of the resolver. Tracking the 0.26 migration
     # separately rather than rushing a security-sensitive DNS rewrite.
-    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25 NSEC3 DoS; Quad9 DoT resolver only, data-plane DQS path TTL-cached since 2.45.0, 0.26 fix is a breaking migration — tracked" },
-    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25 name-compression DoS; Quad9 DoT resolver only, data-plane DQS path TTL-cached since 2.45.0, 0.26 fix is a breaking migration — tracked" },
+    { id = "RUSTSEC-2026-0118", reason = "hickory-proto 0.25 NSEC3 DoS; Quad9 DoT resolver only, data-plane DQS path TTL-cached since 2.45.0, 0.26 fix is a breaking migration — tracked; expires=2026-09-30" },
+    { id = "RUSTSEC-2026-0119", reason = "hickory-proto 0.25 name-compression DoS; Quad9 DoT resolver only, data-plane DQS path TTL-cached since 2.45.0, 0.26 fix is a breaking migration — tracked; expires=2026-09-30" },
 
     # proc-macro-error2 is unmaintained (RUSTSEC-2026-0173). It is a build-time
     # only proc-macro dependency pulled transitively via sea-orm-macros → sea-bae;
     # nothing ships in the runtime binary. No safe upgrade is available and the
     # fix depends on sea-orm dropping the dependency upstream. Tracking.
-    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; build-time only via sea-orm-macros, no runtime exposure, no upgrade available — tracked" },
+    { id = "RUSTSEC-2026-0173", reason = "proc-macro-error2 unmaintained; build-time only via sea-orm-macros, no runtime exposure, no upgrade available — tracked; expires=2026-09-30" },
 ]
 
 [licenses]

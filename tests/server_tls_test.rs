@@ -20,6 +20,7 @@
 
 use axum::{routing::get, Router};
 use reqwest::StatusCode;
+use std::error::Error as _;
 use std::{
     fs,
     net::SocketAddr,
@@ -28,18 +29,26 @@ use std::{
     sync::OnceLock,
     time::Duration,
 };
-use std::error::Error as _;
 use tempfile::TempDir;
 
 // ─── Cert + Redis discovery ──────────────────────────────────────────────────
 
 fn tls_root() -> PathBuf {
-    PathBuf::from(std::env::var("KRAKENWAF_TEST_TLS_DIR").unwrap_or_else(|_| "/tmp/krakenwaf-tls".to_string()))
+    PathBuf::from(
+        std::env::var("KRAKENWAF_TEST_TLS_DIR")
+            .unwrap_or_else(|_| "/tmp/krakenwaf-tls".to_string()),
+    )
 }
 
-fn ca_path() -> PathBuf { tls_root().join("ca.pem") }
-fn waf_cert_path() -> PathBuf { tls_root().join("waf.pem") }
-fn waf_key_path() -> PathBuf { tls_root().join("waf.key") }
+fn ca_path() -> PathBuf {
+    tls_root().join("ca.pem")
+}
+fn waf_cert_path() -> PathBuf {
+    tls_root().join("waf.pem")
+}
+fn waf_key_path() -> PathBuf {
+    tls_root().join("waf.key")
+}
 
 fn tls_assets_present() -> bool {
     let ok = ca_path().exists() && waf_cert_path().exists() && waf_key_path().exists();
@@ -61,8 +70,12 @@ fn pick_free_port() -> u16 {
 }
 
 static BACKEND_PORT: OnceLock<u16> = OnceLock::new();
-fn backend_port() -> u16 { *BACKEND_PORT.get_or_init(pick_free_port) }
-fn backend_addr() -> String { format!("127.0.0.1:{}", backend_port()) }
+fn backend_port() -> u16 {
+    *BACKEND_PORT.get_or_init(pick_free_port)
+}
+fn backend_addr() -> String {
+    format!("127.0.0.1:{}", backend_port())
+}
 
 static BACKEND_ONCE: OnceLock<()> = OnceLock::new();
 fn ensure_backend() {
@@ -74,11 +87,16 @@ fn ensure_backend() {
                 .build()
                 .expect("rt");
             rt.block_on(async move {
-                let app = Router::new()
-                    .route("/ok", get(|| async { "ok" }))
-                    .route("/echo", get(|axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>| async move {
-                        format!("echo:{}", q.get("q").cloned().unwrap_or_default())
-                    }));
+                let app = Router::new().route("/ok", get(|| async { "ok" })).route(
+                    "/echo",
+                    get(
+                        |axum::extract::Query(q): axum::extract::Query<
+                            std::collections::HashMap<String, String>,
+                        >| async move {
+                            format!("echo:{}", q.get("q").cloned().unwrap_or_default())
+                        },
+                    ),
+                );
                 let addr: SocketAddr = ([127, 0, 0, 1], port).into();
                 let listener = tokio::net::TcpListener::bind(addr).await.expect("bind");
                 axum::serve(listener, app).await.expect("serve");
@@ -109,6 +127,7 @@ fn spawn_waf_tls(waf_port: u16) -> WafGuard {
     let project_root = env!("CARGO_MANIFEST_DIR");
     let rules_dir = format!("{project_root}/rules");
     let listen = format!("127.0.0.1:{waf_port}");
+    let metrics_port = pick_free_port().to_string();
     let upstream = format!("http://{}", backend_addr());
 
     let tmpdir = tempfile::tempdir().expect("tempdir");
@@ -134,10 +153,16 @@ fn spawn_waf_tls(waf_port: u16) -> WafGuard {
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
         .args([
             "--allow-private-upstream",
-            "--listen", &listen,
-            "--upstream", &upstream,
-            "--rules-dir", &rules_dir,
-            "--sni-map", sni_csv.to_str().unwrap(),
+            "--listen",
+            &listen,
+            "--metrics-port",
+            &metrics_port,
+            "--upstream",
+            &upstream,
+            "--rules-dir",
+            &rules_dir,
+            "--sni-map",
+            sni_csv.to_str().unwrap(),
         ])
         .current_dir(tmpdir.path())
         .stdout(Stdio::null())
@@ -204,7 +229,9 @@ async fn wait_for_https_waf(client: &reqwest::Client, port: u16) -> Result<(), &
 /// post-TLS-handshake plaintext.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn waf_terminates_tls_and_blocks_inside_the_session() {
-    if !tls_assets_present() { return }
+    if !tls_assets_present() {
+        return;
+    }
     ensure_backend();
     let port = pick_free_port();
     let waf = spawn_waf_tls(port);
@@ -224,7 +251,11 @@ async fn waf_terminates_tls_and_blocks_inside_the_session() {
         .send()
         .await
         .expect("clean HTTPS request");
-    assert_eq!(resp.status(), StatusCode::OK, "clean request must reach backend over TLS");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "clean request must reach backend over TLS"
+    );
     assert_eq!(resp.text().await.unwrap_or_default(), "ok");
 
     // XSS payload — WAF must inspect the decrypted request and block it.
@@ -246,7 +277,9 @@ async fn waf_terminates_tls_and_blocks_inside_the_session() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reqwest_without_ca_fails_handshake_against_tls_waf() {
     use std::fmt::Write as _;
-    if !tls_assets_present() { return }
+    if !tls_assets_present() {
+        return;
+    }
     ensure_backend();
     let port = pick_free_port();
     let waf = spawn_waf_tls(port);
@@ -294,7 +327,9 @@ async fn reqwest_without_ca_fails_handshake_against_tls_waf() {
 /// XSS/SQLi sweep over TLS just as well as plaintext.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attack_binary_runs_against_tls_waf_with_custom_ca() {
-    if !tls_assets_present() { return }
+    if !tls_assets_present() {
+        return;
+    }
     ensure_backend();
     let port = pick_free_port();
     let waf = spawn_waf_tls(port);
@@ -312,9 +347,12 @@ async fn attack_binary_runs_against_tls_waf_with_custom_ca() {
     let output = tokio::task::spawn_blocking(move || {
         Command::new(attack_bin)
             .args([
-                "--target", &target,
-                "--cacert", ca_path().to_str().unwrap(),
-                "--concurrency", "10",
+                "--target",
+                &target,
+                "--cacert",
+                ca_path().to_str().unwrap(),
+                "--concurrency",
+                "10",
             ])
             .output()
             .expect("run attack binary")
@@ -361,7 +399,9 @@ async fn attack_binary_runs_against_tls_waf_with_custom_ca() {
 /// wired up.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn attack_binary_runs_against_tls_waf_with_insecure_skip_verify() {
-    if !tls_assets_present() { return }
+    if !tls_assets_present() {
+        return;
+    }
     ensure_backend();
     let port = pick_free_port();
     let waf = spawn_waf_tls(port);
@@ -378,9 +418,11 @@ async fn attack_binary_runs_against_tls_waf_with_insecure_skip_verify() {
     let output = tokio::task::spawn_blocking(move || {
         Command::new(attack_bin)
             .args([
-                "--target", &target,
+                "--target",
+                &target,
                 "--insecure-skip-verify",
-                "--concurrency", "10",
+                "--concurrency",
+                "10",
             ])
             .output()
             .expect("run attack binary")
@@ -395,7 +437,10 @@ async fn attack_binary_runs_against_tls_waf_with_insecure_skip_verify() {
     let has_block = stdout
         .lines()
         .any(|l| l.contains("blocked") && !l.contains("0 blocked"));
-    assert!(has_block, "expected at least one sweep with `blocked > 0` over TLS:\n{stdout}");
+    assert!(
+        has_block,
+        "expected at least one sweep with `blocked > 0` over TLS:\n{stdout}"
+    );
     assert!(
         !stdout.to_lowercase().contains("unknownissuer"),
         "--insecure-skip-verify must mute cert validation errors"

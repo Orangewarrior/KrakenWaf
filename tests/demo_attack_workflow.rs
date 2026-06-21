@@ -47,6 +47,7 @@ fn demo_server_is_protected_against_the_attack_sweep() {
     let root = env!("CARGO_MANIFEST_DIR");
     let backend_port = free_port();
     let waf_port = free_port();
+    let metrics_port = free_port();
 
     let demo = Command::new(env!("CARGO_BIN_EXE_demo_server"))
         .arg(backend_port.to_string())
@@ -62,6 +63,8 @@ fn demo_server_is_protected_against_the_attack_sweep() {
             "--allow-private-upstream",
             "--listen",
             &format!("127.0.0.1:{waf_port}"),
+            "--metrics-port",
+            &metrics_port.to_string(),
             "--upstream",
             &format!("http://127.0.0.1:{backend_port}"),
             "--rate-limit-per-minute",

@@ -1,0 +1,2 @@
+Notice: Detected codex environment. Use `coderabbit review --agent` for structured agent-friendly output.
+✗ Non-interactive environment detected. Use --api-key for authentication.

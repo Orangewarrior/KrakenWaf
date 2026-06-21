@@ -1,0 +1,6 @@
+Banning_mode: false
+
+Ban_context:
+  security_scanners: true
+  tolerance_block_count: 3
+  Ban_wait_time: "30m"

@@ -64,11 +64,20 @@ fn ensure_crypto_provider() {
 }
 
 fn tls_root() -> PathBuf {
-    PathBuf::from(std::env::var("KRAKENWAF_TEST_TLS_DIR").unwrap_or_else(|_| "/tmp/krakenwaf-tls".to_string()))
+    PathBuf::from(
+        std::env::var("KRAKENWAF_TEST_TLS_DIR")
+            .unwrap_or_else(|_| "/tmp/krakenwaf-tls".to_string()),
+    )
 }
-fn ca_path() -> PathBuf { tls_root().join("ca.pem") }
-fn waf_cert_path() -> PathBuf { tls_root().join("waf.pem") }
-fn waf_key_path() -> PathBuf { tls_root().join("waf.key") }
+fn ca_path() -> PathBuf {
+    tls_root().join("ca.pem")
+}
+fn waf_cert_path() -> PathBuf {
+    tls_root().join("waf.pem")
+}
+fn waf_key_path() -> PathBuf {
+    tls_root().join("waf.key")
+}
 
 async fn redis_tls_reachable() -> bool {
     use krakenwaf::waf::rate_limit::RateLimiter;
@@ -89,24 +98,33 @@ async fn redis_tls_reachable() -> bool {
         true,
         None,
     )
-    .await.map_or_else(|err| {
-        eprintln!("rediss:// probe failed: {err:#} — skipping test");
-        false
-    }, |rl| {
-        // Drive a single check to force a Redis round-trip — the
-        // handshake alone can succeed before fred realises the cert
-        // chain is broken downstream.
-        let _ = futures_probe(rl);
-        true
-    })
+    .await
+    .map_or_else(
+        |err| {
+            eprintln!("rediss:// probe failed: {err:#} — skipping test");
+            false
+        },
+        |rl| {
+            // Drive a single check to force a Redis round-trip — the
+            // handshake alone can succeed before fred realises the cert
+            // chain is broken downstream.
+            let _ = futures_probe(rl);
+            true
+        },
+    )
 }
 
-fn futures_probe(_rl: krakenwaf::waf::rate_limit::RateLimiter) -> bool { true }
+fn futures_probe(_rl: krakenwaf::waf::rate_limit::RateLimiter) -> bool {
+    true
+}
 
 fn assets_present() -> bool {
     let ok = ca_path().exists() && waf_cert_path().exists() && waf_key_path().exists();
     if !ok {
-        eprintln!("TLS assets missing in {} — skipping (run the recipe in docs/banning.md).", tls_root().display());
+        eprintln!(
+            "TLS assets missing in {} — skipping (run the recipe in docs/banning.md).",
+            tls_root().display()
+        );
     }
     ok
 }
@@ -114,18 +132,29 @@ fn assets_present() -> bool {
 // ─── Axum backend ────────────────────────────────────────────────────────────
 
 fn pick_free_port() -> u16 {
-    std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 static BACKEND_PORT: OnceLock<u16> = OnceLock::new();
-fn backend_port() -> u16 { *BACKEND_PORT.get_or_init(pick_free_port) }
-fn backend_addr() -> String { format!("127.0.0.1:{}", backend_port()) }
+fn backend_port() -> u16 {
+    *BACKEND_PORT.get_or_init(pick_free_port)
+}
+fn backend_addr() -> String {
+    format!("127.0.0.1:{}", backend_port())
+}
 
 static BACKEND_ONCE: OnceLock<()> = OnceLock::new();
 fn ensure_backend() {
     BACKEND_ONCE.get_or_init(|| {
         let port = backend_port();
         std::thread::spawn(move || {
-            let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+            let rt = tokio::runtime::Builder::new_multi_thread()
+                .enable_all()
+                .build()
+                .unwrap();
             rt.block_on(async move {
                 let app = Router::new().route("/ok", get(|| async { "ok" }));
                 let addr: SocketAddr = ([127, 0, 0, 1], port).into();
@@ -173,7 +202,12 @@ fn unique_ip(seed: u32) -> String {
         .unwrap_or_default()
         & 0xFFFF) as u32;
     let mix = nonce.wrapping_add(ts);
-    format!("10.{}.{}.{}", (mix >> 16) & 0xFF, (mix >> 8) & 0xFF, mix & 0xFE)
+    format!(
+        "10.{}.{}.{}",
+        (mix >> 16) & 0xFF,
+        (mix >> 8) & 0xFF,
+        mix & 0xFE
+    )
 }
 
 /// Spawn a krakenwaf instance with:
@@ -188,6 +222,7 @@ fn spawn_waf_redis_tls(waf_port: u16, rl_limit: u32, tolerance: u32) -> WafGuard
     let rules_dir = format!("{project_root}/rules");
     let cmc_config = format!("{project_root}/conf/filter.yaml");
     let listen = format!("127.0.0.1:{waf_port}");
+    let metrics_port = pick_free_port().to_string();
     let upstream = format!("http://{}", backend_addr());
 
     let tmpdir = tempfile::tempdir().unwrap();
@@ -209,6 +244,9 @@ fn spawn_waf_redis_tls(waf_port: u16, rl_limit: u32, tolerance: u32) -> WafGuard
     // 2. conf/ratelimit.yaml — Redis section with custom CA.
     let conf_dir = tmpdir.path().join("conf");
     fs::create_dir_all(&conf_dir).unwrap();
+    let allowpaths_file = tmpdir.path().join("allowpaths.yaml");
+    fs::write(&allowpaths_file, "allow: []\n").expect("write allowpaths.yaml");
+    let allowpaths = allowpaths_file.to_string_lossy().into_owned();
     let rl_key_prefix = unique("rl");
     fs::write(
         conf_dir.join("ratelimit.yaml"),
@@ -249,13 +287,24 @@ fn spawn_waf_redis_tls(waf_port: u16, rl_limit: u32, tolerance: u32) -> WafGuard
     let child = Command::new(env!("CARGO_BIN_EXE_krakenwaf"))
         .args([
             "--allow-private-upstream",
-            "--listen", &listen,
-            "--upstream", &upstream,
-            "--rules-dir", &rules_dir,
-            "--sni-map", sni_csv.to_str().unwrap(),
-            "--cmc-load", &cmc_config,
-            "--trusted-proxy-cidrs", "127.0.0.0/8",
-            "--real-ip-header", "x-forwarded-for",
+            "--listen",
+            &listen,
+            "--metrics-port",
+            &metrics_port,
+            "--upstream",
+            &upstream,
+            "--rules-dir",
+            &rules_dir,
+            "--sni-map",
+            sni_csv.to_str().unwrap(),
+            "--cmc-load",
+            &cmc_config,
+            "--allow-paths",
+            &allowpaths,
+            "--trusted-proxy-cidrs",
+            "127.0.0.0/8",
+            "--real-ip-header",
+            "x-forwarded-for",
         ])
         .current_dir(tmpdir.path())
         .stdout(Stdio::null())
@@ -286,7 +335,13 @@ async fn wait_for_https_waf(client: &reqwest::Client, port: u16) -> Result<(), &
     // 60 s — debug build + Redis pool init under TLS is slower than the
     // SQLite-only path; allow plenty of headroom.
     for _ in 0..200 {
-        if client.get(&url).timeout(Duration::from_millis(500)).send().await.is_ok() {
+        if client
+            .get(&url)
+            .timeout(Duration::from_millis(500))
+            .send()
+            .await
+            .is_ok()
+        {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_millis(300)).await;
@@ -316,7 +371,13 @@ fn dump_logs(tmpdir: &Path) {
 /// the BAN-list behaviour via HTTP").
 fn redis_tls_cli(args: &[&str]) -> Option<String> {
     let out = Command::new("redis-cli")
-        .args(["--tls", "--cacert", ca_path().to_str().unwrap(), "-p", "6380"])
+        .args([
+            "--tls",
+            "--cacert",
+            ca_path().to_str().unwrap(),
+            "-p",
+            "6380",
+        ])
         .args(args)
         .output()
         .ok()?;
@@ -333,8 +394,12 @@ fn redis_tls_cli(args: &[&str]) -> Option<String> {
 /// `redis-cli --tls --cacert`.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn nikto_request_gets_banned_in_redis_then_short_circuits() {
-    if !assets_present() { return }
-    if !redis_tls_reachable().await { return }
+    if !assets_present() {
+        return;
+    }
+    if !redis_tls_reachable().await {
+        return;
+    }
     ensure_backend();
 
     let port = pick_free_port();
@@ -357,7 +422,11 @@ async fn nikto_request_gets_banned_in_redis_then_short_circuits() {
         .send()
         .await
         .expect("first HTTPS request");
-    assert_eq!(resp.status(), StatusCode::FORBIDDEN, "scanner UA must be blocked");
+    assert_eq!(
+        resp.status(),
+        StatusCode::FORBIDDEN,
+        "scanner UA must be blocked"
+    );
 
     // Give the fire-and-forget tokio::spawn(record_block) a moment to
     // commit the Lua HSET to Redis before we probe.
@@ -366,7 +435,9 @@ async fn nikto_request_gets_banned_in_redis_then_short_circuits() {
     // 2. Verify the BAN state ACTUALLY landed in Redis (not SQLite).
     //    The key prefix is the production "krakenwaf:ban".
     if let Some(keys) = redis_tls_cli(&[
-        "--scan", "--pattern", &format!("{}:*{}*", waf.ban_key_prefix, attacker),
+        "--scan",
+        "--pattern",
+        &format!("{}:*{}*", waf.ban_key_prefix, attacker),
     ]) {
         let lines: Vec<&str> = keys.lines().filter(|l| !l.is_empty()).collect();
         assert!(
@@ -382,7 +453,8 @@ async fn nikto_request_gets_banned_in_redis_then_short_circuits() {
                 );
                 // sanity: ban_count >= 1.
                 assert!(
-                    hash.lines().any(|l| l == "1" || l.parse::<i64>().is_ok_and(|n| n >= 1)),
+                    hash.lines()
+                        .any(|l| l == "1" || l.parse::<i64>().is_ok_and(|n| n >= 1)),
                     "ban_count should be >= 1 in: {hash}"
                 );
             }
@@ -396,7 +468,10 @@ async fn nikto_request_gets_banned_in_redis_then_short_circuits() {
     //    out of Redis.
     let resp2 = client
         .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        )
         .header("X-Forwarded-For", &attacker)
         .send()
         .await
@@ -418,8 +493,12 @@ async fn nikto_request_gets_banned_in_redis_then_short_circuits() {
 /// is hitting the SAME Redis as the BAN list.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn rate_limit_is_enforced_via_redis_over_tls() {
-    if !assets_present() { return }
-    if !redis_tls_reachable().await { return }
+    if !assets_present() {
+        return;
+    }
+    if !redis_tls_reachable().await {
+        return;
+    }
     ensure_backend();
 
     // Limit small enough to exhaust quickly; threshold high so the
@@ -477,9 +556,8 @@ async fn rate_limit_is_enforced_via_redis_over_tls() {
     // Verify the rate-limiter wrote to Redis under ITS OWN prefix
     // (separate from the BAN list). Keys are `<rl_key_prefix>:<ip>`,
     // values are GCRA theoretical-arrival timestamps in Redis microseconds.
-    if let Some(keys) = redis_tls_cli(&[
-        "--scan", "--pattern", &format!("{}:*", waf.rl_key_prefix),
-    ]) {
+    if let Some(keys) = redis_tls_cli(&["--scan", "--pattern", &format!("{}:*", waf.rl_key_prefix)])
+    {
         let lines: Vec<&str> = keys.lines().filter(|l| !l.is_empty()).collect();
         assert!(
             !lines.is_empty(),
@@ -488,7 +566,10 @@ async fn rate_limit_is_enforced_via_redis_over_tls() {
         );
         // Find the key for our attacker IP and assert it contains an epoch-based
         // TAT. Rejected requests do not mutate TAT in GCRA.
-        let attacker_key = lines.iter().find(|k| k.ends_with(&format!(":{attacker}"))).copied();
+        let attacker_key = lines
+            .iter()
+            .find(|k| k.ends_with(&format!(":{attacker}")))
+            .copied();
         if let Some(k) = attacker_key {
             if let Some(val) = redis_tls_cli(&["GET", k]) {
                 let tat_us: u64 = val.trim().parse().unwrap_or(0);
@@ -512,8 +593,12 @@ async fn rate_limit_is_enforced_via_redis_over_tls() {
 /// a bystander IP must NOT be affected by another attacker's ban.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn redis_ban_is_per_ip_bystander_unaffected() {
-    if !assets_present() { return }
-    if !redis_tls_reachable().await { return }
+    if !assets_present() {
+        return;
+    }
+    if !redis_tls_reachable().await {
+        return;
+    }
     ensure_backend();
 
     let port = pick_free_port();
@@ -541,7 +626,10 @@ async fn redis_ban_is_per_ip_bystander_unaffected() {
     // Bystander, clean UA, different IP — must pass through to backend.
     let resp = client
         .get(&url)
-        .header("User-Agent", "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36")
+        .header(
+            "User-Agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+        )
         .header("X-Forwarded-For", &bystander)
         .send()
         .await

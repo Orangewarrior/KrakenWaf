@@ -61,9 +61,7 @@ pub use esi_injection_detect::EsiInjectionCmcBuilder;
 pub use hpp_detect::HppDetectorBuilder;
 pub use java_deserialize_detect::JavaDeserializeCmcBuilder;
 pub use nosql_injection_detect::NoSqlInjectionCmcBuilder;
-pub use open_redirect_rfi_detect::{
-    LangParams, OpenRedirectRfiDetectorBuilder,
-};
+pub use open_redirect_rfi_detect::{LangParams, OpenRedirectRfiDetectorBuilder};
 pub use overflow_detect::OverflowCmcBuilder;
 pub use request_smuggling_detect::RequestSmugglingCmcBuilder;
 pub use sqli_comments_detect::SqliCommentsCmcBuilder;
@@ -133,9 +131,8 @@ pub struct CmcConfig {
     /// default of 600.
     pub anomaly_threshold: Option<u32>,
     /// Per-request wall-clock cap on WAF inspection (milliseconds). When
-    /// `Some(n > 0)` and the deadline elapses, inspection stops scanning
-    /// additional views and the request proceeds with whatever findings
-    /// were produced so far. `Some(0)` or `None` disables the deadline.
+    /// `Some(n > 0)` and the deadline elapses, inspection blocks fail-closed
+    /// with a deadline finding. `Some(0)` or `None` disables the deadline.
     /// `None` defers to the CLI flag `--max-inspection-ms` or the built-in
     /// default of 0 (disabled).
     pub max_inspection_ms: Option<u64>,
@@ -1098,10 +1095,7 @@ impl CmcController {
     /// # Errors
     /// Returns the offending key when `patch` names a module that is not a
     /// recognised CMC module (the caller maps this to HTTP 400).
-    pub fn apply_update(
-        &self,
-        patch: &[(String, bool)],
-    ) -> Result<CmcUpdateOutcome, String> {
+    pub fn apply_update(&self, patch: &[(String, bool)]) -> Result<CmcUpdateOutcome, String> {
         let mut state = self.state.lock();
 
         // Validate every key before mutating anything so a bad key is a clean
@@ -1127,8 +1121,11 @@ impl CmcController {
         }
 
         if !outcome.enabled.is_empty() || !outcome.disabled.is_empty() {
-            let manager =
-                Self::build_manager(&state.config, state.vectorscan_enabled, state.rules_dir.as_ref());
+            let manager = Self::build_manager(
+                &state.config,
+                state.vectorscan_enabled,
+                state.rules_dir.as_ref(),
+            );
             self.manager.store(Arc::new(manager));
         }
         Ok(outcome)
@@ -1266,8 +1263,10 @@ fn parse_lenient_yaml(content: &str) -> Result<CmcConfig> {
                 _ => None,
             });
 
-        let multi_lang_enabled = matches!(strict.multiple_languages_params, Some(BoolOrInt::Bool(true)))
-            || matches!(strict.multiple_languages_params, Some(BoolOrInt::Int(n)) if n == 1);
+        let multi_lang_enabled = matches!(
+            strict.multiple_languages_params,
+            Some(BoolOrInt::Bool(true))
+        ) || matches!(strict.multiple_languages_params, Some(BoolOrInt::Int(n)) if n == 1);
         let lang_map: Option<BTreeMap<String, i64>> = strict
             .custom_languages_params
             .map(|m| m.into_iter().map(|(k, v)| (k, v.into())).collect());
@@ -1777,15 +1776,15 @@ CMC-Rules:
 
     #[test]
     fn open_redirect_n_rfi_detect_explicit_false() {
-        let cfg = parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: false\n")
-            .expect("parse");
+        let cfg =
+            parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: false\n").expect("parse");
         assert!(!cfg.open_redirect_n_rfi_detect);
     }
 
     #[test]
     fn disabled_open_redirect_manager_is_noop() {
-        let cfg = parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: false\n")
-            .expect("parse");
+        let cfg =
+            parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: false\n").expect("parse");
         let mgr = super::CmcManagerBuilder::new(cfg).build();
         assert!(mgr
             .inspect_open_redirect_rfi("next=https://evil.example", "")
@@ -1794,8 +1793,8 @@ CMC-Rules:
 
     #[test]
     fn enabled_open_redirect_manager_blocks_query_and_body() {
-        let cfg = parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: true\n")
-            .expect("parse");
+        let cfg =
+            parse_lenient_yaml("CMC-Rules:\n  Open_redirect_n_RFI_detect: true\n").expect("parse");
         let mgr = super::CmcManagerBuilder::new(cfg).build();
         // GET query string.
         let f = mgr
@@ -1902,11 +1901,9 @@ CMC-Rules:
 
     #[test]
     fn shipped_config_parses_and_enables_module() {
-        let content = std::fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/conf/filter.yaml"
-        ))
-        .expect("read shipped CMC config");
+        let content =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/conf/filter.yaml"))
+                .expect("read shipped CMC config");
         let cfg = parse_lenient_yaml(&content).expect("parse shipped config");
         assert!(cfg.open_redirect_n_rfi_detect);
     }

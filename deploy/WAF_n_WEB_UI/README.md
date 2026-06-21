@@ -3,8 +3,9 @@
 This lab runs exactly two application containers or pods:
 
 1. DVWA or OWASP Juice Shop as the intentionally vulnerable upstream.
-2. KrakenWAF and Kraken UI together, with shared logs, credentials, metrics,
-   and the live rule-management control plane.
+2. KrakenWAF, an embedded TLS-only Redis for distributed rate limiting, and
+   Kraken UI together, with shared logs, credentials, metrics, and the live
+   rule-management control plane.
 
 The checked-in credentials and cryptographic keys are for local testing only.
 Replace every value before adapting these manifests to a persistent or shared
@@ -15,6 +16,15 @@ The image builds a self-signed TLS certificate (CN=localhost) at build time when
 starts with no extra steps. Browsers and `curl` will flag the certificate as
 untrusted (`curl -k`); supply your own pair in `certs/` before building, or mount
 real certificates, for anything beyond local testing.
+
+The image uses `debian:bookworm-slim` as the runtime base and also boots a
+loopback-only Redis instance for the WAF and UI. The entrypoint generates a
+dedicated local CA, a Redis server certificate, a least-privilege ACL user,
+and the `REDIS_USERNAME` / `REDIS_PASSWORD` secret files under
+`/run/secrets/krakenwaf/`. The WAF uses that Redis for both distributed rate
+limiting and the BAN list; the UI uses the same hardened Redis for its global
+rate-limit backend. All Redis traffic stays on `rediss://localhost:6380/0`
+with a pinned CA and `fail_open: false`.
 
 ## Docker Compose
 
