@@ -19,7 +19,7 @@
 #     internal header disabled; an empty `upstream-timeout-secs` keeps the
 #     built-in 15 s default.
 
-listen : 127.0.0.1:8443
+listen : 0.0.0.0:8443 # bind all interfaces (matches the CLI default); restrict to a specific IP for bare-metal
 upstream : http://127.0.0.1:8080 # local application default
 upstream-timeout-secs: # when empty, defaults to a value defined by the WAF
 upstream-ca: # empty -> trusts only public CAs; PEM path to trust a private upstream CA
