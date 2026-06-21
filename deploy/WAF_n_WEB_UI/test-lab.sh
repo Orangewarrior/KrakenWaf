@@ -128,6 +128,18 @@ check "WAF blocks SQLi payload" "403" "${SQLI}"
 XSS="$(status "https://localhost:${APP_PORT}/?q=%3Cscript%3Ealert(1)%3C/script%3E")"
 check "WAF blocks XSS payload" "403" "${XSS}"
 
+# 5. Rule-management control plane (Rorschach). Port 4342 is not published to the
+#    host, so probe it from inside the container at the allowlisted loopback IP.
+#    With no token the WAF answers 401 — which proves the control plane actually
+#    opened (i.e. the RORSCHACH_SECRET_* keys were accepted). A 000/refused means
+#    the keys were rejected and the listener never started. (Signing a valid
+#    token needs the keyed-BLAKE2b algorithm in src/rorschach.rs; do authenticated
+#    rule changes through the Kraken UI, which ports that signing code.)
+RM_CODE="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui \
+    curl -k -s -o /dev/null -w '%{http_code}' --max-time 8 \
+    https://127.0.0.1:4342/rule/control/cmc/list 2>/dev/null || echo 000)"
+check "rule-management control plane up & enforcing Rorschach auth" "401" "${RM_CODE}"
+
 echo
 echo "Test accounts (lab only):"
 echo "  admin    / Tentacle-Root!2026"
