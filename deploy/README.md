@@ -30,6 +30,12 @@ sudo install -d -o root -g root -m 0700 /etc/krakenwaf/secrets
 sudo install -m 0755 target/release/krakenwaf /usr/local/bin/krakenwaf
 sudo cp -r conf rules certs alert /var/lib/krakenwaf/
 
+# Provide TLS material at the paths rules/tls/sni_map.csv references
+# (certs/cert.pem + certs/key.pem). Use your CA-issued pair in production; for a
+# throwaway local pair run scripts/gen-dev-certs.sh and copy the result:
+sudo install -m 0644 certs/cert.pem /var/lib/krakenwaf/certs/cert.pem
+sudo install -m 0600 -o krakenwaf -g krakenwaf certs/key.pem /var/lib/krakenwaf/certs/key.pem
+
 # 3. Install + start the unit
 sudo cp deploy/systemd/krakenwaf.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -50,6 +56,12 @@ allow-list and `MemoryDenyWriteExecute=true`. Secrets are delivered with
 
 `ExecStartPre` runs `krakenwaf config validate`, so the unit fails fast **before**
 binding any port if a config file is invalid.
+
+The unit launches `krakenwaf` with **no CLI flags**: from `WorkingDirectory`
+(`/var/lib/krakenwaf`) the WAF auto-discovers `conf/proxy.yaml` (listen, ports,
+upstream, …), `conf/ratelimit.yaml`, `conf/websocket.yaml` and `./rules`. Tune the
+deployment by editing those YAML files — set `listen` in `conf/proxy.yaml` to the
+interface/port you want (the shipped default is `0.0.0.0:8443`).
 
 ### Provision the secret source files (systemd)
 
@@ -143,6 +155,7 @@ docker run --rm -p 8443:8443 -p 4343:4343 -p 4342:4342 \
     --tmpfs /tmp --tmpfs /var/lib/krakenwaf --tmpfs /var/log/krakenwaf \
     -v "$PWD/conf:/etc/krakenwaf/conf:ro" \
     -v "$PWD/rules:/etc/krakenwaf/rules:ro" \
+    -v "$PWD/certs:/etc/krakenwaf/certs:ro" \
     -v "$PWD/secrets/BEARER_PASSWORD:/run/secrets/krakenwaf/BEARER_PASSWORD:ro" \
     -v "$PWD/secrets/RORSCHACH_SECRET_EVEN:/run/secrets/krakenwaf/RORSCHACH_SECRET_EVEN:ro" \
     -v "$PWD/secrets/RORSCHACH_SECRET_ODD:/run/secrets/krakenwaf/RORSCHACH_SECRET_ODD:ro" \
@@ -152,6 +165,14 @@ docker run --rm -p 8443:8443 -p 4343:4343 -p 4342:4342 \
 Each secret is mounted file-first as a single file under
 `/run/secrets/krakenwaf/<NAME>`, which KrakenWaf resolves automatically — no
 plaintext env required.
+
+The container starts `krakenwaf` with **no CLI flags**: from `WORKDIR`
+(`/etc/krakenwaf`) it auto-discovers the mounted `conf/` and `rules/` and reads
+`listen` / `metrics-port` / `rule_management_port` from `conf/proxy.yaml`. TLS
+material is **not** baked in — mount your CA-issued pair as `certs/cert.pem` /
+`certs/key.pem` (`-v "$PWD/certs:/etc/krakenwaf/certs:ro"`, shown above), the
+paths `rules/tls/sni_map.csv` references. `scripts/gen-dev-certs.sh` produces a
+throwaway pair for local testing.
 
 > Port **4342** is the rule-management control plane (`/rule/control/cmc/*`). It
 > only opens when both `RORSCHACH_SECRET_*` files are present and is fail-closed.

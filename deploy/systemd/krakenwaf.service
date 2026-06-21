@@ -15,19 +15,15 @@ Group=krakenwaf
 
 # ── Binary & working directory ───────────────────────────────────────────────
 # WorkingDirectory holds conf/, rules/, certs/, alert/ and the writable state.
+# The WAF runs with no CLI flags: it auto-discovers conf/proxy.yaml (listen,
+# ports, upstream, …), conf/ratelimit.yaml, conf/websocket.yaml and ./rules
+# relative to this directory. Configure the deployment by editing those YAMLs.
 WorkingDirectory=/var/lib/krakenwaf
-ExecStart=/usr/local/bin/krakenwaf \
-    --external-proxy-conf /var/lib/krakenwaf/conf/proxy.yaml \
-    --ratelimit-by-file-conf /var/lib/krakenwaf/conf/ratelimit.yaml \
-    --websocket-conf /var/lib/krakenwaf/conf/websocket.yaml \
-    --rules-dir /var/lib/krakenwaf/rules
+ExecStart=/usr/local/bin/krakenwaf
 
-# Pre-flight: fail the unit before binding ports if any config is invalid.
-ExecStartPre=/usr/local/bin/krakenwaf config validate \
-    --external-proxy-conf /var/lib/krakenwaf/conf/proxy.yaml \
-    --ratelimit-by-file-conf /var/lib/krakenwaf/conf/ratelimit.yaml \
-    --websocket-conf /var/lib/krakenwaf/conf/websocket.yaml \
-    --rules-dir /var/lib/krakenwaf/rules
+# Pre-flight: fail the unit before binding ports if any config is invalid. Reads
+# the same conf/ + rules/ from WorkingDirectory.
+ExecStartPre=/usr/local/bin/krakenwaf config validate
 
 # Graceful reload (SIGHUP hot-reloads rules + TLS certs).
 ExecReload=/bin/kill -HUP $MAINPID

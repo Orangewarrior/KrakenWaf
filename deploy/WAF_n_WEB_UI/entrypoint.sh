@@ -16,13 +16,18 @@ shutdown() {
 }
 trap shutdown INT TERM EXIT
 
+# The WAF starts with no CLI flags: it auto-loads conf/proxy.yaml (plus
+# ratelimit.yaml / websocket.yaml) from the working directory. The only value
+# that varies per profile is the protected upstream, so we write it into
+# conf/proxy.yaml before launch. Everything else (listen 0.0.0.0:8443,
+# metrics-port 4343, rule_management_port 4342, allow-private-upstream, sni-map,
+# block page) already ships in conf/proxy.yaml.
+sed -i \
+    -e "s|^[[:space:]]*upstream[[:space:]]*:.*|upstream : ${WAF_UPSTREAM}|" \
+    /opt/krakenwaf/conf/proxy.yaml
+
 cd /opt/krakenwaf
-/usr/local/bin/krakenwaf \
-    --listen=0.0.0.0:8443 \
-    --upstream="${WAF_UPSTREAM}" \
-    --allow-private-upstream \
-    --metrics-port=4343 \
-    --rule-management-port=4342 &
+/usr/local/bin/krakenwaf &
 WAF_PID=$!
 
 cd /opt/kraken-ui

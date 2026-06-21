@@ -10,6 +10,12 @@ The checked-in credentials and cryptographic keys are for local testing only.
 Replace every value before adapting these manifests to a persistent or shared
 environment.
 
+The image builds a self-signed TLS certificate (CN=localhost) at build time when
+`certs/cert.pem` / `certs/key.pem` are absent from the build context, so the lab
+starts with no extra steps. Browsers and `curl` will flag the certificate as
+untrusted (`curl -k`); supply your own pair in `certs/` before building, or mount
+real certificates, for anything beyond local testing.
+
 ## Docker Compose
 
 From the repository root, start the DVWA profile:

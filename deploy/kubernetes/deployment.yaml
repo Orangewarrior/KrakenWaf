@@ -66,13 +66,10 @@ spec:
         - name: config-validate
           image: ghcr.io/orangewarrior/krakenwaf:latest
           imagePullPolicy: IfNotPresent
+          # Validates conf/ + rules/ auto-discovered from WORKDIR (/etc/krakenwaf).
           args:
             - config
             - validate
-            - --external-proxy-conf=/etc/krakenwaf/conf/proxy.yaml
-            - --ratelimit-by-file-conf=/etc/krakenwaf/conf/ratelimit.yaml
-            - --websocket-conf=/etc/krakenwaf/conf/websocket.yaml
-            - --rules-dir=/etc/krakenwaf/rules
           securityContext:
             allowPrivilegeEscalation: false
             readOnlyRootFilesystem: true
@@ -96,18 +93,17 @@ spec:
         - name: krakenwaf
           image: ghcr.io/orangewarrior/krakenwaf:latest
           imagePullPolicy: IfNotPresent
-          args:
-            - --listen=0.0.0.0:8443
-            - --metrics-port=4343
-            # Rule-management control plane. Only opens when the RORSCHACH_SECRET_*
-            # secrets are present; gated by the IP allowlist in
-            # rules/addr/allowlist/allow_rule_management.txt (default loopback-only,
-            # so set it to your management client's CIDR in the rules ConfigMap).
-            - --rule-management-port=4342
-            - --external-proxy-conf=/etc/krakenwaf/conf/proxy.yaml
-            - --ratelimit-by-file-conf=/etc/krakenwaf/conf/ratelimit.yaml
-            - --websocket-conf=/etc/krakenwaf/conf/websocket.yaml
-            - --rules-dir=/etc/krakenwaf/rules
+          # No CLI flags: from WORKDIR /etc/krakenwaf the WAF auto-discovers
+          # conf/proxy.yaml (listen 0.0.0.0:8443, metrics-port 4343,
+          # rule_management_port 4342, upstream, …), conf/ratelimit.yaml,
+          # conf/websocket.yaml and ./rules — all supplied via the ConfigMaps
+          # below. Configure the deployment by editing those YAMLs.
+          #
+          # The rule-management control plane (port 4342) only opens when the
+          # RORSCHACH_SECRET_* secrets are present and is gated by the IP allowlist
+          # in rules/addr/allowlist/allow_rule_management.txt (default loopback-only,
+          # so set it to your management client's CIDR in the krakenwaf-rules
+          # ConfigMap before it answers in-cluster).
           ports:
             - name: https
               containerPort: 8443
@@ -191,6 +187,13 @@ spec:
           secret:
             secretName: krakenwaf-tls
             defaultMode: 0400
+            # `kubectl create secret tls` stores tls.crt / tls.key; project them
+            # to the cert.pem / key.pem filenames rules/tls/sni_map.csv expects.
+            items:
+              - key: tls.crt
+                path: cert.pem
+              - key: tls.key
+                path: key.pem
         - name: secrets
           secret:
             secretName: krakenwaf-secrets
