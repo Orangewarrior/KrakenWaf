@@ -1,8 +1,15 @@
-FROM docker.io/library/rust:1.95-bookworm AS builder
+FROM docker.io/library/rust:1.95-alpine AS builder
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends clang git \
-    && rm -rf /var/lib/apt/lists/*
+# musl/Alpine build toolchain. build-base+musl-dev (cc) cover the vendored
+# libinjection (build.rs) and the bundled SQLite; cmake/perl/go are required by
+# aws-lc-sys (pulled in via rustls' default features); clang/llvm + LIBCLANG_PATH
+# satisfy bindgen; git clones kraken-ui.
+RUN apk add --no-cache \
+        build-base musl-dev linux-headers \
+        cmake make perl go bash \
+        clang clang-dev llvm-dev \
+        git pkgconfig openssl-dev
+ENV LIBCLANG_PATH=/usr/lib
 
 WORKDIR /build/krakenwaf
 COPY Cargo.toml Cargo.lock build.rs ./
@@ -16,12 +23,11 @@ RUN git clone https://github.com/Orangewarrior/kraken-ui.git /build/kraken-ui \
     && git checkout --detach "${KRAKEN_UI_REF}" \
     && cargo build --release --locked --bin kraken-ui
 
-FROM docker.io/library/debian:bookworm-slim
+FROM docker.io/library/alpine:3.21
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates curl openssl \
-    && rm -rf /var/lib/apt/lists/* \
-    && useradd --system --uid 10001 --create-home --home-dir /home/kraken kraken
+RUN apk add --no-cache ca-certificates curl openssl \
+    && addgroup -g 10001 kraken \
+    && adduser -D -u 10001 -G kraken -h /home/kraken kraken
 
 COPY --from=builder /build/krakenwaf/target/release/krakenwaf /usr/local/bin/krakenwaf
 COPY --from=builder /build/kraken-ui/target/release/kraken-ui /usr/local/bin/kraken-ui
