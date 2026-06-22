@@ -8,6 +8,7 @@ new privileges, seccomp `RuntimeDefault`, and an explicit writable allow-list.
 
 ```
 deploy/
+├── WAF_n_WEB_UI/                # local lab: WAF + UI + DVWA/Juice Shop
 ├── systemd/
 │   └── krakenwaf.service        # sandboxed systemd unit (NoNewPrivileges, ProtectSystem=strict, …)
 ├── kubernetes/
@@ -15,8 +16,14 @@ deploy/
 │   ├── deployment.yaml          # Deployment + Services (non-root, RO rootfs, seccomp)
 │   └── networkpolicy.yaml       # default-deny ingress/egress + explicit allows
 └── docker/
-    └── Containerfile            # multi-stage build → distroless/cc, non-root
+    └── Containerfile            # multi-stage build → debian:bookworm-slim, non-root
 ```
+
+For an end-to-end disposable lab that runs KrakenWAF, Kraken UI, embedded Redis,
+and a vulnerable app in Docker Compose or Kubernetes, use
+[`WAF_n_WEB_UI/`](WAF_n_WEB_UI/). That lab includes default `admin`, `operator`,
+and `auditor` users for local testing; change those credentials in the compose
+environment or Kubernetes Secret before using it outside a private workstation.
 
 ## systemd
 
@@ -146,7 +153,7 @@ the root filesystem is read-only.
 ## Docker / Podman
 
 ```bash
-docker build -f deploy/docker/Containerfile -t krakenwaf:latest .
+docker build -f deploy/docker/Containerfile -t krakenwaf:bookworm-slim .
 
 docker run --rm -p 8443:8443 -p 4343:4343 -p 4342:4342 \
     --read-only \
@@ -159,7 +166,7 @@ docker run --rm -p 8443:8443 -p 4343:4343 -p 4342:4342 \
     -v "$PWD/secrets/BEARER_PASSWORD:/run/secrets/krakenwaf/BEARER_PASSWORD:ro" \
     -v "$PWD/secrets/RORSCHACH_SECRET_EVEN:/run/secrets/krakenwaf/RORSCHACH_SECRET_EVEN:ro" \
     -v "$PWD/secrets/RORSCHACH_SECRET_ODD:/run/secrets/krakenwaf/RORSCHACH_SECRET_ODD:ro" \
-    krakenwaf:latest
+    krakenwaf:bookworm-slim
 ```
 
 Each secret is mounted file-first as a single file under
@@ -190,8 +197,8 @@ throwaway pair for local testing.
 > env vars leak via `/proc/<pid>/environ` and into child processes.
 
 The image is a multi-stage build whose runtime layer is
-`gcr.io/distroless/cc-debian12:nonroot` — no shell, no package manager, runs as
-uid/gid 65532. The `HEALTHCHECK` runs `krakenwaf config validate`.
+`debian:bookworm-slim`, running as dedicated uid/gid 10001 with only required
+runtime libraries installed. The `HEALTHCHECK` runs `krakenwaf config validate`.
 
 ## Pre-flight validation
 

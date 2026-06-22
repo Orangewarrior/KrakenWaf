@@ -153,22 +153,67 @@ REDIS_PING="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui sh -lc '
 ' 2>/dev/null || echo FAIL)"
 check "embedded Redis up with TLS + auth" "PONG" "${REDIS_PING}"
 
-# 7. A scanner User-Agent is blocked and then short-circuited by the BAN list.
+# 7. UI bootstrap creates the three lab roles and the dashboard can read both
+#    WAF metrics and the WAF alerts database. Run this from inside the combined
+#    container so it exercises the same loopback endpoints the UI is configured
+#    to use in Kubernetes and Compose.
+UI_AUTH_CHECK="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui sh -lc '
+    set -eu
+    check_login() {
+      user="$1"
+      pass="$2"
+      cookie="/tmp/test-lab-${user}.cookies"
+      page="/tmp/test-lab-${user}.html"
+      post="/tmp/test-lab-${user}-post.html"
+      curl -sk -c "$cookie" https://127.0.0.1:3443/kraken_ui/login -o "$page"
+      token=$(sed -n "s/.*name=\"csrf_token\" value=\"\([^\"]*\)\".*/\1/p" "$page" | head -n 1)
+      test -n "$token"
+      code=$(curl -sk -b "$cookie" -c "$cookie" -o "$post" -w "%{http_code}" \
+        -H "Content-Type: application/x-www-form-urlencoded" \
+        --data-urlencode "csrf_token=$token" \
+        --data-urlencode "login=$user" \
+        --data-urlencode "password=$pass" \
+        https://127.0.0.1:3443/kraken_ui/login)
+      test "$code" = 303
+    }
+    check_login admin "Tentacle-Root!2026"
+    check_login operator "DeepCurrent!2026"
+    check_login auditor "Audit-ReadOnly!2026"
+
+    cookie=/tmp/test-lab-dashboard.cookies
+    page=/tmp/test-lab-dashboard-login.html
+    api=/tmp/test-lab-dashboard-api.json
+    curl -sk -c "$cookie" https://127.0.0.1:3443/kraken_ui/login -o "$page"
+    token=$(sed -n "s/.*name=\"csrf_token\" value=\"\([^\"]*\)\".*/\1/p" "$page" | head -n 1)
+    test -n "$token"
+    code=$(curl -sk -b "$cookie" -c "$cookie" -o /tmp/test-lab-dashboard-post.html -w "%{http_code}" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "csrf_token=$token" \
+      --data-urlencode "login=admin" \
+      --data-urlencode "password=Tentacle-Root!2026" \
+      https://127.0.0.1:3443/kraken_ui/login)
+    test "$code" = 303
+    curl -sk -b "$cookie" https://127.0.0.1:3443/kraken_ui/auth/api/dashboard -o "$api"
+    grep -q "\"metrics_available\":true" "$api"
+    grep -q "\"database_available\":true" "$api"
+    printf OK
+' 2>/dev/null || echo FAIL)"
+check "UI lab users and observability data are available" "OK" "${UI_AUTH_CHECK}"
+
+# 8. A scanner User-Agent is blocked. BAN mode is intentionally disabled in this
+#    lab profile, so we do not expect subsequent clean requests from the same IP
+#    to be short-circuited by the BAN list.
 BAN_ATTACK="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui sh -lc '
     curl -k -s -o /dev/null -w "%{http_code}" --max-time 10 \
       -A "nikto/2.1.6" -H "X-Forwarded-For: 10.10.10.10" https://127.0.0.1:8443/
 ' 2>/dev/null || echo 000)"
 check "scanner UA blocked through WAF" "403" "${BAN_ATTACK}"
-BAN_FOLLOWUP="$("${COMPOSE[@]}" -f "${COMPOSE_FILE}" exec -T waf-ui sh -lc '
-    curl -k -s -o /dev/null -w "%{http_code}" --max-time 10 \
-      -A "Mozilla/5.0" -H "X-Forwarded-For: 10.10.10.10" https://127.0.0.1:8443/
-' 2>/dev/null || echo 000)"
-check "BAN list re-blocks same client IP" "403" "${BAN_FOLLOWUP}"
 
 echo
 echo "Test accounts (lab only):"
 echo "  admin    / Tentacle-Root!2026"
 echo "  operator / DeepCurrent!2026"
+echo "  auditor  / Audit-ReadOnly!2026"
 echo "  UI: https://localhost:${UI_PORT}/kraken_ui/login"
 echo
 

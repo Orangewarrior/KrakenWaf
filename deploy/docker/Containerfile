@@ -3,10 +3,10 @@
 # Multi-stage build:
 #   * builder — compiles the release binary (needs a C toolchain for the
 #     vendored libinjection + bundled SQLite).
-#   * runtime — distroless/cc (glibc + libgcc only, no shell, no package
-#     manager), running as the built-in non-root user.
+#   * runtime — Debian bookworm-slim with only runtime libraries installed,
+#     running as a dedicated non-root user.
 #
-# Build:  docker build -f deploy/docker/Containerfile -t krakenwaf:latest .
+# Build:  docker build -f deploy/docker/Containerfile -t krakenwaf:bookworm-slim .
 # Run:    docker run --rm -p 8443:8443 -p 4343:4343 -p 4342:4342 \
 #           --read-only --cap-drop ALL --security-opt no-new-privileges \
 #           --tmpfs /tmp --tmpfs /var/lib/krakenwaf --tmpfs /var/log/krakenwaf \
@@ -14,7 +14,7 @@
 #           -v "$PWD/secrets/BEARER_PASSWORD:/run/secrets/krakenwaf/BEARER_PASSWORD:ro" \
 #           -v "$PWD/secrets/RORSCHACH_SECRET_EVEN:/run/secrets/krakenwaf/RORSCHACH_SECRET_EVEN:ro" \
 #           -v "$PWD/secrets/RORSCHACH_SECRET_ODD:/run/secrets/krakenwaf/RORSCHACH_SECRET_ODD:ro" \
-#           krakenwaf:latest
+#           krakenwaf:bookworm-slim
 #
 # TLS material is NOT baked into the image. Mount your CA-issued certificate and
 # key as certs/cert.pem and certs/key.pem (the paths rules/tls/sni_map.csv
@@ -52,11 +52,13 @@ ENV CARGO_NET_RETRY=5
 RUN cargo build --release --locked --bin krakenwaf \
     && strip target/release/krakenwaf
 
-# ── Stage 2: runtime (distroless, non-root) ──────────────────────────────────
-# distroless/cc carries glibc + libgcc (needed by the C-linked deps) and ships
-# the "nonroot" account (uid/gid 65532). No shell, no package manager → minimal
-# attack surface (CIS Docker 4.x).
-FROM gcr.io/distroless/cc-debian12:nonroot
+# ── Stage 2: runtime (Debian slim, non-root) ─────────────────────────────────
+FROM docker.io/library/debian:bookworm-slim
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates libgcc-s1 libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --home-dir /home/kraken kraken
 
 LABEL org.opencontainers.image.title="KrakenWaf" \
       org.opencontainers.image.description="TLS-aware Rust Web Application Firewall" \
@@ -69,13 +71,13 @@ WORKDIR /etc/krakenwaf
 COPY --from=builder /build/target/release/krakenwaf /usr/local/bin/krakenwaf
 
 # Default config + rules + block page baked in (override via volumes/ConfigMaps).
-COPY --chown=nonroot:nonroot conf  ./conf
-COPY --chown=nonroot:nonroot rules ./rules
-COPY --chown=nonroot:nonroot alert ./alert
+COPY --chown=kraken:kraken conf  ./conf
+COPY --chown=kraken:kraken rules ./rules
+COPY --chown=kraken:kraken alert ./alert
 
 # Writable state + logs. Mount these as tmpfs / emptyDir at runtime so the root
 # filesystem can stay read-only.
-USER nonroot:nonroot
+USER kraken:kraken
 VOLUME ["/var/lib/krakenwaf", "/var/log/krakenwaf", "/tmp"]
 
 # 8443 data plane · 4343 observability/metrics · 4342 rule-management control plane.
@@ -89,6 +91,6 @@ HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
 # No CLI flags: from WORKDIR /etc/krakenwaf the WAF auto-discovers conf/proxy.yaml
 # (listen, metrics-port, rule_management_port, upstream, …), conf/ratelimit.yaml,
 # conf/websocket.yaml and ./rules. Override any path with a flag if you relocate
-# the config (e.g. `docker run ... krakenwaf:latest --external-proxy-conf=/x.yaml`).
+# the config (e.g. `docker run ... krakenwaf:bookworm-slim --external-proxy-conf=/x.yaml`).
 ENTRYPOINT ["/usr/local/bin/krakenwaf"]
 CMD []

@@ -19,7 +19,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: waf-ui
-          image: krakenwaf-ui-lab:2.46.0
+          image: krakenwaf-ui-lab:2.46.0-bookworm-slim
           imagePullPolicy: IfNotPresent
           env:
             - name: WAF_UPSTREAM
@@ -32,6 +32,8 @@ spec:
               value: admin@example.invalid
             - name: KRAKEN_UI_OPERATOR_EMAIL
               value: operator@example.invalid
+            - name: KRAKEN_UI_AUDITOR_EMAIL
+              value: auditor@example.invalid
           envFrom:
             - secretRef: { name: kraken-lab-secrets }
           ports:
@@ -53,11 +55,14 @@ spec:
             limits: { cpu: "2", memory: 2Gi }
       volumes:
         - name: waf-logs
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: kraken-waf-logs
         - name: ui-db
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: kraken-ui-db
         - name: ui-logs
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: kraken-ui-logs
 ---
 apiVersion: v1
 kind: Service
@@ -68,3 +73,46 @@ spec:
   ports:
     - { name: protected-app, port: 8443, targetPort: waf-https }
     - { name: admin-ui, port: 3443, targetPort: ui-https }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kraken-waf-ui-host
+spec:
+  type: LoadBalancer
+  selector: { app: kraken-waf-ui }
+  ports:
+    # The local k3s lab maps host 18444 -> node 443 and host 18080 -> node 80.
+    # Both targets are still HTTPS services inside the pod.
+    - { name: protected-app, port: 443, targetPort: waf-https }
+    - { name: admin-ui, port: 80, targetPort: ui-https }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kraken-waf-logs
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kraken-ui-db
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: kraken-ui-logs
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 512Mi

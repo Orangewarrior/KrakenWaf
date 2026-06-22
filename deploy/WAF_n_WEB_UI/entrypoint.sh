@@ -4,6 +4,7 @@ set -eu
 : "${WAF_UPSTREAM:?WAF_UPSTREAM must point to the protected application}"
 : "${KRAKEN_UI_ADMIN_PASSWORD:?KRAKEN_UI_ADMIN_PASSWORD is required}"
 : "${KRAKEN_UI_OPERATOR_PASSWORD:?KRAKEN_UI_OPERATOR_PASSWORD is required}"
+: "${KRAKEN_UI_AUDITOR_PASSWORD:?KRAKEN_UI_AUDITOR_PASSWORD is required}"
 : "${KRAKEN_UI_PASSWORD_KEY:?KRAKEN_UI_PASSWORD_KEY is required}"
 : "${KRAKEN_UI_SESSION_KEY:?KRAKEN_UI_SESSION_KEY is required}"
 : "${BEARER_PASSWORD:?BEARER_PASSWORD is required}"
@@ -73,7 +74,7 @@ write_redis_acl() {
     redis_password="$(tr -d '\n' < "${REDIS_PASSWORD_FILE}")"
     printf '%s\n' \
         "user default off" \
-        "user ${redis_user} on >${redis_password} resetkeys ~krakenwaf:rl:* ~krakenwaf:ban:* ~kraken-ui:ratelimit:* resetchannels -@all +@connection +eval +expire +get +hget +hset +set +time" \
+        "user ${redis_user} on >${redis_password} resetkeys ~krakenwaf:rl:* ~krakenwaf:ban:* ~kraken-ui:ratelimit:* resetchannels -@all +@connection +eval +evalsha +script|load +expire +get +hget +hset +set +time" \
         > "${REDIS_ACL_FILE}"
 }
 
@@ -141,7 +142,12 @@ sync_ui_security_headers() {
         's/^[[:space:]]*header-protection-injection[[:space:]]*:[[:space:]]*//p' \
         /opt/krakenwaf/conf/proxy.yaml \
         | head -n 1 \
-        | sed 's/[[:space:]]#.*$//')
+        | sed 's/[[:space:]]#.*$//;s/^[[:space:]]*//;s/[[:space:]]*$//')
+
+    case "${policy_path}" in
+        \"*\") policy_path="${policy_path#\"}"; policy_path="${policy_path%\"}" ;;
+        \'*\') policy_path="${policy_path#\'}"; policy_path="${policy_path%\'}" ;;
+    esac
 
     mkdir -p /opt/kraken-ui/conf
     : > "${ui_headers}"
@@ -157,6 +163,24 @@ sync_ui_security_headers() {
     esac
 
     cp "${resolved_path}" "${ui_headers}"
+}
+
+wait_for_waf_alert_database() {
+    db_path=/opt/krakenwaf/logs/db/vulns_alert.db
+    attempt=0
+    until [ -s "${db_path}" ]; do
+        if ! kill -0 "${WAF_PID}" 2>/dev/null; then
+            echo "KrakenWAF exited before creating ${db_path}" >&2
+            wait "${WAF_PID}" 2>/dev/null || true
+            exit 1
+        fi
+        attempt=$((attempt + 1))
+        if [ "${attempt}" -ge 60 ]; then
+            echo "KrakenWAF did not create ${db_path}" >&2
+            exit 1
+        fi
+        sleep 1
+    done
 }
 
 ensure_redis_secrets
@@ -183,6 +207,7 @@ sync_ui_security_headers
 cd /opt/krakenwaf
 /usr/local/bin/krakenwaf &
 WAF_PID=$!
+wait_for_waf_alert_database
 
 cd /opt/kraken-ui
 /usr/local/bin/kraken-ui &
@@ -213,18 +238,53 @@ bootstrap_operator() {
     add_csrf=$(sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' "${add_page}" | head -n 1)
     test -n "${add_csrf}"
 
+    add_user() {
+        username="$1"
+        email="$2"
+        user_type="$3"
+        password="$4"
+        curl --silent --show-error --fail --insecure \
+            --cookie "${cookie_jar}" --cookie-jar "${cookie_jar}" \
+            --data-urlencode "csrf_token=${add_csrf}" \
+            --data-urlencode "username=${username}" \
+            --data-urlencode "email=${email}" \
+            --data-urlencode "user_type=${user_type}" \
+            --data-urlencode "password=${password}" \
+            https://127.0.0.1:3443/kraken_ui/auth/insert_user_action --output /dev/null
+    }
+
+    add_user \
+        "operator" \
+        "${KRAKEN_UI_OPERATOR_EMAIL:-operator@example.invalid}" \
+        "operator" \
+        "${KRAKEN_UI_OPERATOR_PASSWORD}"
+
     curl --silent --show-error --fail --insecure \
         --cookie "${cookie_jar}" --cookie-jar "${cookie_jar}" \
-        --data-urlencode "csrf_token=${add_csrf}" \
-        --data-urlencode "username=operator" \
-        --data-urlencode "email=${KRAKEN_UI_OPERATOR_EMAIL:-operator@example.invalid}" \
-        --data-urlencode "user_type=operator" \
-        --data-urlencode "password=${KRAKEN_UI_OPERATOR_PASSWORD}" \
-        https://127.0.0.1:3443/kraken_ui/auth/insert_user_action --output /dev/null
+        https://127.0.0.1:3443/kraken_ui/auth/insert_user \
+        --output "${add_page}"
+    add_csrf=$(sed -n 's/.*name="csrf_token" value="\([^"]*\)".*/\1/p' "${add_page}" | head -n 1)
+    test -n "${add_csrf}"
+
+    add_user \
+        "auditor" \
+        "${KRAKEN_UI_AUDITOR_EMAIL:-auditor@example.invalid}" \
+        "auditor" \
+        "${KRAKEN_UI_AUDITOR_PASSWORD}"
 }
 
 attempt=0
 until curl --silent --fail --insecure https://127.0.0.1:3443/health >/dev/null; do
+    if ! kill -0 "${UI_PID}" 2>/dev/null; then
+        echo "Kraken UI exited during startup" >&2
+        wait "${UI_PID}" 2>/dev/null || true
+        exit 1
+    fi
+    if ! kill -0 "${WAF_PID}" 2>/dev/null; then
+        echo "KrakenWAF exited during startup" >&2
+        wait "${WAF_PID}" 2>/dev/null || true
+        exit 1
+    fi
     attempt=$((attempt + 1))
     if [ "${attempt}" -ge 60 ]; then
         echo "Kraken UI did not become healthy" >&2

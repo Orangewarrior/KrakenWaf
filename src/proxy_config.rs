@@ -98,7 +98,7 @@ impl ProxyConfig {
                 bail!("line {lineno}: expected 'key: value', got '{}'", line.trim());
             };
             let key = key_raw.trim().to_ascii_lowercase();
-            let value = value_raw.trim();
+            let value = unquote_empty(value_raw.trim());
             let set = !value.is_empty();
             match key.as_str() {
                 "listen" => {
@@ -355,6 +355,13 @@ pub fn cli_flag_present(flag: &str) -> bool {
         .any(|a| a == long || a.starts_with(&long_eq))
 }
 
+fn unquote_empty(value: &str) -> &str {
+    match value {
+        "\"\"" | "''" => "",
+        _ => value,
+    }
+}
+
 /// Strip a trailing `# comment`. A `#` opens a comment only at the start of the
 /// line or when preceded by whitespace — matching YAML, and ensuring a `#`
 /// inside a value (e.g. a URL fragment) is not mistaken for a comment.
@@ -428,6 +435,17 @@ rule_management_port: 4342
         assert_eq!(cfg.blockmsg.as_deref(), Some("./alert/blockalert.html"));
         assert_eq!(cfg.metrics_port, Some(4343));
         assert_eq!(cfg.rule_management_port, Some(4342));
+    }
+
+    #[test]
+    fn quoted_empty_header_policy_is_unset() {
+        let cfg =
+            ProxyConfig::parse("header-protection-injection: \"\"\n").expect("parses double quotes");
+        assert_eq!(cfg.header_protection_injection, None);
+
+        let cfg =
+            ProxyConfig::parse("header-protection-injection: ''\n").expect("parses single quotes");
+        assert_eq!(cfg.header_protection_injection, None);
     }
 
     #[test]

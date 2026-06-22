@@ -64,7 +64,7 @@ spec:
       # ── Pre-flight config validation as a fail-fast init container ──────────
       initContainers:
         - name: config-validate
-          image: ghcr.io/orangewarrior/krakenwaf:latest
+          image: ghcr.io/orangewarrior/krakenwaf:bookworm-slim
           imagePullPolicy: IfNotPresent
           # Validates conf/ + rules/ auto-discovered from WORKDIR (/etc/krakenwaf).
           args:
@@ -91,7 +91,7 @@ spec:
             limits: { cpu: "250m", memory: "128Mi" }
       containers:
         - name: krakenwaf
-          image: ghcr.io/orangewarrior/krakenwaf:latest
+          image: ghcr.io/orangewarrior/krakenwaf:bookworm-slim
           imagePullPolicy: IfNotPresent
           # No CLI flags: from WORKDIR /etc/krakenwaf the WAF auto-discovers
           # conf/proxy.yaml (listen 0.0.0.0:8443, metrics-port 4343,

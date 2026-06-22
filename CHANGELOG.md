@@ -1,4 +1,29 @@
 
+## [Unreleased]
+
+### Changed
+
+- **Combined WAF + UI lab bootstrap hardened.** The lab entrypoint now starts
+  KrakenWAF first, waits for the WAF alerts SQLite database
+  (`db-waf-alerts`) to exist, and only then starts Kraken UI. This removes the
+  startup race that made dashboard and attack observability unavailable on first
+  boot.
+- **Docker and Kubernetes labs now ship three lab roles.** The combined lab
+  provisions `admin`, `operator`, and `auditor` accounts through the supported
+  Kraken UI bootstrap/ACL flows, with credentials documented in
+  `deploy/WAF_n_WEB_UI/README.md` for local test use and rotation by operators.
+- **Kubernetes lab is reusable by default.** The WAF/UI lab now uses PVCs for
+  WAF logs, UI database, and UI logs, and exposes a local `LoadBalancer` Service
+  suitable for k3s-based workstation testing.
+
+### Validation
+
+- Docker Compose smoke test now verifies all three UI roles, Redis TLS/auth,
+  WAF blocking, rule-management auth, and dashboard `metrics_available` /
+  `database_available`.
+- Kubernetes DVWA overlay was applied to the local k3s lab and validated via the
+  persistent host ports for Kraken UI and the protected app.
+
 ## [2.46.1] - 2026-06-21
 
 > **Security hardening and operational correctness release.** Closes the

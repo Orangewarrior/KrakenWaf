@@ -30,6 +30,9 @@ real-ip-header: X-Forwarded-For
 trusted-proxy-cidrs: 127.0.0.1/32
 sni-map: ./rules/tls/sni_map.csv # default
 no-tls: false # no-tls disabled by default
+# Response hardening headers injected by KrakenWAF into proxied responses.
+# Set a policy file path to inject those headers. Set "" to inject no extra
+# hardening headers; the combined WAF/UI deploy mirrors this into Kraken UI.
 header-protection-injection: ./rules/headers_http/relax.headers
 blockmsg: ./alert/blockalert.html # if left empty, no page is used
 # Dedicated observability port (/metrics, /livez, /readyz, health). Binds the

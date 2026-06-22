@@ -1,27 +1,15 @@
-FROM docker.io/library/rust:1.95-alpine AS builder
+FROM docker.io/library/rust:1.95-bookworm AS builder
 
-# musl/Alpine build toolchain. build-base+musl-dev (cc) cover the vendored
-# libinjection (build.rs) and bundled SQLite; cmake/boost/ragel support
-# vectorscan-rs; cmake/perl/go support aws-lc-sys and the kraken-ui patch;
-# clang/llvm + LIBCLANG_PATH satisfy bindgen; git clones kraken-ui.
-RUN apk add --no-cache \
-        bash \
-        boost-dev \
-        build-base \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
         clang \
-        clang-dev \
         cmake \
         git \
-        go \
-        linux-headers \
-        llvm-dev \
+        g++ \
+        libboost-dev \
         make \
-        musl-dev \
-        openssl-dev \
-        perl \
-        pkgconfig \
-        ragel
-ENV LIBCLANG_PATH=/usr/lib
+        ragel \
+    && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /build/krakenwaf
 COPY Cargo.toml Cargo.lock build.rs ./
@@ -33,15 +21,17 @@ ARG KRAKEN_UI_REF=c5b81e6f5bd339e9f87110fd11857518e1ab738d
 RUN git clone https://github.com/Orangewarrior/kraken-ui.git /build/kraken-ui \
     && cd /build/kraken-ui \
     && git checkout --detach "${KRAKEN_UI_REF}" \
+    && perl -0pi -e 's|headers::load\("conf/headers_sec\.txt"\)|headers::load("/opt/kraken-ui/conf/headers_sec.txt")|' src/app.rs \
     && perl -0pi -e 's/use anyhow::\\{Context, bail\\};/use anyhow::Context;/' src/security/headers.rs \
     && perl -0pi -e 's/\\n\\s*if headers\\.is_empty\\(\\) \\{\\n\\s*bail!\\(\"security header file cannot be empty\"\\);\\n\\s*\\}\\n/\\n/' src/security/headers.rs \
     && cargo build --release --locked --bin kraken-ui
 
-FROM docker.io/library/alpine:3.21
+FROM docker.io/library/debian:bookworm-slim
 
-RUN apk add --no-cache ca-certificates curl libstdc++ openssl redis \
-    && addgroup -g 10001 kraken \
-    && adduser -D -u 10001 -G kraken -h /home/kraken kraken
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl libstdc++6 openssl redis-server \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd --system --uid 10001 --create-home --home-dir /home/kraken kraken
 
 COPY --from=builder /build/krakenwaf/target/release/krakenwaf /usr/local/bin/krakenwaf
 COPY --from=builder /build/kraken-ui/target/release/kraken-ui /usr/local/bin/kraken-ui
@@ -51,6 +41,7 @@ COPY rules /opt/krakenwaf/rules
 COPY alert /opt/krakenwaf/alert
 COPY certs /opt/krakenwaf/certs
 COPY rules/headers_http/relax.headers /opt/krakenwaf/conf/headers_sec.txt
+COPY rules/headers_http/relax.headers /opt/kraken-ui/conf/headers_sec.txt
 COPY deploy/WAF_n_WEB_UI/waf/banning.yaml /opt/krakenwaf/conf/banning.yaml
 COPY deploy/WAF_n_WEB_UI/waf/ratelimit.yaml /opt/krakenwaf/conf/ratelimit.yaml
 COPY deploy/WAF_n_WEB_UI/ui/setup.yaml /opt/kraken-ui/conf/setup.yaml
