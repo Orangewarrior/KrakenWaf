@@ -184,7 +184,7 @@ fn scheduler_includes_kraken_source_update_when_ref_is_explicit() {
     let config = UpdateConfig {
         kraken_waf: krakenwaf::update::KrakenWafUpdateConfig {
             cron: "0 12 */3 * *".to_string(),
-            ref_name: Some("refs/tags/v2.47.0".to_string()),
+            ref_name: Some("refs/tags/v2.48.0".to_string()),
             ..Default::default()
         },
         blocklist: krakenwaf::update::AddrListUpdateConfig {

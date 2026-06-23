@@ -36,4 +36,6 @@ logs/filter/deadline.jsonl
 ```
 
 Those events are fail-closed security decisions and are independent of
-`debug-proxy-dev`.
+`debug-proxy-dev`. They are queued to a background writer so repeated deadline
+blocks do not perform synchronous file-open/create work inside the inspection
+hot path.

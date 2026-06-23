@@ -31,6 +31,12 @@ Engines that run as a single function call are not interrupted mid-call; the
 deadline is observed immediately after they return. That keeps the hot detectors
 simple while still bounding cumulative inspection time across stages.
 
+In the proxy path, the deadline is created once per request in `dispatch` and
+shared by early prefix inspection, optional WebSocket handshake inspection,
+multipart part scans, decoded full-body inspection, HPP, and Open Redirect/RFI
+checks. Standalone engine calls such as `inspect_complete_payload()` still create
+their own deadline for that single call.
+
 ## Why that is safe — every engine is linear-time
 
 This is a deliberate design point, not an oversight: **KrakenWaf contains no
@@ -71,5 +77,6 @@ the *number of rules*.
   (e.g. 10–50 ms for typical rule sets). Too tight a value can block legitimate
   large payloads once the budget is hit.
 - A request that exhausts the budget is **blocked** (fail-closed) with a
-  `CWE-400` deadline finding. Use `logs/filter/deadline.jsonl` to inspect the
-  stage, elapsed time, payload sample, and rule metadata when available.
+  `CWE-400` deadline finding. Deadline events are queued to a background writer
+  for `logs/filter/deadline.jsonl`; use that file to inspect the stage, elapsed
+  time, payload sample, and rule metadata when available.

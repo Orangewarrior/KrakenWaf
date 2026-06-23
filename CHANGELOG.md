@@ -1,6 +1,61 @@
 
 ## [Unreleased]
 
+## [2.48.0] - 2026-06-23
+
+> **Per-request inspection budget and proxy hot-path hardening release.**
+> Closes the residual CPU-DoS gap where multipart requests could receive a
+> fresh inspection budget per part, reduces repeated body parsing/allocation,
+> and makes body-buffer accounting stricter under concurrency.
+
+### Added
+
+- **Shared per-request inspection deadline.** The proxy now creates one
+  `InspectionDeadline` per request in `dispatch` and propagates it across early
+  prefix inspection, optional WebSocket handshake inspection, multipart part
+  scans, decoded full-body inspection, HPP, and Open Redirect/RFI checks.
+  Standalone engine calls still create their own per-call deadline.
+- **Asynchronous filter-deadline event writer.** Deadline JSONL events are now
+  queued to a bounded background writer for `logs/filter/deadline.jsonl`,
+  avoiding synchronous directory creation and file open/append work inside the
+  inspection hot path during deadline floods.
+
+### Changed
+
+- **Multipart request bodies are parsed once per request.** The body inspection
+  path now reuses the parsed multipart parts for per-part scans and for the
+  complete textual body view consumed by HPP and Open Redirect/RFI detectors.
+- **Small inspection-view dedup no longer allocates a `HashSet`.** The request
+  matcher uses a small vector for the common low-view-count case and promotes to
+  a `HashSet` only when the view count grows.
+- **Proxy dispatch split into named phases.** `dispatch` now routes through
+  `request_head_phase`, `rate_limit_phase`, `allow_paths_phase`,
+  `early_inspection_phase`, `websocket_phase`, `body_phase`, and
+  `forward_phase`, removing the local `clippy::too_many_lines` suppression from
+  the main request path.
+- **Repository version bumped from `2.47.0` to `2.48.0`.**
+
+### Fixed
+
+- **Inspection budget is per request, not per inspection call.** A request with
+  many small multipart parts can no longer multiply CPU budget by receiving a
+  full `Max_inspection_ms` allowance for each part.
+- **Per-peer body-byte accounting is race-tightened.** In-flight body byte
+  reservation now uses atomic `fetch_add` with limit checks and rollback,
+  preventing concurrent requests from the same TCP peer from collectively
+  bypassing `max_per_ip_body_bytes` via relaxed load-then-add races.
+- **Body-byte counter identity is documented explicitly.** Runtime comments and
+  user-facing docs now state that body-buffer pressure is keyed by the direct
+  TCP peer, while rate-limit and `GeoIP` controls use trusted-proxy
+  `effective_ip`.
+
+### Validation
+
+- Rust validation completed with `cargo check`, `cargo test --lib`, and
+  targeted multipart/engine tests. `cargo clippy --all-targets -- -D warnings`
+  was also run; remaining failures are pre-existing warnings in
+  `src/redaction.rs` and `src/rorschach.rs`, outside this release change set.
+
 ## [2.47.0] - 2026-06-23
 
 > **Evidence privacy and proxy correctness release.** Adds role-aware masked

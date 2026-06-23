@@ -24,18 +24,21 @@ use std::{
     fs::{self, OpenOptions},
     io::Write as _,
     path::Path,
-    sync::Arc,
+    sync::{
+        mpsc::{self, SyncSender, TrySendError},
+        Arc, OnceLock,
+    },
     time::{Duration, Instant},
 };
 
 use ip_filter::{canonical_ip, extract_header_value};
-use spamhaus_cache::SpamhausDqsCache;
 use matchers::{
     build_matchers, keyword_match, keyword_match_accumulate, libinjection_match,
     regex_match_phase_scored, regex_match_phase_scored_threshold_deadline, EngineMatchers,
     RegexDeadline, RegexScanResult, SCORE_BLOCK_THRESHOLD,
 };
 use normalize::{as_latin1, inspection_views, normalize_request_bytes};
+use spamhaus_cache::SpamhausDqsCache;
 
 #[cfg(feature = "vectorscan-engine")]
 use matchers::vectorscan_match_scored;
@@ -168,16 +171,18 @@ struct SpamhausDqsConfig {
 }
 
 const FILTER_DEADLINE_LOG: &str = "logs/filter/deadline.jsonl";
+const SMALL_VIEW_DEDUP_LIMIT: usize = 16;
+static FILTER_DEADLINE_SENDER: OnceLock<SyncSender<String>> = OnceLock::new();
 
 #[derive(Debug, Clone, Copy)]
-struct InspectionDeadline {
+pub(crate) struct InspectionDeadline {
     started_at: Instant,
     expires_at: Instant,
     max_ms: u64,
 }
 
 impl InspectionDeadline {
-    fn new(max_ms: u64) -> Self {
+    pub(crate) fn new(max_ms: u64) -> Self {
         let started_at = Instant::now();
         let duration = Duration::from_millis(max_ms);
         let expires_at = if let Some(expires_at) = started_at.checked_add(duration) {
@@ -288,7 +293,21 @@ impl WafEngine {
         self.cmc_manager.apply_update(patch)
     }
 
+    pub(crate) fn inspection_deadline(&self) -> Option<InspectionDeadline> {
+        (self.max_inspection_ms > 0).then(|| InspectionDeadline::new(self.max_inspection_ms))
+    }
+
+    #[allow(dead_code)]
     pub async fn inspect_early(&self, ctx: &InspectionContext) -> Decision {
+        self.inspect_early_with_deadline(ctx, self.inspection_deadline())
+            .await
+    }
+
+    pub(crate) async fn inspect_early_with_deadline(
+        &self,
+        ctx: &InspectionContext,
+        deadline: Option<InspectionDeadline>,
+    ) -> Decision {
         self.metrics.inc_inspected();
         let snap = self.snapshot.load_full();
         let rules = &snap.rules;
@@ -368,7 +387,11 @@ impl WafEngine {
         }
 
         let early_request = format_request_prefix_bytes(ctx);
-        self.inspect_complete_payload_with_context(&early_request, Some(&ctx.method))
+        self.inspect_complete_payload_with_context_deadline(
+            &early_request,
+            Some(&ctx.method),
+            deadline,
+        )
     }
 
     /// Check only the per-IP rate limit, independent of the signature pipeline.
@@ -490,10 +513,43 @@ impl WafEngine {
     /// raw request body as text. The module is a no-op (returns `Allow`) when it
     /// is disabled in `conf/filter.yaml`.
     #[must_use]
+    #[allow(dead_code)]
     pub fn inspect_hpp(&self, query: &str, body: &str) -> Decision {
+        self.inspect_hpp_with_deadline(query, body, None)
+    }
+
+    #[must_use]
+    pub(crate) fn inspect_hpp_with_deadline(
+        &self,
+        query: &str,
+        body: &str,
+        deadline: Option<InspectionDeadline>,
+    ) -> Decision {
+        let payload = if body.is_empty() {
+            query.as_bytes()
+        } else {
+            body.as_bytes()
+        };
+        let view = if body.is_empty() { query } else { body };
+        if let Some(decision) = Self::deadline_decision(
+            deadline,
+            "cmc::hpp_detect:start",
+            payload,
+            Some(view),
+            DeadlineMetadata::default(),
+        ) {
+            return decision;
+        }
         match self.cmc_manager.inspect_hpp(query, body) {
             Some(finding) => Decision::Block(Box::new(finding)),
-            None => Decision::Allow,
+            None => Self::deadline_decision(
+                deadline,
+                "cmc::hpp_detect",
+                payload,
+                Some(view),
+                DeadlineMetadata::default(),
+            )
+            .unwrap_or(Decision::Allow),
         }
     }
 
@@ -505,10 +561,43 @@ impl WafEngine {
     /// The module is a no-op (returns `Allow`) when disabled in
     /// `conf/filter.yaml`.
     #[must_use]
+    #[allow(dead_code)]
     pub fn inspect_open_redirect_rfi(&self, query: &str, body: &str) -> Decision {
+        self.inspect_open_redirect_rfi_with_deadline(query, body, None)
+    }
+
+    #[must_use]
+    pub(crate) fn inspect_open_redirect_rfi_with_deadline(
+        &self,
+        query: &str,
+        body: &str,
+        deadline: Option<InspectionDeadline>,
+    ) -> Decision {
+        let payload = if body.is_empty() {
+            query.as_bytes()
+        } else {
+            body.as_bytes()
+        };
+        let view = if body.is_empty() { query } else { body };
+        if let Some(decision) = Self::deadline_decision(
+            deadline,
+            "cmc::open_redirect_rfi_detect:start",
+            payload,
+            Some(view),
+            DeadlineMetadata::default(),
+        ) {
+            return decision;
+        }
         match self.cmc_manager.inspect_open_redirect_rfi(query, body) {
             Some(finding) => Decision::Block(Box::new(finding)),
-            None => Decision::Allow,
+            None => Self::deadline_decision(
+                deadline,
+                "cmc::open_redirect_rfi_detect",
+                payload,
+                Some(view),
+                DeadlineMetadata::default(),
+            )
+            .unwrap_or(Decision::Allow),
         }
     }
 
@@ -522,11 +611,16 @@ impl WafEngine {
         payload: &[u8],
         method_hint: Option<&str>,
     ) -> Decision {
-        let deadline = if self.max_inspection_ms == 0 {
-            None
-        } else {
-            Some(InspectionDeadline::new(self.max_inspection_ms))
-        };
+        let deadline = self.inspection_deadline();
+        self.inspect_payload_inner(payload, method_hint, deadline)
+    }
+
+    pub(crate) fn inspect_complete_payload_with_context_deadline(
+        &self,
+        payload: &[u8],
+        method_hint: Option<&str>,
+        deadline: Option<InspectionDeadline>,
+    ) -> Decision {
         self.inspect_payload_inner(payload, method_hint, deadline)
     }
 
@@ -679,7 +773,8 @@ impl WafEngine {
             inspection_views(original_text.as_ref())
         };
         let latin1_views: Option<Vec<&str>> = latin1_text.as_deref().map(inspection_views);
-        let mut seen_views: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut small_seen_views: Vec<&str> = Vec::with_capacity(8);
+        let mut large_seen_views: Option<std::collections::HashSet<&str>> = None;
         let all_views = views
             .iter()
             .copied()
@@ -691,7 +786,27 @@ impl WafEngine {
                     .into_iter()
                     .flatten(),
             )
-            .filter(move |view| seen_views.insert(*view));
+            .filter(move |view| {
+                if let Some(seen) = &mut large_seen_views {
+                    return seen.insert(*view);
+                }
+                if small_seen_views.contains(view) {
+                    return false;
+                }
+                if small_seen_views.len() < SMALL_VIEW_DEDUP_LIMIT {
+                    small_seen_views.push(*view);
+                    return true;
+                }
+                let mut promoted = std::collections::HashSet::with_capacity(
+                    small_seen_views.len().saturating_mul(2),
+                );
+                for seen in small_seen_views.drain(..) {
+                    promoted.insert(seen);
+                }
+                let inserted = promoted.insert(*view);
+                large_seen_views = Some(promoted);
+                inserted
+            });
 
         for view in all_views {
             if let Some(decision) = Self::deadline_decision(
@@ -1160,12 +1275,67 @@ fn deadline_metadata_from_regex(rule: &RegexDeadline) -> DeadlineMetadata<'_> {
 }
 
 fn append_filter_deadline_event(event: &serde_json::Value) -> std::io::Result<()> {
-    let path = Path::new(FILTER_DEADLINE_LOG);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let sender = FILTER_DEADLINE_SENDER.get_or_init(spawn_filter_deadline_writer);
+    sender.try_send(event.to_string()).map_err(|err| match err {
+        TrySendError::Full(_) => std::io::Error::new(
+            std::io::ErrorKind::WouldBlock,
+            "filter deadline event queue is full",
+        ),
+        TrySendError::Disconnected(_) => std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "filter deadline event writer stopped",
+        ),
+    })
+}
+
+fn spawn_filter_deadline_writer() -> SyncSender<String> {
+    let (sender, receiver) = mpsc::sync_channel::<String>(1024);
+    if let Err(err) = std::thread::Builder::new()
+        .name("krakenwaf-filter-deadline-writer".to_string())
+        .spawn(move || {
+            let path = Path::new(FILTER_DEADLINE_LOG);
+            if let Some(parent) = path.parent() {
+                if let Err(err) = fs::create_dir_all(parent) {
+                    tracing::warn!(
+                        target: "krakenwaf",
+                        error = %err,
+                        path = FILTER_DEADLINE_LOG,
+                        "failed to create filter deadline log directory"
+                    );
+                    return;
+                }
+            }
+            let mut file = match OpenOptions::new().create(true).append(true).open(path) {
+                Ok(file) => file,
+                Err(err) => {
+                    tracing::warn!(
+                        target: "krakenwaf",
+                        error = %err,
+                        path = FILTER_DEADLINE_LOG,
+                        "failed to open filter deadline log"
+                    );
+                    return;
+                }
+            };
+            for event in receiver {
+                if let Err(err) = writeln!(file, "{event}") {
+                    tracing::warn!(
+                        target: "krakenwaf",
+                        error = %err,
+                        path = FILTER_DEADLINE_LOG,
+                        "failed to write filter deadline event"
+                    );
+                }
+            }
+        })
+    {
+        tracing::warn!(
+            target: "krakenwaf",
+            error = %err,
+            "failed to start filter deadline writer"
+        );
     }
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    writeln!(file, "{event}")
+    sender
 }
 
 fn addr_list_finding(entry: &AddrListEntry, ctx: &InspectionContext) -> Finding {

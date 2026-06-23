@@ -59,9 +59,12 @@ pub struct AppState {
     pub inflight_body_bytes: Arc<AtomicUsize>,
     /// Hard cap on total in-flight body bytes globally. 0 = disabled.
     pub max_inflight_body_bytes: usize,
-    /// Per-IP in-flight body-byte counters. Guards per-IP memory fairness.
+    /// Per-peer in-flight body-byte counters. This is intentionally keyed by
+    /// the direct TCP peer rather than trusted-proxy `effective_ip`: it guards
+    /// listener memory pressure, while identity-sensitive controls such as
+    /// rate-limit and `GeoIP` use `effective_ip`.
     pub ip_body_bytes: Arc<DashMap<String, Arc<AtomicUsize>>>,
-    /// Per-IP hard cap on in-flight body bytes. 0 = disabled.
+    /// Per-peer hard cap on in-flight body bytes. 0 = disabled.
     pub max_per_ip_body_bytes: usize,
     /// Resolved per-frame body inactivity timeout (seconds). Anti-Slowloris.
     /// Always >= 1. Resolved from CLI flag, then YAML, then 30 s.

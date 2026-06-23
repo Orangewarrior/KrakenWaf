@@ -81,7 +81,8 @@ http_header_read_timeout_secs: 10
 # Excess requests receive HTTP 503 + Retry-After: 5. 0 disables.
 max_inflight_body_bytes: 1073741824   # 1 GiB
 
-# Per-IP cap (bytes) on in-flight request body data. 0 disables.
+# Per-peer cap (bytes) on in-flight request body data. This uses the direct TCP
+# peer, not trusted-proxy X-Forwarded-For/effective_ip. 0 disables.
 max_per_ip_body_bytes: 209715200      # 200 MiB
 
 # ── Connection & body-size caps (mirror the matching CLI flags) ──────────────
@@ -145,7 +146,7 @@ built-in default
 | `tls_handshake_timeout_secs` | u64 | 10 | Max time (s) to wait for a client to finish the TLS handshake before dropping the connection — anti-Slowloris on the accept path. TLS mode only. `0` disables (not recommended). Overridden by `--tls-handshake-timeout-secs`. |
 | `http_header_read_timeout_secs` | u64 | 10 | Max time (s) to receive a complete HTTP/1 request line and header block. Runs before request-level limiting. `0` disables (not recommended). Overridden by `--http-header-read-timeout-secs`. |
 | `max_inflight_body_bytes` | usize | 1073741824 (1 GiB) | Global in-flight body byte cap across all clients. `0` disables. Overridden by `--max-inflight-body-bytes`. |
-| `max_per_ip_body_bytes` | usize | 209715200 (200 MiB) | Per-IP in-flight body byte cap. `0` disables. Overridden by `--max-per-ip-body-bytes`. |
+| `max_per_ip_body_bytes` | usize | 209715200 (200 MiB) | Per-peer in-flight body byte cap keyed by the direct TCP peer, not trusted-proxy `effective_ip`. `0` disables. Overridden by `--max-per-ip-body-bytes`. |
 | `redis.url` | string | — | Redis endpoint. **Must** use `rediss://` (TLS). |
 | `redis.pool_size` | usize | 4 | Number of pooled connections. |
 | `redis.key_prefix` | string | `"krakenwaf:rl"` | Namespace prefix — isolates this WAF from other services on the same Redis instance. |

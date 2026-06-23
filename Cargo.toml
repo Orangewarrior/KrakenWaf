@@ -1,7 +1,7 @@
 
 [package]
 name = "krakenwaf"
-version = "2.47.0"
+version = "2.48.0"
 edition = "2021"
 # `Duration::from_mins` / `from_hours` (used here and across the rate limiter and
 # updater) are const-stable since 1.91.0, which is the binding MSRV constraint.

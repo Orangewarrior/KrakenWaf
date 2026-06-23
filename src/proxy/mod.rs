@@ -7,7 +7,7 @@ mod trusted_proxy;
 
 pub(crate) use body::full_body;
 pub use body::WafBody;
-use body::{limited_body, BodyTracker};
+use body::{limited_body, BodyReservationError, BodyTracker};
 pub use builder::ProxyClientBuilder;
 use enforcement::{derive_block_reason, derive_module_label};
 pub(crate) use real_ip::effective_client_ip;
@@ -23,7 +23,7 @@ use crate::{
     geo::GeoIpResult,
     logging::{write_critical, SecurityEvent},
     multipart_extract::{extract_boundary, parse_parts, MultipartPart},
-    waf::{Decision, Finding, InspectionContext, ResponseContext},
+    waf::{Decision, Finding, InspectionContext, InspectionDeadline, ResponseContext},
 };
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
@@ -45,10 +45,7 @@ use rustls::{ClientConfig, RootCertStore};
 use rustls_pki_types::{pem::PemObject, CertificateDer};
 use std::{
     collections::VecDeque,
-    sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    },
+    sync::{atomic::AtomicUsize, Arc},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tracing::{error, info, warn};
@@ -157,12 +154,37 @@ enum InspectionPolicy {
 enum BodyOutcome {
     Complete {
         body: Bytes,
+        body_for_text_inspection: Bytes,
         findings: Vec<Finding>,
     },
     Rejected {
         finding: Box<Finding>,
         captured_prefix: Bytes,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct AllowInspectionDecision {
+    skip_inspection: bool,
+    block_by_ip: bool,
+}
+
+#[derive(Debug)]
+struct RequestHead {
+    method: Method,
+    uri: Uri,
+    context: InspectionContext,
+}
+
+enum RequestHeadPhase {
+    Continue(RequestHead),
+    Respond(WafResponse),
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RequestTrace<'a> {
+    request_id: &'a str,
+    traceparent: &'a str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -306,7 +328,6 @@ impl ProxyClient {
         resp
     }
 
-    #[allow(clippy::too_many_lines)]
     async fn dispatch(
         &self,
         state: &AppState,
@@ -315,94 +336,26 @@ impl ProxyClient {
         request_id: &str,
         traceparent: &str,
     ) -> WafResponse {
-        let method = req.method().clone();
-        let effective_ip = effective_client_ip(&client_ip, req.headers(), state);
-        let uri = req.uri().clone();
-        let path = crate::rules::normalize_url_path(uri.path());
-        // Reject oversize header sets BEFORE materialising any flattened representation
-        // so an attacker cannot force the WAF to allocate the full string just to learn
-        // the request will be denied.
-        if exceeds_header_limits(req.headers()) {
-            return block_content_response(
-                state,
-                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
-                "KrakenWaf rejected the request header set",
-            );
-        }
-        let headers_flat = flatten_headers(req.headers());
-        // A-2: per-route rule limit is further bounded by the operator-configured hard cap.
-        let body_limit = state
-            .waf
-            .body_limit_for_path(&path)
-            .min(state.cli.max_body_bytes);
-
-        let geo = state
-            .geo_reader
-            .as_ref()
-            .map_or_else(GeoIpResult::empty, |r| r.lookup(&effective_ip));
-
-        let context = InspectionContext {
-            client_ip: effective_ip.clone(),
-            method: method.to_string(),
-            uri: uri.to_string(),
-            path: path.clone(),
-            headers: headers_flat.clone(),
-            body_limit,
-            request_id: request_id.to_string(),
-            country: geo.country_name,
-            continent_name: geo.continent_name,
+        let trace = RequestTrace {
+            request_id,
+            traceparent,
+        };
+        let RequestHead {
+            method,
+            uri,
+            context,
+        } = match Self::request_head_phase(state, &req, &client_ip, trace) {
+            RequestHeadPhase::Continue(head) => head,
+            RequestHeadPhase::Respond(response) => return response,
         };
 
-        // Per-IP rate limit — enforced for EVERY request, BEFORE the allow-paths
-        // decision and independent of CMC/regex/keyword inspection. An
-        // allow-listed path skips signature inspection but must still be
-        // rate-limited; otherwise an allow-listed route is an unbounded request
-        // sink. Rate limiting is an operational control, so it is enforced in
-        // every WAF inspection mode and returns HTTP 429 with `Retry-After`.
-        if let Some(rejection) = state.waf.rate_limit_finding(&context).await {
-            let event = build_event(&context, &rejection.finding, None);
-            if let Some(response) = Self::log_and_enforce_with(
-                state,
-                event,
-                EnforcementPolicy::RateLimit {
-                    retry_after: rejection
-                        .decision
-                        .retry_after()
-                        .unwrap_or(std::time::Duration::from_secs(1)),
-                },
-            ) {
-                return response;
-            }
+        if let Some(response) = Self::rate_limit_phase(state, &context).await {
+            return response;
         }
 
-        // Check allow-paths: IP-restricted entries block non-allowed IPs; matched entries
-        // without IP restriction skip WAF inspection entirely.
-        let (skip_inspection, block_by_ip) = if let Some(config) = &state.allow_path_config {
-            match config.check(
-                &path,
-                &uri.to_string(),
-                &effective_ip,
-                state.cli.listen.port(),
-            ) {
-                PathDecision::Allow(entry) => {
-                    if entry.log {
-                        info!(
-                            target: "krakenwaf",
-                            uri = %context.uri,
-                            title = %entry.title,
-                            "allow-paths match: skipping WAF inspection"
-                        );
-                    }
-                    (true, false)
-                }
-                PathDecision::Block => (false, true),
-                PathDecision::NoMatch => (false, false),
-            }
-        } else {
-            (false, false)
-        };
+        let allow_decision = Self::allow_paths_phase(state, &context);
 
-        if block_by_ip {
+        if allow_decision.block_by_ip {
             return block_content_response(
                 state,
                 StatusCode::FORBIDDEN,
@@ -410,162 +363,356 @@ impl ProxyClient {
             );
         }
 
-        if !skip_inspection {
-            match state.waf.inspect_early(&context).await {
-                Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
-                Decision::Block(finding) => {
-                    let event = build_event(&context, &finding, None);
-                    if let Some(response) = Self::log_and_enforce(state, event) {
-                        return response;
-                    }
-                }
-            }
-        }
-
-        if is_websocket_upgrade(req.headers()) {
-            // ── WebSocket control policy (conf/websocket.yaml) ────────────────
-            // When enable_ws_control is true the handshake is subject to the
-            // path allow-list, optional handshake inspection, and the per-IP
-            // simultaneous-session cap *before* any upstream tunnel is opened.
-            // The acquired guard is threaded into the tunnel task so the per-IP
-            // counter is released exactly when the session ends.
-            let ws = &state.ws_control;
-            let ws_guard = if ws.enabled() {
-                if !ws.path_allowed(&path) {
-                    warn!(
-                        target: "krakenwaf",
-                        ip = %effective_ip,
-                        path = %path,
-                        "websocket upgrade rejected: path not in allowed_paths"
-                    );
-                    return block_content_response(
-                        state,
-                        StatusCode::FORBIDDEN,
-                        "WebSocket path not permitted by KrakenWaf",
-                    );
-                }
-                if ws.inspect_handshake() && !skip_inspection {
-                    let handshake = format_request_prefix_bytes(&context);
-                    if let Decision::Block(finding) = state
-                        .waf
-                        .inspect_complete_payload_with_context(&handshake, Some(&context.method))
-                    {
-                        let event = build_event(&context, &finding, None);
-                        if let Some(response) = Self::log_and_enforce(state, event) {
-                            return response;
-                        }
-                    }
-                }
-                let Some(guard) = ws.try_acquire(&effective_ip) else {
-                    warn!(
-                        target: "krakenwaf",
-                        ip = %effective_ip,
-                        limit = ws.config().max_connections_per_ip,
-                        "websocket upgrade rejected: per-IP session cap reached"
-                    );
-                    state.metrics.inc_rate_limit_hits();
-                    let mut resp = plain_response(
-                        StatusCode::TOO_MANY_REQUESTS,
-                        "Too many simultaneous WebSocket sessions from this IP address",
-                    );
-                    resp.headers_mut()
-                        .insert("Retry-After", HeaderValue::from_static("5"));
-                    apply_response_policy(state, &mut resp);
-                    return resp;
-                };
-                Some(guard)
-            } else {
-                None
-            };
-
-            let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
-            return self
-                .handle_websocket_upgrade(
-                    state,
-                    req,
-                    request_id,
-                    traceparent,
-                    &forwarded_origin,
-                    ws_guard,
-                )
-                .await;
-        }
-
-        let body_policy = if skip_inspection {
-            InspectionPolicy::Bypass
-        } else if state.mode == WafMode::Block {
-            InspectionPolicy::Block
+        let inspection_deadline = if allow_decision.skip_inspection {
+            None
         } else {
-            InspectionPolicy::DetectOnly
-        };
-        let body_bytes = match consume_and_inspect_body(
-            state,
-            &context,
-            req.body_mut(),
-            &client_ip,
-            body_policy,
-        )
-        .await
-        {
-            Ok(BodyOutcome::Complete { body, findings }) => {
-                for finding in findings {
-                    let event = build_event(&context, &finding, Some(&body));
-                    if let Some(response) = Self::log_and_enforce(state, event) {
-                        return response;
-                    }
-                }
-                body
-            }
-            Ok(BodyOutcome::Rejected {
-                finding,
-                captured_prefix,
-            }) => {
-                let event = build_event(&context, &finding, Some(&captured_prefix));
-                if let Some(response) = Self::log_and_enforce(state, event) {
-                    return response;
-                }
-                // A rejected body is evidence only. If enforcement policy ever
-                // changes under us, fail closed instead of forwarding it.
-                return block_content_response(
-                    state,
-                    StatusCode::FORBIDDEN,
-                    "Blocked by KrakenWaf",
-                );
-            }
-            Err(BodyInspectionError::TooLarge { limit: _ }) => {
-                return block_content_response(
-                    state,
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    "KrakenWaf blocked the request body",
-                );
-            }
-            Err(BodyInspectionError::Timeout { .. }) => {
-                return block_content_response(
-                    state,
-                    StatusCode::REQUEST_TIMEOUT,
-                    "KrakenWaf timed out waiting for the request body",
-                );
-            }
-            Err(BodyInspectionError::Other(err)) => {
-                warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
-                return block_content_response(
-                    state,
-                    StatusCode::BAD_REQUEST,
-                    "KrakenWaf could not inspect the request body",
-                );
-            }
+            state.waf.inspection_deadline()
         };
 
-        if !skip_inspection {
+        if !allow_decision.skip_inspection {
             if let Some(response) =
-                Self::inspect_buffered_request_body(state, &context, &body_bytes)
+                Self::early_inspection_phase(state, &context, inspection_deadline).await
             {
                 return response;
             }
         }
 
-        let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
+        if is_websocket_upgrade(req.headers()) {
+            return self
+                .websocket_phase(
+                    state,
+                    req,
+                    &context,
+                    allow_decision.skip_inspection,
+                    inspection_deadline,
+                    trace,
+                )
+                .await;
+        }
 
+        let body_policy = Self::body_inspection_policy(state, allow_decision.skip_inspection);
+        let (body_bytes, body_for_text_inspection) = match Self::body_phase(
+            state,
+            &context,
+            req.body_mut(),
+            &client_ip,
+            body_policy,
+            inspection_deadline,
+        )
+        .await
+        {
+            Ok(body) => body,
+            Err(response) => return response,
+        };
+
+        if !allow_decision.skip_inspection {
+            if let Some(response) = Self::inspect_buffered_request_body(
+                state,
+                &context,
+                &body_bytes,
+                &body_for_text_inspection,
+                inspection_deadline,
+            ) {
+                return response;
+            }
+        }
+
+        self.forward_phase(state, &req, method, uri, body_bytes, trace)
+            .await
+    }
+
+    fn request_head_phase(
+        state: &AppState,
+        req: &Request<Incoming>,
+        client_ip: &str,
+        trace: RequestTrace<'_>,
+    ) -> RequestHeadPhase {
+        let method = req.method().clone();
+        let effective_ip = effective_client_ip(client_ip, req.headers(), state);
+        let uri = req.uri().clone();
+        let path = crate::rules::normalize_url_path(uri.path());
+
+        // Reject oversize header sets BEFORE materialising any flattened
+        // representation so an attacker cannot force the WAF to allocate the
+        // full string just to learn the request will be denied.
+        if exceeds_header_limits(req.headers()) {
+            return RequestHeadPhase::Respond(block_content_response(
+                state,
+                StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                "KrakenWaf rejected the request header set",
+            ));
+        }
+
+        // A-2: per-route rule limit is further bounded by the
+        // operator-configured hard cap.
+        let body_limit = state
+            .waf
+            .body_limit_for_path(&path)
+            .min(state.cli.max_body_bytes);
+        let geo = state
+            .geo_reader
+            .as_ref()
+            .map_or_else(GeoIpResult::empty, |r| r.lookup(&effective_ip));
+        let context = InspectionContext {
+            client_ip: effective_ip,
+            method: method.to_string(),
+            uri: uri.to_string(),
+            path,
+            headers: flatten_headers(req.headers()),
+            body_limit,
+            request_id: trace.request_id.to_string(),
+            country: geo.country_name,
+            continent_name: geo.continent_name,
+        };
+
+        RequestHeadPhase::Continue(RequestHead {
+            method,
+            uri,
+            context,
+        })
+    }
+
+    // Per-IP rate limit — enforced for EVERY request, BEFORE the allow-paths
+    // decision and independent of CMC/regex/keyword inspection. An allow-listed
+    // path skips signature inspection but must still be rate-limited; otherwise
+    // an allow-listed route is an unbounded request sink. Rate limiting is an
+    // operational control, so it is enforced in every WAF inspection mode and
+    // returns HTTP 429 with `Retry-After`.
+    async fn rate_limit_phase(
+        state: &AppState,
+        context: &InspectionContext,
+    ) -> Option<WafResponse> {
+        let rejection = state.waf.rate_limit_finding(context).await?;
+        let event = build_event(context, &rejection.finding, None);
+        Self::log_and_enforce_with(
+            state,
+            event,
+            EnforcementPolicy::RateLimit {
+                retry_after: rejection
+                    .decision
+                    .retry_after()
+                    .unwrap_or(std::time::Duration::from_secs(1)),
+            },
+        )
+    }
+
+    // Check allow-paths: IP-restricted entries block non-allowed IPs; matched
+    // entries without IP restriction skip WAF inspection entirely.
+    fn allow_paths_phase(state: &AppState, context: &InspectionContext) -> AllowInspectionDecision {
+        let Some(config) = &state.allow_path_config else {
+            return AllowInspectionDecision {
+                skip_inspection: false,
+                block_by_ip: false,
+            };
+        };
+
+        match config.check(
+            &context.path,
+            &context.uri,
+            &context.client_ip,
+            state.cli.listen.port(),
+        ) {
+            PathDecision::Allow(entry) => {
+                if entry.log {
+                    info!(
+                        target: "krakenwaf",
+                        uri = %context.uri,
+                        title = %entry.title,
+                        "allow-paths match: skipping WAF inspection"
+                    );
+                }
+                AllowInspectionDecision {
+                    skip_inspection: true,
+                    block_by_ip: false,
+                }
+            }
+            PathDecision::Block => AllowInspectionDecision {
+                skip_inspection: false,
+                block_by_ip: true,
+            },
+            PathDecision::NoMatch => AllowInspectionDecision {
+                skip_inspection: false,
+                block_by_ip: false,
+            },
+        }
+    }
+
+    async fn early_inspection_phase(
+        state: &AppState,
+        context: &InspectionContext,
+        deadline: Option<InspectionDeadline>,
+    ) -> Option<WafResponse> {
+        match state
+            .waf
+            .inspect_early_with_deadline(context, deadline)
+            .await
+        {
+            Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
+            Decision::Block(finding) => {
+                let event = build_event(context, &finding, None);
+                Self::log_and_enforce(state, event)
+            }
+        }
+    }
+
+    fn body_inspection_policy(state: &AppState, skip_inspection: bool) -> InspectionPolicy {
+        if skip_inspection {
+            InspectionPolicy::Bypass
+        } else if state.mode == WafMode::Block {
+            InspectionPolicy::Block
+        } else {
+            InspectionPolicy::DetectOnly
+        }
+    }
+
+    // ── WebSocket control policy (conf/websocket.yaml) ────────────────
+    // When enable_ws_control is true the handshake is subject to the path
+    // allow-list, optional handshake inspection, and the per-IP
+    // simultaneous-session cap *before* any upstream tunnel is opened.
+    // The acquired guard is threaded into the tunnel task so the per-IP counter
+    // is released exactly when the session ends.
+    async fn websocket_phase(
+        &self,
+        state: &AppState,
+        req: Request<Incoming>,
+        context: &InspectionContext,
+        skip_inspection: bool,
+        deadline: Option<InspectionDeadline>,
+        trace: RequestTrace<'_>,
+    ) -> WafResponse {
+        let ws = &state.ws_control;
+        let ws_guard = if ws.enabled() {
+            if !ws.path_allowed(&context.path) {
+                warn!(
+                    target: "krakenwaf",
+                    ip = %context.client_ip,
+                    path = %context.path,
+                    "websocket upgrade rejected: path not in allowed_paths"
+                );
+                return block_content_response(
+                    state,
+                    StatusCode::FORBIDDEN,
+                    "WebSocket path not permitted by KrakenWaf",
+                );
+            }
+            if ws.inspect_handshake() && !skip_inspection {
+                let handshake = format_request_prefix_bytes(context);
+                if let Decision::Block(finding) =
+                    state.waf.inspect_complete_payload_with_context_deadline(
+                        &handshake,
+                        Some(&context.method),
+                        deadline,
+                    )
+                {
+                    let event = build_event(context, &finding, None);
+                    if let Some(response) = Self::log_and_enforce(state, event) {
+                        return response;
+                    }
+                }
+            }
+            let Some(guard) = ws.try_acquire(&context.client_ip) else {
+                warn!(
+                    target: "krakenwaf",
+                    ip = %context.client_ip,
+                    limit = ws.config().max_connections_per_ip,
+                    "websocket upgrade rejected: per-IP session cap reached"
+                );
+                state.metrics.inc_rate_limit_hits();
+                let mut resp = plain_response(
+                    StatusCode::TOO_MANY_REQUESTS,
+                    "Too many simultaneous WebSocket sessions from this IP address",
+                );
+                resp.headers_mut()
+                    .insert("Retry-After", HeaderValue::from_static("5"));
+                apply_response_policy(state, &mut resp);
+                return resp;
+            };
+            Some(guard)
+        } else {
+            None
+        };
+
+        let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
+        self.handle_websocket_upgrade(
+            state,
+            req,
+            trace.request_id,
+            trace.traceparent,
+            &forwarded_origin,
+            ws_guard,
+        )
+        .await
+    }
+
+    async fn body_phase(
+        state: &AppState,
+        context: &InspectionContext,
+        body: &mut Incoming,
+        client_ip: &str,
+        policy: InspectionPolicy,
+        deadline: Option<InspectionDeadline>,
+    ) -> Result<(Bytes, Bytes), WafResponse> {
+        match consume_and_inspect_body(state, context, body, client_ip, policy, deadline).await {
+            Ok(BodyOutcome::Complete {
+                body,
+                body_for_text_inspection,
+                findings,
+            }) => {
+                for finding in findings {
+                    let event = build_event(context, &finding, Some(&body));
+                    if let Some(response) = Self::log_and_enforce(state, event) {
+                        return Err(response);
+                    }
+                }
+                Ok((body, body_for_text_inspection))
+            }
+            Ok(BodyOutcome::Rejected {
+                finding,
+                captured_prefix,
+            }) => {
+                let event = build_event(context, &finding, Some(&captured_prefix));
+                if let Some(response) = Self::log_and_enforce(state, event) {
+                    return Err(response);
+                }
+                // A rejected body is evidence only. If enforcement policy ever
+                // changes under us, fail closed instead of forwarding it.
+                Err(block_content_response(
+                    state,
+                    StatusCode::FORBIDDEN,
+                    "Blocked by KrakenWaf",
+                ))
+            }
+            Err(BodyInspectionError::TooLarge { limit: _ }) => Err(block_content_response(
+                state,
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "KrakenWaf blocked the request body",
+            )),
+            Err(BodyInspectionError::Timeout { .. }) => Err(block_content_response(
+                state,
+                StatusCode::REQUEST_TIMEOUT,
+                "KrakenWaf timed out waiting for the request body",
+            )),
+            Err(BodyInspectionError::Other(err)) => {
+                warn!(target: "krakenwaf", error=%err, method=%context.method, uri=%context.uri, fullpath_evidence=%context.uri, "body inspection failed");
+                Err(block_content_response(
+                    state,
+                    StatusCode::BAD_REQUEST,
+                    "KrakenWaf could not inspect the request body",
+                ))
+            }
+        }
+    }
+
+    async fn forward_phase(
+        &self,
+        state: &AppState,
+        req: &Request<Incoming>,
+        method: Method,
+        uri: Uri,
+        body_bytes: Bytes,
+        trace: RequestTrace<'_>,
+    ) -> WafResponse {
+        let forwarded_origin = ForwardedOrigin::from_headers(req.headers(), state);
         match self
             .forward_request(
                 state,
@@ -573,8 +720,8 @@ impl ProxyClient {
                 uri,
                 req.headers(),
                 body_bytes,
-                request_id,
-                traceparent,
+                trace.request_id,
+                trace.traceparent,
                 &forwarded_origin,
             )
             .await
@@ -594,15 +741,18 @@ impl ProxyClient {
         state: &AppState,
         context: &InspectionContext,
         body_bytes: &Bytes,
+        body_for_inspection: &Bytes,
+        deadline: Option<InspectionDeadline>,
     ) -> Option<WafResponse> {
-        let body_for_inspection = request_body_for_text_inspection(context, body_bytes);
-
         // HTTP Parameter Pollution check (HPP_detect CMC module): inspect the
         // raw query string and the request body for a duplicated parameter
         // name. Runs once the body is available so both locations are covered.
         let query = context.uri.split_once('?').map_or("", |(_, q)| q);
-        let body_text = String::from_utf8_lossy(&body_for_inspection);
-        if let Decision::Block(finding) = state.waf.inspect_hpp(query, &body_text) {
+        let body_text = String::from_utf8_lossy(body_for_inspection);
+        if let Decision::Block(finding) = state
+            .waf
+            .inspect_hpp_with_deadline(query, &body_text, deadline)
+        {
             let event = build_event(context, &finding, Some(body_bytes));
             if let Some(response) = Self::log_and_enforce(state, event) {
                 return Some(response);
@@ -613,7 +763,10 @@ impl ProxyClient {
         // inspect the raw query string (GET) and request body (POST) for a
         // hot redirect/inclusion parameter whose value resolves to an external
         // URL, dangerous scheme, or inclusion wrapper.
-        if let Decision::Block(finding) = state.waf.inspect_open_redirect_rfi(query, &body_text) {
+        if let Decision::Block(finding) = state
+            .waf
+            .inspect_open_redirect_rfi_with_deadline(query, &body_text, deadline)
+        {
             let event = build_event(context, &finding, Some(body_bytes));
             if let Some(response) = Self::log_and_enforce(state, event) {
                 return Some(response);
@@ -1175,6 +1328,10 @@ async fn accumulate_body_frames(
     body: &mut Incoming,
     client_ip: &str,
 ) -> std::result::Result<Bytes, BodyInspectionError> {
+    // Resource accounting intentionally keys on the direct TCP peer instead of
+    // `ctx.client_ip` (`effective_ip`). Rate-limit/GeoIP use trusted-proxy
+    // identity, while body-buffer pressure is bounded by the connection that is
+    // actually consuming memory on this listener.
     let ip_counter: Arc<AtomicUsize> = state
         .ip_body_bytes
         .entry(client_ip.to_string())
@@ -1199,22 +1356,23 @@ async fn accumulate_body_frames(
                     limit: ctx.body_limit,
                 });
             }
-            if state.max_inflight_body_bytes > 0
-                && state.inflight_body_bytes.load(Ordering::Relaxed) + chunk.len()
-                    > state.max_inflight_body_bytes
-            {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_inflight_body_bytes,
-                });
+            match tracker.try_add(
+                chunk.len(),
+                state.max_inflight_body_bytes,
+                state.max_per_ip_body_bytes,
+            ) {
+                Ok(()) => {}
+                Err(BodyReservationError::Global) => {
+                    return Err(BodyInspectionError::TooLarge {
+                        limit: state.max_inflight_body_bytes,
+                    });
+                }
+                Err(BodyReservationError::Ip) => {
+                    return Err(BodyInspectionError::TooLarge {
+                        limit: state.max_per_ip_body_bytes,
+                    });
+                }
             }
-            if state.max_per_ip_body_bytes > 0
-                && tracker.ip.load(Ordering::Relaxed) + chunk.len() > state.max_per_ip_body_bytes
-            {
-                return Err(BodyInspectionError::TooLarge {
-                    limit: state.max_per_ip_body_bytes,
-                });
-            }
-            tracker.add(chunk.len());
             acc.extend_from_slice(chunk);
         }
     }
@@ -1227,10 +1385,12 @@ async fn consume_and_inspect_body(
     body: &mut Incoming,
     client_ip: &str,
     policy: InspectionPolicy,
+    deadline: Option<InspectionDeadline>,
 ) -> std::result::Result<BodyOutcome, BodyInspectionError> {
     let raw_body = accumulate_body_frames(state, ctx, body, client_ip).await?;
     if raw_body.is_empty() || policy == InspectionPolicy::Bypass {
         return Ok(BodyOutcome::Complete {
+            body_for_text_inspection: raw_body.clone(),
             body: raw_body,
             findings: Vec::new(),
         });
@@ -1238,17 +1398,33 @@ async fn consume_and_inspect_body(
 
     let decoded_body = decode_body_for_inspection(state, ctx, &raw_body)?;
     let mut findings = Vec::new();
-    if let Some(outcome) =
-        inspect_multipart_parts(state, ctx, &decoded_body, &raw_body, policy, &mut findings)?
-    {
+    let multipart_parts = multipart_parts_for_text_inspection(ctx, &decoded_body);
+    if let Some(outcome) = inspect_multipart_parts(
+        state,
+        ctx,
+        multipart_parts.as_deref(),
+        &raw_body,
+        policy,
+        deadline,
+        &mut findings,
+    ) {
         return Ok(outcome);
     }
-    if let Some(outcome) =
-        inspect_decoded_body(state, ctx, &decoded_body, &raw_body, policy, &mut findings)
-    {
+    let body_for_text_inspection =
+        request_body_for_text_inspection_with_parts(&decoded_body, multipart_parts.as_deref());
+    if let Some(outcome) = inspect_decoded_body(
+        state,
+        ctx,
+        &body_for_text_inspection,
+        &raw_body,
+        policy,
+        deadline,
+        &mut findings,
+    ) {
         return Ok(outcome);
     }
     Ok(BodyOutcome::Complete {
+        body_for_text_inspection,
         body: raw_body,
         findings,
     })
@@ -1287,57 +1463,56 @@ fn decode_body_for_inspection(
 fn inspect_multipart_parts(
     state: &AppState,
     ctx: &InspectionContext,
-    decoded_body: &Bytes,
+    parts: Option<&[MultipartPart]>,
     raw_body: &Bytes,
     policy: InspectionPolicy,
+    deadline: Option<InspectionDeadline>,
     findings: &mut Vec<Finding>,
-) -> std::result::Result<Option<BodyOutcome>, BodyInspectionError> {
+) -> Option<BodyOutcome> {
     // Multipart extraction: scan each part's inspectable view independently.
-    if let Some(ct) = ctx_header(ctx, "content-type") {
-        if let Some(boundary) = extract_boundary(&ct) {
-            let parts = parse_parts(decoded_body, &boundary);
-            for part in &parts {
-                let part_view = multipart_part_for_text_inspection(part);
-                if part_view.is_empty() {
-                    continue;
+    let parts = parts?;
+    for part in parts {
+        let part_view = multipart_part_for_text_inspection(part);
+        if part_view.is_empty() {
+            continue;
+        }
+        let part_payload = format_full_request_bytes(ctx, Some(&part_view));
+        match state.waf.inspect_complete_payload_with_context_deadline(
+            &part_payload,
+            Some(&ctx.method),
+            deadline,
+        ) {
+            Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
+            Decision::Block(finding) => {
+                if policy == InspectionPolicy::Block {
+                    return Some(BodyOutcome::Rejected {
+                        finding,
+                        captured_prefix: raw_body.clone(),
+                    });
                 }
-                let part_payload = format_full_request_bytes(ctx, Some(&part_view));
-                match state
-                    .waf
-                    .inspect_complete_payload_with_context(&part_payload, Some(&ctx.method))
-                {
-                    Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
-                    Decision::Block(finding) => {
-                        if policy == InspectionPolicy::Block {
-                            return Ok(Some(BodyOutcome::Rejected {
-                                finding,
-                                captured_prefix: raw_body.clone(),
-                            }));
-                        }
-                        findings.push(*finding);
-                    }
-                }
+                findings.push(*finding);
             }
         }
     }
-    Ok(None)
+    None
 }
 
 fn inspect_decoded_body(
     state: &AppState,
     ctx: &InspectionContext,
-    decoded_body: &Bytes,
+    body_for_inspection: &Bytes,
     raw_body: &Bytes,
     policy: InspectionPolicy,
+    deadline: Option<InspectionDeadline>,
     findings: &mut Vec<Finding>,
 ) -> Option<BodyOutcome> {
     // Single full-body inspection on the cleartext view.
-    let body_for_inspection = request_body_for_text_inspection(ctx, decoded_body);
-    let full = format_full_request_bytes(ctx, Some(&body_for_inspection));
-    match state
-        .waf
-        .inspect_complete_payload_with_context(&full, Some(&ctx.method))
-    {
+    let full = format_full_request_bytes(ctx, Some(body_for_inspection));
+    match state.waf.inspect_complete_payload_with_context_deadline(
+        &full,
+        Some(&ctx.method),
+        deadline,
+    ) {
         Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
         Decision::Block(finding) => {
             if policy == InspectionPolicy::Block {
@@ -1368,20 +1543,34 @@ fn ctx_header(ctx: &InspectionContext, target: &str) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 fn request_body_for_text_inspection(ctx: &InspectionContext, body: &Bytes) -> Bytes {
-    let Some(ct) = ctx_header(ctx, "content-type") else {
+    let parts = multipart_parts_for_text_inspection(ctx, body);
+    request_body_for_text_inspection_with_parts(body, parts.as_deref())
+}
+
+fn multipart_parts_for_text_inspection(
+    ctx: &InspectionContext,
+    body: &Bytes,
+) -> Option<Vec<MultipartPart>> {
+    let ct = ctx_header(ctx, "content-type")?;
+    let boundary = extract_boundary(&ct)?;
+    Some(parse_parts(body, &boundary))
+}
+
+fn request_body_for_text_inspection_with_parts(
+    body: &Bytes,
+    parts: Option<&[MultipartPart]>,
+) -> Bytes {
+    let Some(parts) = parts else {
         return body.clone();
     };
-    let Some(boundary) = extract_boundary(&ct) else {
-        return body.clone();
-    };
-    let parts = parse_parts(body, &boundary);
     if parts.is_empty() {
         return body.clone();
     }
 
     let mut out = Vec::with_capacity(body.len().min(64 * 1024));
-    for part in &parts {
+    for part in parts {
         out.extend_from_slice(&part.headers);
         out.extend_from_slice(b"\n\n");
         out.extend_from_slice(multipart_part_inspect_bytes(part));

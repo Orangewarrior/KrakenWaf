@@ -73,7 +73,7 @@ Build the combined image and make it available to your cluster, then apply one
 overlay:
 
 ```bash
-docker build -f deploy/WAF_n_WEB_UI/Containerfile -t krakenwaf-ui-lab:2.47.0-bookworm-slim .
+docker build -f deploy/WAF_n_WEB_UI/Containerfile -t krakenwaf-ui-lab:2.48.0-bookworm-slim .
 kubectl apply -k deploy/WAF_n_WEB_UI/kubernetes/dvwa
 ```
 
@@ -114,8 +114,8 @@ docker run -d --name krakenwaf-k3s \
 docker exec krakenwaf-k3s cat /etc/rancher/k3s/k3s.yaml > /tmp/k3s-krakenwaf.yaml
 sed -i 's|https://127.0.0.1:6443|https://127.0.0.1:16443|' /tmp/k3s-krakenwaf.yaml
 
-docker build -f deploy/WAF_n_WEB_UI/Containerfile -t krakenwaf-ui-lab:2.47.0-bookworm-slim .
-docker save krakenwaf-ui-lab:2.47.0-bookworm-slim vulnerables/web-dvwa:latest \
+docker build -f deploy/WAF_n_WEB_UI/Containerfile -t krakenwaf-ui-lab:2.48.0-bookworm-slim .
+docker save krakenwaf-ui-lab:2.48.0-bookworm-slim vulnerables/web-dvwa:latest \
   | docker exec -i krakenwaf-k3s \
       ctr --address /run/k3s/containerd/containerd.sock --namespace k8s.io images import -
 

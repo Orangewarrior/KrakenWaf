@@ -49,7 +49,7 @@ detection engine and all CMC modules.
 |-----|------|---------|-------------------|-------------|
 | `Untrust` | integer 0–100 | `60` | — | Global paranoia level. Governs the 2-signal and 1-signal blocking thresholds in score-based detectors (currently `Java_deserialize_detect`), the response-block gate for `Detect_db_errors` and `Detect_bad_artifacts` (≥ 60 blocks, < 60 logs), and the `Silent_sql_errors` gate (≥ 80 blocks, < 80 scrubs). |
 | `Anomaly_threshold` | integer (u32) | `600` | `--anomaly-threshold` | Detection-engine block threshold (score). Rules with `score >= threshold` block immediately; lower-scored rules accumulate inside a single inspection view until their sum reaches `threshold`. See [../score_rank.md](../score_rank.md). |
-| `Max_inspection_ms` | integer (u64) | `0` (disabled) | `--max-inspection-ms` | Per-request wall-clock cap on WAF inspection (milliseconds). When `> 0` and the deadline elapses, inspection blocks fail-closed and writes `logs/filter/deadline.jsonl`. `0` disables the deadline. |
+| `Max_inspection_ms` | integer (u64) | `0` (disabled) | `--max-inspection-ms` | Per-request wall-clock cap on WAF inspection (milliseconds), shared across early/body/HPP/open-redirect phases. When `> 0` and the deadline elapses, inspection blocks fail-closed and queues `logs/filter/deadline.jsonl`. `0` disables the deadline. |
 
 #### Priority chain
 

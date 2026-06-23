@@ -22,25 +22,59 @@ pub(super) struct BodyTracker {
     bytes: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BodyReservationError {
+    Global,
+    Ip,
+}
+
 impl BodyTracker {
     pub(super) fn new(global: Arc<AtomicUsize>, ip: Arc<AtomicUsize>) -> Self {
-        Self { global, ip, bytes: 0 }
+        Self {
+            global,
+            ip,
+            bytes: 0,
+        }
     }
 
-    pub(super) fn add(&mut self, bytes: usize) {
-        self.global.fetch_add(bytes, Ordering::Relaxed);
-        self.ip.fetch_add(bytes, Ordering::Relaxed);
+    pub(super) fn try_add(
+        &mut self,
+        bytes: usize,
+        global_limit: usize,
+        ip_limit: usize,
+    ) -> Result<(), BodyReservationError> {
+        let global_before = self.global.fetch_add(bytes, Ordering::AcqRel);
+        if limit_exceeded(global_before, bytes, global_limit) {
+            self.global.fetch_sub(bytes, Ordering::AcqRel);
+            return Err(BodyReservationError::Global);
+        }
+
+        let ip_before = self.ip.fetch_add(bytes, Ordering::AcqRel);
+        if limit_exceeded(ip_before, bytes, ip_limit) {
+            self.ip.fetch_sub(bytes, Ordering::AcqRel);
+            self.global.fetch_sub(bytes, Ordering::AcqRel);
+            return Err(BodyReservationError::Ip);
+        }
+
         self.bytes += bytes;
+        Ok(())
     }
 }
 
 impl Drop for BodyTracker {
     fn drop(&mut self) {
         if self.bytes > 0 {
-            self.global.fetch_sub(self.bytes, Ordering::Relaxed);
-            self.ip.fetch_sub(self.bytes, Ordering::Relaxed);
+            self.global.fetch_sub(self.bytes, Ordering::AcqRel);
+            self.ip.fetch_sub(self.bytes, Ordering::AcqRel);
         }
     }
+}
+
+fn limit_exceeded(current: usize, added: usize, limit: usize) -> bool {
+    let Some(total) = current.checked_add(added) else {
+        return true;
+    };
+    limit > 0 && total > limit
 }
 
 struct LimitedResponseBody {
@@ -58,7 +92,13 @@ impl LimitedResponseBody {
         seen: usize,
         max_bytes: usize,
     ) -> Self {
-        Self { initial, inner: Box::pin(inner), seen, max_bytes, done: false }
+        Self {
+            initial,
+            inner: Box::pin(inner),
+            seen,
+            max_bytes,
+            done: false,
+        }
     }
 }
 
@@ -108,7 +148,9 @@ impl Body for LimitedResponseBody {
         self.done || (self.initial.is_empty() && self.inner.is_end_stream())
     }
 
-    fn size_hint(&self) -> SizeHint { SizeHint::default() }
+    fn size_hint(&self) -> SizeHint {
+        SizeHint::default()
+    }
 }
 
 fn response_limit_error(max_bytes: usize) -> BoxError {
