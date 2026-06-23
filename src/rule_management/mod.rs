@@ -244,8 +244,20 @@ async fn handle_rule_management(
         return forbidden(&state);
     }
 
-    // Read the (bounded) body before authentication: the Rorschach token binds a
-    // hash of the body, so we must have the exact bytes to verify it.
+    let Some(cred) = bearer_raw.as_deref().and_then(RorschachCredential::parse) else {
+        warn!(
+            target: "krakenwaf",
+            ip = %effective_ip,
+            token = REDACTED_TOKEN,
+            present = bearer_raw.is_some(),
+            "rule-management: missing or malformed bearer token; rejected with 401"
+        );
+        return unauthorized(&state);
+    };
+
+    // Read the (bounded) body after structural token validation: the Rorschach
+    // MAC binds a hash of the body, so the exact bytes are still required for
+    // authentication, but unauthenticated callers cannot force body buffering.
     let Ok(collected) = Limited::new(body, MAX_RULE_MGMT_BODY).collect().await else {
         warn!(
             target: "krakenwaf",
@@ -257,20 +269,11 @@ async fn handle_rule_management(
     let body_bytes = collected.to_bytes();
 
     // ── Gate 2: Rorschach bearer token (401) ──────────────────────────────────
-    let Some(cred) = bearer_raw.as_deref().and_then(RorschachCredential::parse) else {
-        warn!(
-            target: "krakenwaf",
-            ip = %effective_ip,
-            token = REDACTED_TOKEN,
-            present = bearer_raw.is_some(),
-            "rule-management: missing or malformed bearer token; rejected with 401"
-        );
-        return unauthorized(&state);
-    };
     let now = Utc::now().timestamp();
     if let Err(err) = gate
         .validator
         .verify(&cred, method.as_str(), &path, &body_bytes, now)
+        .await
     {
         warn!(
             target: "krakenwaf",

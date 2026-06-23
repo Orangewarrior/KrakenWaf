@@ -1,8 +1,77 @@
 
 ## [Unreleased]
 
+## [2.47.0] - 2026-06-23
+
+> **Evidence privacy and proxy correctness release.** Adds role-aware masked
+> attack evidence for Kraken UI consumers, persistent control-plane anti-replay,
+> strict request-body transparency, stricter rule/config handling, and lab
+> bootstrap hardening.
+
+### Added
+
+- **Role-aware masked attack evidence.** Added `redact-mask-filter` to
+  `conf/filter.yaml` with default `true`. When enabled, KrakenWAF writes raw
+  forensic request evidence for admin access and masked request evidence for
+  operator/auditor views, replacing sensitive parameter, body, cookie, token,
+  bearer, secret, password, code, and key values with `+++++`.
+- **Masked SQLite evidence contract.** Schema v5 adds `request_uri_masked`,
+  `fullpath_evidence_masked`, and `request_payload_masked`, plus the
+  `vulnerabilities_masked` view that exposes legacy evidence column names backed
+  by masked values for non-admin UI roles.
+- **Redaction documentation and tests.** Added `docs/redact_mask_filter.md`,
+  README coverage, unit tests for localized sensitive-name masking, storage
+  tests for raw/masked inserts and the masked view, and an integration test that
+  runs the real `demo_server`, `krakenwaf`, and `attack` binaries before
+  asserting persisted token values are masked.
+- **Persistent Rorschach anti-replay nonce stores.** Rule-management bearer
+  tokens now reserve `(client_id, step, nonce)` in Redis when the WAF already
+  has an active Redis rate-limit pool, and fall back to a local SQLite store
+  under `logs/db/rorschach_replay.db` otherwise. Nonce-store failures reject
+  control-plane requests fail-closed.
+- **Request-body transparency regression suite.** Added integration coverage for
+  fixed-length bodies, chunked bodies, allowlisted routes, block mode, and
+  detect-only mode to prove allowed requests reach the upstream byte-for-byte
+  unchanged.
+- **Detection counters separate from block counters.** Prometheus output now
+  exposes global and per-module detection counters independently from actual
+  enforcement blocks, so `DetectOnly` findings do not inflate block metrics.
+
 ### Changed
 
+- **SQLite vulnerability schema migrated to v5.** Fresh and upgraded databases
+  now carry masked evidence columns and a masked view; legacy rows are
+  backfilled with their raw values so existing evidence is preserved.
+- **Partial request bodies are evidence only.** Request-body inspection now
+  returns explicit complete-or-rejected outcomes. A captured prefix is retained
+  only for logging/investigation and is never reused as the forwarded upstream
+  body. `Block` rejects without forwarding, `DetectOnly` continues reading to
+  EOF before forwarding, and `Bypass` still honors body limits and frame
+  timeouts.
+- **Response scrubbing no longer rewrites truncated prefixes.** Silent SQL-error
+  replacement only rewrites when the inspected response bytes are known to be
+  the complete response body. Prefix-only inspections still log the finding but
+  forward the original stream without creating a body/header mismatch.
+- **Rule-management authentication buffers less unauthenticated data.** The
+  control plane now validates the structural bearer credential before reading
+  the bounded request body needed for MAC verification.
+- **Upstream DNS safety is rechecked before forwarding.** Non-private upstream
+  mode now fails closed on startup and request-time resolution to private,
+  loopback, link-local, unspecified, or empty DNS results for both HTTP and
+  WebSocket forwarding.
+- **Path-prefix matching now requires a segment boundary.** Route body limits
+  and allow-path matching no longer let `/upload` implicitly match sibling paths
+  such as `/upload2`.
+- **`only_addrs` files are confined to the allow-path base directory.** Absolute
+  paths and symlinks must canonicalize inside the configured base directory
+  before the address restriction is loaded.
+- **Rule JSON loading is strict.** Invalid JSON string escapes are rejected
+  instead of being silently repaired, making malformed rule files fail
+  validation/startup predictably.
+- **Ban accounting follows real enforcement.** Ban-manager updates and block
+  metrics now trigger only for actual blocking decisions or rate-limit denials,
+  not for monitor/detect-only findings.
+- **Repository version bumped from `2.46.1` to `2.47.0`.**
 - **Combined WAF + UI lab bootstrap hardened.** The lab entrypoint now starts
   KrakenWAF first, waits for the WAF alerts SQLite database
   (`db-waf-alerts`) to exist, and only then starts Kraken UI. This removes the
@@ -18,6 +87,15 @@
 
 ### Validation
 
+- Rust validation completed with `cargo check`, `cargo test`, `cargo run --bin
+  krakenwaf -- rules validate`, `rustfmt --check` on changed Rust files, and
+  `git diff --check`.
+- Redaction-specific coverage passed with unit tests for `redaction`, SQLite
+  insert/view tests, filter-config default tests, and
+  `cargo test --test demo_attack_workflow` against the real demo and attack
+  binaries.
+- Proxy transparency coverage passed for fixed-length, chunked, allowlist,
+  block, and detect-only request-body flows.
 - Docker Compose smoke test now verifies all three UI roles, Redis TLS/auth,
   WAF blocking, rule-management auth, and dashboard `metrics_available` /
   `database_available`.

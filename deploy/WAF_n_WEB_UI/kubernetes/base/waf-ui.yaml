@@ -19,7 +19,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: waf-ui
-          image: krakenwaf-ui-lab:2.46.0-bookworm-slim
+          image: krakenwaf-ui-lab:2.47.0-bookworm-slim
           imagePullPolicy: IfNotPresent
           env:
             - name: WAF_UPSTREAM

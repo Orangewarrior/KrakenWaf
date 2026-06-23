@@ -25,6 +25,8 @@ struct FilterSwitches {
     vectorscan: bool,
     #[serde(rename = "cmc-modules")]
     cmc_modules: bool,
+    #[serde(rename = "redact-mask-filter")]
+    redact_mask_filter: bool,
     #[serde(rename = "rules-dir")]
     rules_dir: String,
     allowpaths: String,
@@ -38,6 +40,7 @@ impl Default for FilterSwitches {
             libinjection_xss: true,
             vectorscan: true,
             cmc_modules: true,
+            redact_mask_filter: true,
             rules_dir: "./rules".to_string(),
             // The shipped file declares the path explicitly. Keeping the
             // parser fallback empty preserves compatibility with older custom
@@ -55,6 +58,7 @@ impl FilterSwitches {
             libinjection_xss: false,
             vectorscan: false,
             cmc_modules: true,
+            redact_mask_filter: true,
             rules_dir: "./rules".to_string(),
             allowpaths: String::new(),
             verbose: false,
@@ -98,6 +102,11 @@ impl FilterConfig {
             config.disable_all_modules();
         }
         config
+    }
+
+    #[must_use]
+    pub const fn redact_mask_filter(&self) -> bool {
+        self.switches.redact_mask_filter
     }
 }
 
@@ -144,7 +153,7 @@ mod tests {
         let path = dir.path().join("filter.yaml");
         fs::write(
             &path,
-            "CMC-Rules:\n  SQLi_comments_detect: true\ncmc-modules: false\nlibinjection-sqli: false\nlibinjection-xss: false\nvectorscan: false\nrules-dir: custom-rules\nallowpaths: custom-allowpaths.yaml\nverbose: false\n",
+            "CMC-Rules:\n  SQLi_comments_detect: true\ncmc-modules: false\nredact-mask-filter: false\nlibinjection-sqli: false\nlibinjection-xss: false\nvectorscan: false\nrules-dir: custom-rules\nallowpaths: custom-allowpaths.yaml\nverbose: false\n",
         )
         .expect("write filter config");
         let config = FilterConfigFactory::create(dir.path(), path.to_str()).expect("load config");
@@ -161,6 +170,7 @@ mod tests {
             Some("custom-allowpaths.yaml")
         );
         assert!(!cli.verbose);
+        assert!(!config.redact_mask_filter());
     }
 
     #[test]
@@ -188,5 +198,15 @@ mod tests {
         assert_eq!(cli.rules_dir, "from-cli");
         assert_eq!(cli.allow_paths_file.as_deref(), Some("from-cli.yaml"));
         assert!(cli.verbose);
+    }
+
+    #[test]
+    fn redact_mask_filter_defaults_to_enabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("filter.yaml");
+        fs::write(&path, "CMC-Rules:\n  SQLi_comments_detect: true\n")
+            .expect("write filter config");
+        let config = FilterConfigFactory::create(dir.path(), path.to_str()).expect("load config");
+        assert!(config.redact_mask_filter());
     }
 }

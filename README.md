@@ -100,6 +100,13 @@ to a closed allowlist of five files (`body_regex`, `header_regex`, `path_regex`,
 
 KrakenWAF have a external software for user interface [kraken-ui](https://github.com/Orangewarrior/kraken-ui),hardened web application for operating a KrakenWAF deployment: manage operators, watch blocked attacks in real time, and read live WAF metrics from a single TLS-only console. It is written in Rust with Axum, Askama and SeaORM, ships no CDN assets and runs no inline JavaScript.
 
+KrakenWAF also writes masked evidence fields for non-admin UI roles when
+`redact-mask-filter: true` is enabled in `conf/filter.yaml` (default). Admin
+users can read the raw forensic columns, while operator and auditor views should
+use `vulnerabilities_masked` or the `*_masked` columns where sensitive query,
+body, cookie, token, and key values are replaced with `+++++`. See
+[docs/redact_mask_filter.md](docs/redact_mask_filter.md).
+
 
 ## 🛡️ Rate Limiting
 
@@ -579,6 +586,12 @@ $ sqlite3 logs/db/vulns_alert.db "SELECT id,title,severity,engine,http_method,re
 ```
 Note: If you need to inspect the full request, refer to the "request_payload" field. Use it in the SQL query SELECT.
 
+When `redact-mask-filter` is enabled, raw request evidence remains available in
+`request_uri`, `fullpath_evidence`, and `request_payload` for admin-only
+forensics. Non-admin views should read `request_uri_masked`,
+`fullpath_evidence_masked`, `request_payload_masked`, or the
+`vulnerabilities_masked` view.
+
 ---
 
 ## ⚙️ CLI Arguments
@@ -670,9 +683,12 @@ CREATE TABLE vulnerabilities (
     continent_name VARCHAR(64) NOT NULL DEFAULT '',
     http_method VARCHAR(16) NOT NULL,
     request_uri TEXT NOT NULL,
+    request_uri_masked TEXT NOT NULL DEFAULT '',
     fullpath_evidence TEXT NOT NULL,
+    fullpath_evidence_masked TEXT NOT NULL DEFAULT '',
     engine VARCHAR(32) NOT NULL,
     request_payload TEXT NOT NULL,
+    request_payload_masked TEXT NOT NULL DEFAULT '',
     request_id VARCHAR(32) NOT NULL DEFAULT ''
 );
 
@@ -686,6 +702,28 @@ CREATE INDEX idx_vulnerabilities_title
     ON vulnerabilities(title);
 CREATE INDEX idx_vulnerabilities_request_id
     ON vulnerabilities(request_id);
+
+CREATE VIEW vulnerabilities_masked AS
+SELECT
+    id,
+    title,
+    severity,
+    cwe,
+    description,
+    reference_url,
+    occurred_at,
+    rule_match,
+    rule_line_match,
+    client_ip,
+    country,
+    continent_name,
+    http_method,
+    request_uri_masked AS request_uri,
+    fullpath_evidence_masked AS fullpath_evidence,
+    engine,
+    request_payload_masked AS request_payload,
+    request_id
+FROM vulnerabilities;
 ```
 
 ## Main rules local
@@ -784,6 +822,10 @@ custom-languages-params:
   chinese: false
   hindi: false
   portuguese: false
+
+# Persist masked request evidence for non-admin UI roles.
+# Default: true
+redact-mask-filter: true
 ```
 
 Set any key to `false` to disable that detector without recompiling.

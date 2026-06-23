@@ -1,0 +1,1765 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="Relatório técnico de segurança, arquitetura e Rust do repositório KrakenWaf.">
+  <title>KrakenWaf — Relatório de Segurança, Rust e Arquitetura</title>
+  <style>
+    :root {
+      --bg: #f3f6f8;
+      --surface: #ffffff;
+      --surface-alt: #f8fafb;
+      --text: #17202a;
+      --muted: #5d6975;
+      --border: #dfe6eb;
+      --navy: #102a43;
+      --navy-2: #183b56;
+      --teal: #0f766e;
+      --teal-soft: #e9f7f5;
+      --orange: #d97706;
+      --orange-soft: #fff6e8;
+      --red: #b42318;
+      --red-soft: #fff0ef;
+      --critical: #7f1d1d;
+      --critical-soft: #fde8e8;
+      --blue: #155eef;
+      --blue-soft: #edf4ff;
+      --green: #16794c;
+      --green-soft: #eaf8f0;
+      --code-bg: #101820;
+      --code-text: #e8f1f8;
+      --shadow: 0 16px 45px rgba(16, 42, 67, 0.08);
+      --radius: 18px;
+      --max-width: 1160px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 85% 0%, rgba(15, 118, 110, 0.12), transparent 26rem),
+        radial-gradient(circle at 10% 10%, rgba(217, 119, 6, 0.07), transparent 22rem),
+        var(--bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      font-size: 16px;
+      line-height: 1.65;
+    }
+
+    a {
+      color: var(--teal);
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+
+    a:hover {
+      color: var(--navy);
+    }
+
+    code, pre {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+
+    .page {
+      width: min(calc(100% - 32px), var(--max-width));
+      margin: 0 auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      border-bottom: 1px solid rgba(223, 230, 235, 0.9);
+      background: rgba(243, 246, 248, 0.9);
+      backdrop-filter: blur(14px);
+    }
+
+    .topbar-inner {
+      min-height: 60px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      color: var(--navy);
+      font-weight: 900;
+      letter-spacing: -0.025em;
+      text-decoration: none;
+    }
+
+    .brand-mark {
+      width: 36px;
+      height: 36px;
+      display: grid;
+      place-items: center;
+      border-radius: 11px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--navy), var(--teal));
+      box-shadow: 0 10px 24px rgba(15, 118, 110, 0.22);
+      font-size: 13px;
+      letter-spacing: 0.04em;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .button {
+      min-height: 38px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--surface);
+      color: var(--navy);
+      font: inherit;
+      font-size: 14px;
+      font-weight: 800;
+      text-decoration: none;
+      cursor: pointer;
+    }
+
+    .button:hover {
+      background: var(--surface-alt);
+      border-color: #b8c6cf;
+      color: var(--navy);
+    }
+
+    .button.primary {
+      color: #fff;
+      border-color: var(--teal);
+      background: var(--teal);
+    }
+
+    .button.primary:hover {
+      background: #0b5f59;
+    }
+
+    .hero {
+      padding: 70px 0 38px;
+    }
+
+    .hero-card {
+      position: relative;
+      overflow: hidden;
+      padding: 56px;
+      border: 1px solid rgba(15, 118, 110, 0.16);
+      border-radius: 26px;
+      background:
+        linear-gradient(135deg, rgba(255,255,255,0.98), rgba(237,249,247,0.96));
+      box-shadow: var(--shadow);
+    }
+
+    .hero-card::before {
+      content: "";
+      position: absolute;
+      inset: auto -120px -150px auto;
+      width: 380px;
+      height: 380px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(15, 118, 110, 0.20), transparent 68%);
+      pointer-events: none;
+    }
+
+    .hero-card::after {
+      content: "";
+      position: absolute;
+      width: 180px;
+      height: 180px;
+      top: -90px;
+      left: -70px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(217, 119, 6, 0.13), transparent 70%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      margin: 0 0 14px;
+      color: var(--teal);
+      font-size: 13px;
+      font-weight: 900;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1, h2, h3, h4 {
+      margin-top: 0;
+      color: var(--navy);
+      line-height: 1.22;
+      letter-spacing: -0.025em;
+    }
+
+    h1 {
+      max-width: 900px;
+      margin-bottom: 18px;
+      font-size: clamp(38px, 6vw, 66px);
+    }
+
+    h2 {
+      margin-bottom: 18px;
+      font-size: clamp(26px, 3.2vw, 38px);
+    }
+
+    h3 {
+      margin-bottom: 12px;
+      font-size: 22px;
+    }
+
+    h4 {
+      margin-bottom: 8px;
+      font-size: 17px;
+    }
+
+    p {
+      margin-top: 0;
+    }
+
+    .lead {
+      max-width: 850px;
+      margin-bottom: 30px;
+      color: var(--muted);
+      font-size: 19px;
+    }
+
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 34px;
+    }
+
+    .meta-card {
+      min-height: 94px;
+      padding: 17px;
+      border: 1px solid rgba(223, 230, 235, 0.96);
+      border-radius: 14px;
+      background: rgba(255,255,255,0.78);
+    }
+
+    .meta-label {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .meta-value {
+      display: block;
+      color: var(--navy);
+      font-weight: 900;
+      overflow-wrap: anywhere;
+    }
+
+    main {
+      padding-bottom: 82px;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 285px minmax(0, 1fr);
+      gap: 28px;
+      align-items: start;
+    }
+
+    .toc {
+      position: sticky;
+      top: 84px;
+      padding: 21px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 8px 26px rgba(16, 42, 67, 0.05);
+    }
+
+    .toc h2 {
+      margin-bottom: 12px;
+      font-size: 16px;
+    }
+
+    .toc ol {
+      margin: 0;
+      padding-left: 22px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .toc li + li {
+      margin-top: 7px;
+    }
+
+    .toc a {
+      color: inherit;
+      text-decoration: none;
+    }
+
+    .toc a:hover {
+      color: var(--teal);
+    }
+
+    .content {
+      min-width: 0;
+    }
+
+    .section {
+      margin-bottom: 28px;
+      padding: 35px;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: 0 8px 26px rgba(16, 42, 67, 0.05);
+      scroll-margin-top: 90px;
+    }
+
+    .section-title-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 14px;
+    }
+
+    .section-title-row h2,
+    .section-title-row h3 {
+      margin-bottom: 0;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .note {
+      padding: 18px 20px;
+      border-left: 4px solid var(--teal);
+      border-radius: 10px;
+      background: var(--teal-soft);
+      color: #164c48;
+    }
+
+    .note.warning {
+      border-left-color: var(--orange);
+      background: var(--orange-soft);
+      color: #704000;
+    }
+
+    .note.danger {
+      border-left-color: var(--red);
+      background: var(--red-soft);
+      color: #7f1d1d;
+    }
+
+    .summary-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 14px;
+      margin: 24px 0;
+    }
+
+    .summary-card {
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface-alt);
+    }
+
+    .summary-number {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--navy);
+      font-size: 30px;
+      font-weight: 950;
+      line-height: 1;
+    }
+
+    .summary-label {
+      color: var(--muted);
+      font-size: 14px;
+      font-weight: 800;
+    }
+
+    .badge {
+      min-height: 29px;
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 10px;
+      border-radius: 999px;
+      white-space: nowrap;
+      font-size: 12px;
+      font-weight: 950;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .badge.p1 {
+      color: var(--red);
+      background: var(--red-soft);
+    }
+
+    .badge.p2 {
+      color: #9a5200;
+      background: var(--orange-soft);
+    }
+
+    .badge.p3 {
+      color: #174ea6;
+      background: var(--blue-soft);
+    }
+
+    .badge.good {
+      color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .risk-table-wrap {
+      overflow-x: auto;
+      margin-top: 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--surface);
+    }
+
+    th, td {
+      padding: 15px 16px;
+      border-bottom: 1px solid var(--border);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    th {
+      color: #3d4c5b;
+      background: var(--surface-alt);
+      font-size: 12px;
+      letter-spacing: 0.07em;
+      text-transform: uppercase;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .finding {
+      scroll-margin-top: 90px;
+    }
+
+    .finding + .finding {
+      margin-top: 26px;
+      padding-top: 32px;
+      border-top: 1px solid var(--border);
+    }
+
+    .finding-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 12px;
+    }
+
+    .finding-title {
+      display: flex;
+      align-items: center;
+      margin: 0;
+    }
+
+    .finding-index {
+      width: 35px;
+      height: 35px;
+      flex: 0 0 auto;
+      display: inline-grid;
+      place-items: center;
+      margin-right: 10px;
+      border-radius: 10px;
+      color: #fff;
+      background: linear-gradient(135deg, var(--navy), var(--teal));
+      font-size: 14px;
+      font-weight: 950;
+    }
+
+    .context-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin: 18px 0;
+    }
+
+    .context-card {
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: var(--surface-alt);
+    }
+
+    .context-card h4 {
+      margin-bottom: 6px;
+      color: #3d4c5b;
+      font-size: 13px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .context-card p:last-child,
+    .context-card ul:last-child {
+      margin-bottom: 0;
+    }
+
+    ul, ol {
+      padding-left: 22px;
+    }
+
+    li + li {
+      margin-top: 5px;
+    }
+
+    pre {
+      overflow-x: auto;
+      margin: 18px 0;
+      padding: 18px;
+      border-radius: 12px;
+      color: var(--code-text);
+      background: var(--code-bg);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+      font-size: 13px;
+      line-height: 1.56;
+    }
+
+    :not(pre) > code {
+      padding: 2px 6px;
+      border: 1px solid #d8e2e8;
+      border-radius: 6px;
+      color: #174a46;
+      background: #edf7f5;
+      font-size: 0.92em;
+    }
+
+    .acceptance {
+      margin-top: 18px;
+      padding: 18px;
+      border: 1px dashed #b9c7cf;
+      border-radius: 12px;
+      background: #fbfdfd;
+    }
+
+    .acceptance h4 {
+      margin-bottom: 8px;
+    }
+
+    .source-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 16px;
+    }
+
+    .source-link {
+      display: inline-flex;
+      align-items: center;
+      padding: 6px 10px;
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      color: var(--teal);
+      background: var(--surface);
+      font-size: 12px;
+      font-weight: 900;
+      text-decoration: none;
+    }
+
+    .source-link:hover {
+      border-color: #9fb7b2;
+      background: var(--teal-soft);
+    }
+
+    .test-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    .test-card {
+      padding: 18px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface-alt);
+    }
+
+    .test-card h3 {
+      margin-bottom: 7px;
+      font-size: 17px;
+    }
+
+    .roadmap {
+      display: grid;
+      gap: 14px;
+      counter-reset: roadmap;
+    }
+
+    .roadmap-item {
+      position: relative;
+      padding: 20px 20px 20px 68px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: var(--surface-alt);
+      counter-increment: roadmap;
+    }
+
+    .roadmap-item::before {
+      content: counter(roadmap);
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      color: #fff;
+      background: var(--teal);
+      font-weight: 950;
+    }
+
+    .roadmap-item h3 {
+      margin-bottom: 6px;
+      font-size: 18px;
+    }
+
+    .verdict {
+      border-color: rgba(15, 118, 110, 0.25);
+      background: linear-gradient(145deg, #fff, #eefaf7);
+    }
+
+    .verdict strong {
+      color: var(--teal);
+    }
+
+    footer {
+      padding: 26px 0 56px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+    }
+
+    .print-only {
+      display: none;
+    }
+
+    @media (max-width: 960px) {
+      .layout {
+        grid-template-columns: 1fr;
+      }
+
+      .toc {
+        position: static;
+      }
+
+      .meta-grid,
+      .summary-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 690px) {
+      .page {
+        width: min(calc(100% - 20px), var(--max-width));
+      }
+
+      .brand-text,
+      .secondary-mobile-hide {
+        display: none;
+      }
+
+      .hero {
+        padding-top: 30px;
+      }
+
+      .hero-card,
+      .section {
+        padding: 24px;
+        border-radius: 16px;
+      }
+
+      .meta-grid,
+      .summary-grid,
+      .context-grid,
+      .test-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .finding-header,
+      .section-title-row {
+        flex-direction: column;
+      }
+    }
+
+    @media print {
+      @page {
+        size: A4;
+        margin: 16mm;
+      }
+
+      body {
+        color: #111;
+        background: #fff;
+        font-size: 10.5pt;
+      }
+
+      .topbar,
+      .toc,
+      .screen-only {
+        display: none !important;
+      }
+
+      .print-only {
+        display: block;
+      }
+
+      .page {
+        width: 100%;
+        max-width: none;
+      }
+
+      .hero {
+        padding: 0 0 14mm;
+      }
+
+      .hero-card,
+      .section {
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: #fff;
+        box-shadow: none;
+      }
+
+      .hero-card::before,
+      .hero-card::after {
+        display: none;
+      }
+
+      .layout {
+        display: block;
+      }
+
+      .section {
+        margin-bottom: 10mm;
+      }
+
+      .finding {
+        break-inside: avoid;
+      }
+
+      .finding + .finding {
+        margin-top: 8mm;
+        padding-top: 8mm;
+      }
+
+      .risk-table-wrap {
+        overflow: visible;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: none;
+      }
+
+      .source-links {
+        display: none;
+      }
+
+      pre {
+        white-space: pre-wrap;
+        word-break: break-word;
+        color: #111;
+        background: #f2f2f2;
+        box-shadow: none;
+      }
+
+      .badge {
+        border: 1px solid currentColor;
+        background: transparent !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar screen-only">
+    <div class="page topbar-inner">
+      <a class="brand" href="#top" aria-label="Ir para o início">
+        <span class="brand-mark">KW</span>
+        <span class="brand-text">KrakenWaf · Technical Security Review</span>
+      </a>
+      <div class="top-actions">
+        <a class="button secondary-mobile-hide" href="https://github.com/Orangewarrior/KrakenWaf" target="_blank" rel="noopener noreferrer">Abrir repositório</a>
+        <button class="button primary" type="button" onclick="window.print()">Imprimir / Salvar PDF</button>
+      </div>
+    </div>
+  </header>
+
+  <div id="top" class="page hero">
+    <section class="hero-card">
+      <p class="eyebrow">Relatório técnico independente</p>
+      <h1>Revisão de Segurança, Rust e Arquitetura</h1>
+      <p class="lead">
+        Avaliação do repositório <strong>KrakenWaf</strong>, com foco em proxy reverso,
+        segurança HTTP, concorrência, controle de recursos, arquitetura assíncrona,
+        supply chain e operação segura em produção.
+      </p>
+
+      <div class="meta-grid">
+        <div class="meta-card">
+          <span class="meta-label">Repositório</span>
+          <span class="meta-value">Orangewarrior/KrakenWaf</span>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Data da revisão</span>
+          <span class="meta-value">22 de junho de 2026</span>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Método</span>
+          <span class="meta-value">Revisão estática</span>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Especialidades</span>
+          <span class="meta-value">Rust · AppSec · Arquitetura</span>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <main class="page">
+    <div class="layout">
+      <aside class="toc" aria-label="Sumário">
+        <h2>Sumário</h2>
+        <ol>
+          <li><a href="#resumo">Resumo executivo</a></li>
+          <li><a href="#escopo">Escopo e limitações</a></li>
+          <li><a href="#matriz">Matriz de riscos</a></li>
+          <li><a href="#achados">Achados detalhados</a></li>
+          <li><a href="#testes">Testes prioritários</a></li>
+          <li><a href="#roadmap">Sequência de PRs</a></li>
+          <li><a href="#veredito">Veredito</a></li>
+        </ol>
+      </aside>
+
+      <div class="content">
+        <section id="resumo" class="section">
+          <div class="section-title-row">
+            <div>
+              <p class="eyebrow">Visão executiva</p>
+              <h2>Resumo executivo</h2>
+            </div>
+            <span class="badge good">Base madura</span>
+          </div>
+
+          <p>
+            O KrakenWaf apresenta uma base tecnicamente madura, com Tokio, Hyper, TLS,
+            mecanismos de detecção, testes, fuzzing, políticas de dependências, limites de
+            headers e proteções específicas para a interface de observabilidade.
+          </p>
+
+          <p>
+            Os riscos mais relevantes concentram-se no encaminhamento de bodies, na
+            contabilidade concorrente de recursos e nos limites de protocolo do proxy.
+            As prioridades devem garantir que uma requisição permitida chegue integralmente ao
+            upstream, que os limites continuem corretos sob concorrência e que peers lentos não
+            mantenham recursos ocupados indefinidamente.
+          </p>
+
+          <div class="summary-grid">
+            <div class="summary-card">
+              <span class="summary-number">5</span>
+              <span class="summary-label">achados de alta prioridade P1</span>
+            </div>
+            <div class="summary-card">
+              <span class="summary-number">7</span>
+              <span class="summary-label">achados de prioridade P2</span>
+            </div>
+            <div class="summary-card">
+              <span class="summary-number">1</span>
+              <span class="summary-label">melhoria estrutural P3</span>
+            </div>
+            <div class="summary-card">
+              <span class="summary-number">6</span>
+              <span class="summary-label">PRs recomendados</span>
+            </div>
+          </div>
+
+          <div class="note danger">
+            <strong>Prioridades bloqueadoras:</strong> corrigir o encaminhamento de body parcial,
+            tornar a contabilidade de recursos atômica e completar a política de timeout do
+            upstream antes de considerar a solução endurecida para ambientes críticos.
+          </div>
+        </section>
+
+        <section id="escopo" class="section">
+          <p class="eyebrow">Metodologia</p>
+          <h2>Escopo e limitações</h2>
+
+          <p>
+            Esta avaliação consolida uma revisão estática da branch principal do projeto.
+            O foco foi identificar falhas de desenho, condições de corrida, violações de
+            transparência de proxy, limites de confiança e oportunidades de melhoria no ciclo
+            de desenvolvimento e operação.
+          </p>
+
+          <div class="context-grid">
+            <div class="context-card">
+              <h4>Incluído</h4>
+              <ul>
+                <li>Fluxo de request e response body.</li>
+                <li>Concorrência, limites por IP e orçamento de memória.</li>
+                <li>Semântica HTTP/1, HTTP/2, Host e headers hop-by-hop.</li>
+                <li>WebSocket, rulesets, readiness, eventos e supply chain.</li>
+                <li>Arquitetura Rust, Tokio, Hyper e separação de responsabilidades.</li>
+              </ul>
+            </div>
+            <div class="context-card">
+              <h4>Não incluído</h4>
+              <ul>
+                <li>Execução da suíte de testes ou fuzzers.</li>
+                <li>Testes de carga, pentest dinâmico ou exploração real.</li>
+                <li>Validação de infraestrutura e permissões do host.</li>
+                <li>Auditoria criptográfica formal ou revisão integral de dependências.</li>
+              </ul>
+            </div>
+          </div>
+
+          <div class="note warning">
+            As severidades representam prioridade técnica com base no impacto potencial e no
+            desenho observado. A confirmação final deve considerar o modelo de ameaça, os
+            protocolos habilitados e o ambiente real de implantação.
+          </div>
+        </section>
+
+        <section id="matriz" class="section">
+          <p class="eyebrow">Priorização</p>
+          <h2>Matriz de riscos</h2>
+
+          <div class="risk-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Prioridade</th>
+                  <th>Tema</th>
+                  <th>Risco principal</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td><span class="badge p1">P1</span></td>
+                  <td>Encaminhamento de body parcial</td>
+                  <td>Requisições podem chegar truncadas ao upstream em modo detect-only ou rota liberada.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p1">P1</span></td>
+                  <td>Corrida nos contadores por IP</td>
+                  <td>Limites de concorrência podem ser divididos entre contadores diferentes.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p1">P1</span></td>
+                  <td>Reserva não atômica de memória</td>
+                  <td>Requisições simultâneas podem ultrapassar limites configurados.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p1">P1</span></td>
+                  <td>Timeout incompleto do upstream</td>
+                  <td>Upstream lento pode manter tarefas e conexões ocupadas indefinidamente.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p1">P1</span></td>
+                  <td>Confiança no header Host</td>
+                  <td>Possibilidade de Host Header Poisoning e redirects com origem controlada.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p2">P2</span></td>
+                  <td>Semântica HTTP/1 e HTTP/2</td>
+                  <td>Headers hop-by-hop, streams e limites de parsing precisam de maior rigor.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p2">P2</span></td>
+                  <td>Bufferização integral de requests</td>
+                  <td>Maior uso de memória e latência em uploads e tráfego concorrente.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p2">P2</span></td>
+                  <td>Ruleset e readiness</td>
+                  <td>Serviço pode reportar pronto com snapshot incompleto.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p2">P2</span></td>
+                  <td>WebSocket e eventos</td>
+                  <td>Governança de recursos e persistência best-effort podem falhar sob pressão.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p2">P2</span></td>
+                  <td>CI, updater e dependências</td>
+                  <td>Referências mutáveis e scanners não bloqueantes reduzem a cadeia de confiança.</td>
+                </tr>
+                <tr>
+                  <td><span class="badge p3">P3</span></td>
+                  <td>AppState excessivamente amplo</td>
+                  <td>Acoplamento elevado dificulta testes, manutenção e isolamento de responsabilidades.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section id="achados" class="section">
+          <p class="eyebrow">Análise técnica</p>
+          <h2>Achados detalhados</h2>
+
+          <article class="finding" id="finding-1">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">1</span>Body parcial encaminhado ao upstream</h3>
+              <span class="badge p1">P1 · Alto</span>
+            </div>
+
+            <p>
+              Quando a inspeção encontra um bloqueio e retorna um <code>partial_body</code>,
+              determinados modos podem seguir pelo caminho que encaminha apenas o conteúdo já
+              acumulado. Isso quebra a propriedade de transparência do proxy.
+            </p>
+
+            <div class="context-grid">
+              <div class="context-card">
+                <h4>Impacto</h4>
+                <ul>
+                  <li>JSON, formulário ou upload truncado.</li>
+                  <li><code>Content-Length</code> incompatível com o body real.</li>
+                  <li>Timeout no backend ou comportamento semântico diferente.</li>
+                  <li>Divergência entre o conteúdo analisado e o conteúdo recebido pelo upstream.</li>
+                </ul>
+              </div>
+              <div class="context-card">
+                <h4>Princípio de correção</h4>
+                <p>
+                  Um body parcial deve servir apenas como evidência. Ele nunca deve ser reutilizado
+                  como body de encaminhamento.
+                </p>
+              </div>
+            </div>
+
+            <pre><code>enum InspectionPolicy {
+    Bypass,
+    DetectOnly,
+    Block,
+}
+
+enum BodyOutcome {
+    Complete {
+        body: Bytes,
+        findings: Vec&lt;Finding&gt;,
+    },
+    Rejected {
+        finding: Finding,
+        captured_prefix: Bytes,
+    },
+}</code></pre>
+
+            <ul>
+              <li><strong>Block:</strong> pode interromper a leitura e nunca encaminha o body.</li>
+              <li><strong>DetectOnly:</strong> registra o achado e continua lendo até o fim.</li>
+              <li><strong>Bypass:</strong> não aplica assinaturas, mas ainda respeita limite e timeout.</li>
+              <li><strong>captured_prefix:</strong> somente evidência para logging e investigação.</li>
+            </ul>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Request permitido chega byte a byte igual ao upstream.</li>
+                <li>O código não possui caminho que encaminhe <code>partial_body</code>.</li>
+                <li>Testes cobrem body fixo, chunked, allowlist, block e detect-only.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/proxy/mod.rs" target="_blank" rel="noopener noreferrer">src/proxy/mod.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-2">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">2</span>Corrida no janitor dos contadores por IP</h3>
+              <span class="badge p1">P1 · Alto</span>
+            </div>
+
+            <p>
+              Um <code>Arc&lt;AtomicUsize&gt;</code> pode ser clonado, removido do mapa pelo janitor
+              enquanto ainda está em uso e depois incrementado fora do mapa. Uma segunda requisição
+              pode criar outro contador para o mesmo IP, dividindo a contabilização.
+            </p>
+
+            <h4>Solução recomendada</h4>
+            <pre><code>struct IpConcurrencyEntry {
+    semaphore: Semaphore,
+    max_permits: usize,
+    last_used: AtomicU64,
+}</code></pre>
+
+            <p>
+              A admissão deve retornar um <code>OwnedSemaphorePermit</code> como guard RAII.
+              O janitor só remove a entrada quando todos os permits estiverem livres, não houver
+              outros <code>Arc</code> ativos e o TTL tiver expirado.
+            </p>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Uma única entrada representa cada IP enquanto houver requests ativos.</li>
+                <li>Remoção e verificação ocorrem sob entry guard.</li>
+                <li>Teste com Loom ou Barrier reproduz a antiga intercalação.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/server.rs" target="_blank" rel="noopener noreferrer">src/server.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-3">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">3</span>Limites de memória não são reservas atômicas</h3>
+              <span class="badge p1">P1 · Alto</span>
+            </div>
+
+            <p>
+              O modelo atual verifica os contadores antes de processar o body e depois incrementa
+              conforme os chunks chegam. Requisições simultâneas podem observar espaço disponível
+              e ultrapassar o limite em conjunto.
+            </p>
+
+            <pre><code>struct MemoryBudget {
+    global: AtomicUsize,
+    global_limit: usize,
+    per_ip: DashMap&lt;ClientIp, Arc&lt;AtomicUsize&gt;&gt;,
+    per_ip_limit: usize,
+}
+
+impl MemoryBudget {
+    fn try_reserve(
+        &amp;self,
+        ip: ClientIp,
+        bytes: usize,
+    ) -&gt; Result&lt;MemoryPermit, BudgetExceeded&gt;;
+}</code></pre>
+
+            <p>
+              A reserva deve ocorrer antes de expandir buffers. O fluxo ideal reserva globalmente,
+              reserva por IP, desfaz a primeira reserva se a segunda falhar e libera tudo no
+              <code>Drop</code> do permit.
+            </p>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Reservas usam compare-and-swap ou mecanismo equivalente.</li>
+                <li>Falhas parciais fazem rollback.</li>
+                <li>Orçamentos de wire bytes, descompressão, buffer e evidência são separados.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/server.rs" target="_blank" rel="noopener noreferrer">src/server.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-4">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">4</span>Timeout do upstream não cobre todo o response body</h3>
+              <span class="badge p1">P1 · Alto</span>
+            </div>
+
+            <p>
+              O timeout aplicado ao envio do request tende a terminar quando os headers da resposta
+              chegam. A leitura posterior dos frames pode ficar fora do mesmo deadline.
+            </p>
+
+            <p>Separe a política em quatro limites:</p>
+            <pre><code>connect_timeout
+response_header_timeout
+response_body_idle_timeout
+response_total_timeout</code></pre>
+
+            <p>
+              O timeout de inatividade deve ser renovado apenas após a chegada de um frame válido.
+              O timeout total deve abranger a operação completa, inclusive streaming.
+            </p>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Upstream que envia headers e para o body é encerrado.</li>
+                <li>Trickle response não mantém conexão indefinidamente.</li>
+                <li>Métricas distinguem connect, headers, body idle e total deadline.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/proxy/mod.rs" target="_blank" rel="noopener noreferrer">src/proxy/mod.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-5">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">5</span>Header Host como origem encaminhada</h3>
+              <span class="badge p1">P1 · Alto</span>
+            </div>
+
+            <p>
+              O valor recebido em <code>Host</code> participa da construção de
+              <code>X-Forwarded-Host</code> e da reescrita de <code>Location</code>. Quando o
+              backend confia nesses valores, um host não autorizado pode contaminar URLs e redirects.
+            </p>
+
+            <pre><code>struct ValidatedHost(Authority);
+
+struct PublicOrigin {
+    scheme: Scheme,
+    authority: ValidatedHost,
+}</code></pre>
+
+            <ul>
+              <li>Mapear host validado para rota, upstream e origem pública canônica.</li>
+              <li>Rejeitar hosts não cadastrados com 400 ou 421.</li>
+              <li>Normalizar porta, IPv6 e punycode.</li>
+              <li>Rejeitar hosts duplicados ou inconsistentes.</li>
+              <li>Reescrever redirects com a origem da rota, não com entrada bruta do cliente.</li>
+            </ul>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Nenhuma função de redirect recebe Host não validado.</li>
+                <li><code>X-Forwarded-Host</code> sempre corresponde à origem autorizada.</li>
+                <li>Testes cobrem absolute-form targets e hosts duplicados.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/proxy/mod.rs" target="_blank" rel="noopener noreferrer">src/proxy/mod.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-6">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">6</span>Headers indicados por Connection na resposta</h3>
+              <span class="badge p2">P2 · Médio</span>
+            </div>
+
+            <p>
+              Além dos headers hop-by-hop conhecidos, o proxy deve remover todos os nomes listados
+              pelo próprio header <code>Connection</code> da resposta.
+            </p>
+
+            <pre><code>let connection_hop = connection_listed_headers(response.headers());
+
+for (name, value) in response.headers() {
+    if is_hop_by_hop(name)
+        || connection_hop.iter().any(|candidate| candidate == name)
+    {
+        continue;
+    }
+
+    response_builder = response_builder.header(name, value);
+}</code></pre>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Lógica compartilhada entre request e response.</li>
+                <li>Testes com múltiplos Connection, tokens, caixa e espaços.</li>
+                <li>Comportamento correto para HTTP/2.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/proxy/mod.rs" target="_blank" rel="noopener noreferrer">src/proxy/mod.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-7">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">7</span>Limites devem considerar streams HTTP/2</h3>
+              <span class="badge p2">P2 · Médio</span>
+            </div>
+
+            <p>
+              Em HTTP/2, uma conexão TCP pode carregar vários requests concorrentes. Limites de
+              conexão não substituem limites de streams e requests em andamento.
+            </p>
+
+            <ul>
+              <li><code>max_concurrent_streams</code>.</li>
+              <li><code>max_header_list_size</code>.</li>
+              <li>Limites de flow control e janelas iniciais.</li>
+              <li>Keepalive ping e timeout.</li>
+              <li>Limite global e por IP de requests em andamento.</li>
+              <li>Timeout por stream e por frame.</li>
+            </ul>
+
+            <p>
+              Caso exista idade máxima de conexão, prefira <code>GOAWAY</code> e drenagem graciosa
+              dos streams existentes.
+            </p>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>HTTP/2 possui limites explícitos separados de TCP connections.</li>
+                <li>Conexões saudáveis não são abortadas abruptamente por idade.</li>
+                <li>Parser aplica limites antes de alocações excessivas quando suportado.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/server.rs" target="_blank" rel="noopener noreferrer">src/server.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-8">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">8</span>Bufferização integral do request</h3>
+              <span class="badge p2">P2 · Médio</span>
+            </div>
+
+            <p>
+              O caminho comum consome o body em memória e cria o request de upstream com um body
+              completo. Isso aumenta latência, uso de memória e pressão sobre o allocator.
+            </p>
+
+            <pre><code>enum RequestBodyPolicy {
+    BufferAndInspect {
+        max_bytes: usize,
+    },
+    PrefixInspectThenStream {
+        prefix_bytes: usize,
+        max_total_bytes: usize,
+    },
+    SpoolAndInspect {
+        max_memory_bytes: usize,
+        max_file_bytes: usize,
+    },
+    BudgetedPassThrough {
+        max_bytes: usize,
+    },
+}</code></pre>
+
+            <p>
+              A política deve ser selecionada por rota. Uploads grandes podem usar streaming com
+              inspeção de prefixo ou spool temporário com quota e limpeza RAII.
+            </p>
+
+            <h4>Matching de rota</h4>
+            <p>
+              Correspondência por <code>starts_with</code> pode confundir <code>/api/upload</code>
+              com <code>/api/uploaded</code>. Use correspondência por segmento após canonicalização.
+            </p>
+
+            <pre><code>fn path_matches_prefix(path: &amp;str, prefix: &amp;str) -&gt; bool {
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|rest| rest.starts_with('/'))
+}</code></pre>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Cada rota declara uma estratégia de body.</li>
+                <li>Uploads não exigem buffer integral quando não necessário.</li>
+                <li>Matching por segmento é testado com encoding e dot segments.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/proxy/mod.rs" target="_blank" rel="noopener noreferrer">src/proxy/mod.rs</a>
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/rules/mod.rs" target="_blank" rel="noopener noreferrer">src/rules/mod.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-9">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">9</span>Readiness e snapshot íntegro de regras</h3>
+              <span class="badge p2">P2 · Médio</span>
+            </div>
+
+            <p>
+              Readiness deve representar um ruleset completo e validado, não apenas a presença de
+              algum subconjunto de regras.
+            </p>
+
+            <pre><code>struct RuleSnapshot {
+    generation: u64,
+    fingerprint: [u8; 32],
+    loaded_at: SystemTime,
+    components: LoadedComponents,
+    engine: WafEngine,
+}</code></pre>
+
+            <ol>
+              <li>Ler todos os arquivos.</li>
+              <li>Validar schema e limites.</li>
+              <li>Compilar regexes e autômatos fora do request path.</li>
+              <li>Executar smoke tests.</li>
+              <li>Construir o snapshot completo.</li>
+              <li>Publicar por uma única troca com <code>ArcSwap</code>.</li>
+            </ol>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Falha de reload mantém o snapshot anterior.</li>
+                <li><code>/ready</code> exige componentes obrigatórios completos.</li>
+                <li>Métricas expõem geração, fingerprint e último reload.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/server.rs" target="_blank" rel="noopener noreferrer">src/server.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-10">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">10</span>WebSocket com governança de recursos</h3>
+              <span class="badge p2">P2 · Médio</span>
+            </div>
+
+            <p>
+              Desativar inspeção de conteúdo não deve desativar limites operacionais. Inspeção e
+              governança de recursos são responsabilidades distintas.
+            </p>
+
+            <ul>
+              <li>Limite global e por IP de sessões.</li>
+              <li>Timeout de handshake.</li>
+              <li>Idle timeout e duração máxima.</li>
+              <li>Limite por frame e por intervalo.</li>
+              <li>Backpressure e shutdown coordenado.</li>
+              <li>Suporte a upstream <code>wss://</code> com validação TLS.</li>
+            </ul>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Limites continuam ativos com inspeção desabilitada.</li>
+                <li>Conexões ociosas e frames excessivos são encerrados.</li>
+                <li>Shutdown drena sessões de forma coordenada.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/proxy/mod.rs" target="_blank" rel="noopener noreferrer">src/proxy/mod.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-11">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">11</span>Eventos e bans não devem ser best-effort</h3>
+              <span class="badge p2">P2 · Médio</span>
+            </div>
+
+            <p>
+              Eventos importantes disparados em tarefas desacopladas podem falhar sem alterar o
+              resultado da operação. Além disso, payloads completos podem conter segredos e dados
+              pessoais.
+            </p>
+
+            <pre><code>struct SecurityEventSink {
+    sender: mpsc::Sender&lt;SecurityEvent&gt;,
+}</code></pre>
+
+            <p>
+              Para eventos que não podem ser perdidos, use uma outbox SQLite/WAL gravada na mesma
+              transação da ação e exportada posteriormente por worker.
+            </p>
+
+            <ul>
+              <li>Retry com backoff e jitter.</li>
+              <li>Dead-letter e métricas de fila.</li>
+              <li>Shutdown com drain.</li>
+              <li>Redaction de Authorization, Cookie, tokens e campos sensíveis.</li>
+              <li>Retenção, quota, criptografia e controle de acesso.</li>
+            </ul>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Eventos críticos não são perdidos silenciosamente.</li>
+                <li>Payloads sensíveis são redigidos por padrão.</li>
+                <li>Fila cheia, atraso e falha geram métricas e alertas.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/proxy/mod.rs" target="_blank" rel="noopener noreferrer">src/proxy/mod.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-12">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">12</span>CI, releases e updater</h3>
+              <span class="badge p2">P1/P2</span>
+            </div>
+
+            <p>
+              Referências mutáveis, toolchain <code>stable</code>, imagens sem digest e scanners
+              não bloqueantes reduzem reprodutibilidade e enfraquecem a cadeia de confiança.
+            </p>
+
+            <ul>
+              <li>Fixar GitHub Actions por SHA completo.</li>
+              <li>Fixar containers por digest.</li>
+              <li>Adicionar <code>rust-toolchain.toml</code> com versão exata.</li>
+              <li>Fixar scanners e validar checksums.</li>
+              <li>Tornar Clippy, testes, cargo-deny, RustSec, OSV e Semgrep bloqueantes.</li>
+              <li>Gerar SBOM, provenance e assinatura.</li>
+              <li>Publicar release somente a partir de tag protegida.</li>
+            </ul>
+
+            <h4>Dependências Hickory</h4>
+            <p>
+              Exceções temporárias devem possuir responsável, justificativa e data de expiração.
+              A migração para a versão corrigida precisa ser tratada como trabalho ativo.
+            </p>
+
+            <h4>Atualizador</h4>
+            <p>
+              O processo do WAF não deve executar Git, compilar código, substituir o próprio
+              binário ou reiniciar a si mesmo. Prefira updater externo e artefato binário assinado.
+            </p>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Build reproduzível a partir de commit, lockfile e toolchain fixos.</li>
+                <li>Falha de scanner interrompe o pipeline conforme política.</li>
+                <li>Artefatos possuem SBOM, provenance e assinatura verificáveis.</li>
+                <li>Atualização é executada fora do data plane.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/.github/workflows/security.yml" target="_blank" rel="noopener noreferrer">security.yml</a>
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/deny.toml" target="_blank" rel="noopener noreferrer">deny.toml</a>
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/update.rs" target="_blank" rel="noopener noreferrer">src/update.rs</a>
+            </div>
+          </article>
+
+          <article class="finding" id="finding-13">
+            <div class="finding-header">
+              <h3 class="finding-title"><span class="finding-index">13</span>Reduzir o acoplamento de AppState</h3>
+              <span class="badge p3">P3 · Estrutural</span>
+            </div>
+
+            <p>
+              Um estado global que agrega configuração, engine, proxy, storage, métricas, regras,
+              observabilidade, contadores, bans, GeoIP e WebSocket torna o request path altamente
+              acoplado e dificulta testes unitários.
+            </p>
+
+            <pre><code>struct DataPlane {
+    policy: ArcSwap&lt;CompiledPolicySnapshot&gt;,
+    upstream: Arc&lt;UpstreamTransport&gt;,
+    budgets: Arc&lt;ResourceBudgets&gt;,
+    events: Arc&lt;dyn SecurityEventSink&gt;,
+}
+
+struct ControlPlane {
+    reloader: RuleReloader,
+    updater: Option&lt;ExternalUpdaterClient&gt;,
+    metrics: Arc&lt;WafMetrics&gt;,
+}
+
+struct RequestSecurityContext {
+    client_ip: ClientIp,
+    request_id: RequestId,
+    route: RouteId,
+    public_origin: PublicOrigin,
+}</code></pre>
+
+            <p>
+              Converta argumentos CLI uma única vez em tipos validados e use newtypes como
+              <code>ClientIp</code>, <code>CanonicalPath</code>, <code>RouteId</code> e
+              <code>BodyByteLimit</code>.
+            </p>
+
+            <div class="acceptance">
+              <h4>Critérios de aceite</h4>
+              <ul>
+                <li>Handlers recebem somente dependências necessárias.</li>
+                <li>Data plane e control plane possuem responsabilidades distintas.</li>
+                <li>Configuração bruta de CLI não fica disponível no request path.</li>
+              </ul>
+            </div>
+
+            <div class="source-links">
+              <a class="source-link" href="https://github.com/Orangewarrior/KrakenWaf/blob/main/src/app.rs" target="_blank" rel="noopener noreferrer">src/app.rs</a>
+            </div>
+          </article>
+        </section>
+
+        <section id="testes" class="section">
+          <p class="eyebrow">Validação</p>
+          <h2>Testes de maior retorno</h2>
+
+          <div class="test-grid">
+            <article class="test-card">
+              <h3>Transparência do proxy</h3>
+              <p>Comparar byte a byte o body enviado pelo cliente com o recebido pelo upstream.</p>
+            </article>
+            <article class="test-card">
+              <h3>Concorrência com Loom</h3>
+              <p>Modelar janitor, admissão por IP e liberação de memória.</p>
+            </article>
+            <article class="test-card">
+              <h3>Property tests</h3>
+              <p>Canonicalização de path, matching de rota, Host e tokens de Connection.</p>
+            </article>
+            <article class="test-card">
+              <h3>Slow upstream</h3>
+              <p>Headers rápidos, body parado, trickle response e stream infinito.</p>
+            </article>
+            <article class="test-card">
+              <h3>HTTP differential tests</h3>
+              <p>HTTP/1.0, HTTP/1.1, HTTP/2, trailers e headers duplicados.</p>
+            </article>
+            <article class="test-card">
+              <h3>Compressão</h3>
+              <p>Gzip, Brotli e zstd com alta razão de expansão.</p>
+            </article>
+            <article class="test-card">
+              <h3>Reload transacional</h3>
+              <p>Arquivo inválido nunca substitui o snapshot íntegro anterior.</p>
+            </article>
+            <article class="test-card">
+              <h3>WebSocket</h3>
+              <p>Conexão ociosa, frames excessivos, shutdown e limites por IP.</p>
+            </article>
+            <article class="test-card">
+              <h3>Fuzzing stateful</h3>
+              <p>Sequência de chunks e estados de parser, não apenas payload isolado.</p>
+            </article>
+            <article class="test-card">
+              <h3>Fault injection</h3>
+              <p>SQLite ocupado, Redis indisponível, DNS lento e fila de eventos cheia.</p>
+            </article>
+          </div>
+        </section>
+
+        <section id="roadmap" class="section">
+          <p class="eyebrow">Plano de execução</p>
+          <h2>Sequência recomendada de PRs</h2>
+
+          <div class="roadmap">
+            <article class="roadmap-item">
+              <h3>PR 1 — Correção de semântica do body</h3>
+              <p>
+                Introduzir <code>InspectionPolicy</code> e <code>BodyOutcome</code>, proibir
+                encaminhamento de body parcial e adicionar testes de igualdade byte a byte.
+              </p>
+            </article>
+
+            <article class="roadmap-item">
+              <h3>PR 2 — Controle de recursos atômico</h3>
+              <p>
+                Substituir contadores por permits RAII, criar <code>MemoryBudget::try_reserve</code>,
+                corrigir o janitor e adicionar testes de concorrência.
+              </p>
+            </article>
+
+            <article class="roadmap-item">
+              <h3>PR 3 — Hardening do proxy HTTP</h3>
+              <p>
+                Validar Host, remover headers listados em Connection, adicionar timeouts de body,
+                limites de HTTP/2 e controle de requests/streams.
+              </p>
+            </article>
+
+            <article class="roadmap-item">
+              <h3>PR 4 — Streaming e WebSocket</h3>
+              <p>
+                Introduzir estratégias de body por rota, corrigir matching por segmento, manter
+                limites de WebSocket e adicionar upstream <code>wss://</code>.
+              </p>
+            </article>
+
+            <article class="roadmap-item">
+              <h3>PR 5 — Ruleset e eventos transacionais</h3>
+              <p>
+                Publicar snapshots por <code>ArcSwap</code>, fortalecer readiness, implementar
+                outbox e política de redaction e retenção.
+              </p>
+            </article>
+
+            <article class="roadmap-item">
+              <h3>PR 6 — Supply chain</h3>
+              <p>
+                Fixar actions, containers, toolchain e scanners, tornar verificações bloqueantes,
+                migrar dependências e retirar atualização do processo do WAF.
+              </p>
+            </article>
+          </div>
+        </section>
+
+        <section id="veredito" class="section verdict">
+          <p class="eyebrow">Conclusão</p>
+          <h2>Veredito</h2>
+
+          <p>
+            O KrakenWaf demonstra bom domínio de Rust assíncrono, segurança de transporte e
+            mecanismos de detecção. O próximo salto de maturidade deve priorizar propriedades
+            fundamentais do proxy, e não apenas a adição de novas assinaturas.
+          </p>
+
+          <ul>
+            <li><strong>Transparência:</strong> request permitido chega integralmente ao upstream.</li>
+            <li><strong>Fail-closed:</strong> falhas de inspeção ou orçamento não criam estados ambíguos.</li>
+            <li><strong>Contabilidade correta:</strong> limites continuam válidos sob concorrência.</li>
+            <li><strong>Semântica HTTP rigorosa:</strong> Host, hop-by-hop, HTTP/2 e timeouts são fronteiras de segurança.</li>
+            <li><strong>Controle de recursos:</strong> nenhum peer ou upstream mantém recursos indefinidamente.</li>
+          </ul>
+
+          <p>
+            Os três primeiros PRs devem ser tratados como <strong>bloqueadores</strong> antes do
+            uso em produção crítica ou exposição direta à internet.
+          </p>
+        </section>
+
+        <section class="section print-only">
+          <h2>Referência</h2>
+          <p>Repositório analisado: https://github.com/Orangewarrior/KrakenWaf</p>
+        </section>
+      </div>
+    </div>
+  </main>
+
+  <footer class="page">
+    Relatório HTML autônomo, responsivo e preparado para impressão. Nenhuma dependência externa é necessária.
+  </footer>
+</body>
+</html>

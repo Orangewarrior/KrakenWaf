@@ -1,4 +1,3 @@
-
 use dashmap::DashMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -59,6 +58,7 @@ impl LatencyHistogram {
 #[derive(Debug, Default)]
 pub struct WafMetrics {
     pub requests_inspected: AtomicU64,
+    pub requests_detected: AtomicU64,
     pub requests_blocked: AtomicU64,
     pub rate_limit_hits: AtomicU64,
 
@@ -82,6 +82,7 @@ pub struct WafMetrics {
     /// Key format: `"<engine>:<module>"` — e.g. `"cmc:java_deserialize_detect"`,
     /// `"keyword:uri"`, `"libinjection:sqli"`.
     blocks_by_label: DashMap<String, AtomicU64>,
+    detections_by_label: DashMap<String, AtomicU64>,
 }
 
 impl WafMetrics {
@@ -93,6 +94,10 @@ impl WafMetrics {
         self.requests_blocked.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_detected(&self) {
+        self.requests_detected.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn inc_rate_limit_hits(&self) {
         self.rate_limit_hits.fetch_add(1, Ordering::Relaxed);
     }
@@ -102,9 +107,11 @@ impl WafMetrics {
     /// `allowed == false` ⇒ fail-closed (request denied with 429).
     pub fn inc_redis_rate_limit_fail(&self, allowed: bool) {
         if allowed {
-            self.redis_rate_limit_failopen.fetch_add(1, Ordering::Relaxed);
+            self.redis_rate_limit_failopen
+                .fetch_add(1, Ordering::Relaxed);
         } else {
-            self.redis_rate_limit_failclosed.fetch_add(1, Ordering::Relaxed);
+            self.redis_rate_limit_failclosed
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -112,6 +119,15 @@ impl WafMetrics {
     /// `label` should be `"<engine>:<module>"`, e.g. `"cmc:overflow_detect"`.
     pub fn inc_blocked_by_label(&self, label: &str) {
         self.blocks_by_label
+            .entry(label.to_string())
+            .or_insert_with(|| AtomicU64::new(0))
+            .fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Increment the counter for a detection, regardless of whether the WAF mode
+    /// ultimately blocks or only observes it.
+    pub fn inc_detected_by_label(&self, label: &str) {
+        self.detections_by_label
             .entry(label.to_string())
             .or_insert_with(|| AtomicU64::new(0))
             .fetch_add(1, Ordering::Relaxed);
@@ -138,6 +154,8 @@ impl WafMetrics {
             concat!(
                 "# TYPE krakenwaf_requests_inspected_total counter\n",
                 "krakenwaf_requests_inspected_total {}\n",
+                "# TYPE krakenwaf_requests_detected_total counter\n",
+                "krakenwaf_requests_detected_total {}\n",
                 "# TYPE krakenwaf_requests_blocked_total counter\n",
                 "krakenwaf_requests_blocked_total {}\n",
                 "# TYPE krakenwaf_rate_limit_hits_total counter\n",
@@ -154,6 +172,7 @@ impl WafMetrics {
                 "krakenwaf_traceparent_generated_total {}\n",
             ),
             self.requests_inspected.load(Ordering::Relaxed),
+            self.requests_detected.load(Ordering::Relaxed),
             self.requests_blocked.load(Ordering::Relaxed),
             self.rate_limit_hits.load(Ordering::Relaxed),
             self.redis_rate_limit_failopen.load(Ordering::Relaxed),
@@ -162,35 +181,58 @@ impl WafMetrics {
             self.traceparent_generated.load(Ordering::Relaxed),
         );
 
-        self.request_latency_ms.render_prometheus(
-            "krakenwaf_request_duration_milliseconds",
+        self.request_latency_ms
+            .render_prometheus("krakenwaf_request_duration_milliseconds", &mut out);
+
+        render_label_counter(
+            &self.detections_by_label,
+            "krakenwaf_module_detections_total",
+            "Detections grouped by engine and module.",
+            &mut out,
+        );
+        render_label_counter(
+            &self.blocks_by_label,
+            "krakenwaf_module_blocks_total",
+            "Requests blocked grouped by engine and module.",
             &mut out,
         );
 
-        // Per-engine/module breakdown
-        if !self.blocks_by_label.is_empty() {
-            out.push_str(
-                "# TYPE krakenwaf_module_blocks_total counter\n\
-                 # HELP krakenwaf_module_blocks_total Requests blocked grouped by engine and module.\n",
-            );
-            let mut entries: Vec<(String, u64)> = self
-                .blocks_by_label
-                .iter()
-                .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
-                .collect();
-            entries.sort_by(|a, b| a.0.cmp(&b.0));
-            for (label, count) in entries {
-                // label is "engine:module" — split for Prometheus label syntax
-                let (engine, module) = label.split_once(':').unwrap_or(("unknown", &label));
-                let _ = writeln!(
-                    out,
-                    "krakenwaf_module_blocks_total{{engine=\"{engine}\",module=\"{module}\"}} {count}"
-                );
-            }
-        }
-
         out
     }
+}
+
+fn render_label_counter(
+    values: &DashMap<String, AtomicU64>,
+    metric: &str,
+    help: &str,
+    out: &mut String,
+) {
+    if values.is_empty() {
+        return;
+    }
+    let _ = writeln!(out, "# TYPE {metric} counter");
+    let _ = writeln!(out, "# HELP {metric} {help}");
+    let mut entries: Vec<(String, u64)> = values
+        .iter()
+        .map(|e| (e.key().clone(), e.value().load(Ordering::Relaxed)))
+        .collect();
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    for (label, count) in entries {
+        let (engine, module) = label.split_once(':').unwrap_or(("unknown", &label));
+        let engine = prometheus_escape_label(engine);
+        let module = prometheus_escape_label(module);
+        let _ = writeln!(
+            out,
+            "{metric}{{engine=\"{engine}\",module=\"{module}\"}} {count}"
+        );
+    }
+}
+
+fn prometheus_escape_label(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
 }
 
 #[cfg(test)]

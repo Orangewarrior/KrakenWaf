@@ -31,7 +31,7 @@ fn loads_external_rule_tree() {
     ).expect("test");
     fs::write(
         tmp.path().join("regex/body_regex.json"),
-        r#"{"rules":[{"title":"RCE regex","severity":"critical","cwe":"CWE-78","description":"Command execution payload","url":"https://cwe.mitre.org/data/definitions/78.html","rule_match":"(?i)powershell\s+-enc"}]}"#,
+        r#"{"rules":[{"title":"RCE regex","severity":"critical","cwe":"CWE-78","description":"Command execution payload","url":"https://cwe.mitre.org/data/definitions/78.html","rule_match":"(?i)powershell\\s+-enc"}]}"#,
     ).expect("test");
     fs::write(
         tmp.path().join("regex/header_regex.json"),

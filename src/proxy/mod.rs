@@ -28,7 +28,7 @@ use crate::{
 use anyhow::{Context, Result};
 use bytes::{Bytes, BytesMut};
 use http::{
-    header::{CONNECTION, COOKIE, HOST, LOCATION, UPGRADE},
+    header::{CONNECTION, CONTENT_LENGTH, COOKIE, HOST, LOCATION, TRANSFER_ENCODING, UPGRADE},
     HeaderMap, HeaderName, HeaderValue, Method, Request, Response, StatusCode, Uri,
 };
 use http_body_util::{BodyExt, Full};
@@ -94,6 +94,7 @@ pub struct ProxyClient {
     client: UpstreamClient,
     upstream: Url,
     upstream_timeout: std::time::Duration,
+    allow_private_upstream: bool,
     internal_header_name: Option<HeaderName>,
 }
 
@@ -140,17 +141,28 @@ impl ForwardedOrigin {
 
 #[derive(Debug)]
 enum BodyInspectionError {
-    TooLarge {
-        limit: usize,
-    },
-    Blocked {
-        finding: Box<Finding>,
-        partial_body: Bytes,
-    },
-    Timeout {
-        timeout_secs: u64,
-    },
+    TooLarge { limit: usize },
+    Timeout { timeout_secs: u64 },
     Other(anyhow::Error),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InspectionPolicy {
+    Bypass,
+    DetectOnly,
+    Block,
+}
+
+#[derive(Debug)]
+enum BodyOutcome {
+    Complete {
+        body: Bytes,
+        findings: Vec<Finding>,
+    },
+    Rejected {
+        finding: Box<Finding>,
+        captured_prefix: Bytes,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -165,7 +177,6 @@ impl std::fmt::Display for BodyInspectionError {
             Self::TooLarge { limit } => {
                 write!(f, "request body exceeded route limit of {limit} bytes")
             }
-            Self::Blocked { .. } => write!(f, "request blocked during streaming inspection"),
             Self::Timeout { timeout_secs } => write!(
                 f,
                 "request body frame did not arrive within {timeout_secs} seconds"
@@ -249,6 +260,7 @@ impl ProxyClient {
             client,
             upstream,
             upstream_timeout: std::time::Duration::from_secs(timeout_secs),
+            allow_private_upstream,
             internal_header_name,
         })
     }
@@ -479,29 +491,53 @@ impl ProxyClient {
                 .await;
         }
 
-        let body_bytes = match consume_and_inspect_body(state, &context, req.body_mut(), &client_ip)
-            .await
+        let body_policy = if skip_inspection {
+            InspectionPolicy::Bypass
+        } else if state.mode == WafMode::Block {
+            InspectionPolicy::Block
+        } else {
+            InspectionPolicy::DetectOnly
+        };
+        let body_bytes = match consume_and_inspect_body(
+            state,
+            &context,
+            req.body_mut(),
+            &client_ip,
+            body_policy,
+        )
+        .await
         {
-            Ok(bytes) => bytes,
+            Ok(BodyOutcome::Complete { body, findings }) => {
+                for finding in findings {
+                    let event = build_event(&context, &finding, Some(&body));
+                    if let Some(response) = Self::log_and_enforce(state, event) {
+                        return response;
+                    }
+                }
+                body
+            }
+            Ok(BodyOutcome::Rejected {
+                finding,
+                captured_prefix,
+            }) => {
+                let event = build_event(&context, &finding, Some(&captured_prefix));
+                if let Some(response) = Self::log_and_enforce(state, event) {
+                    return response;
+                }
+                // A rejected body is evidence only. If enforcement policy ever
+                // changes under us, fail closed instead of forwarding it.
+                return block_content_response(
+                    state,
+                    StatusCode::FORBIDDEN,
+                    "Blocked by KrakenWaf",
+                );
+            }
             Err(BodyInspectionError::TooLarge { limit: _ }) => {
                 return block_content_response(
                     state,
                     StatusCode::PAYLOAD_TOO_LARGE,
                     "KrakenWaf blocked the request body",
                 );
-            }
-            Err(BodyInspectionError::Blocked {
-                finding,
-                partial_body,
-            }) => {
-                if !skip_inspection {
-                    let event = build_event(&context, &finding, Some(&partial_body));
-                    if let Some(response) = Self::log_and_enforce(state, event) {
-                        return response;
-                    }
-                }
-                // Silent mode or allowlisted path: forward whatever body was accumulated.
-                partial_body
             }
             Err(BodyInspectionError::Timeout { .. }) => {
                 return block_content_response(
@@ -584,17 +620,7 @@ impl ProxyClient {
             }
         }
 
-        let full_request = format_full_request_bytes(context, Some(&body_for_inspection));
-        match state
-            .waf
-            .inspect_complete_payload_with_context(&full_request, Some(&context.method))
-        {
-            Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
-            Decision::Block(finding) => {
-                let event = build_event(context, &finding, Some(body_bytes));
-                Self::log_and_enforce(state, event)
-            }
-        }
+        None
     }
 
     async fn handle_websocket_upgrade(
@@ -673,6 +699,7 @@ impl ProxyClient {
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
     ) -> Result<(tokio::net::TcpStream, WafResponse, Bytes)> {
+        validate_upstream_for_request(&self.upstream, self.allow_private_upstream).await?;
         anyhow::ensure!(
             self.upstream.scheme() == "http",
             "websocket tunneling currently supports http:// upstreams"
@@ -712,10 +739,17 @@ impl ProxyClient {
         event: SecurityEvent,
         enforcement: EnforcementPolicy,
     ) -> Option<WafResponse> {
-        state.metrics.inc_blocked();
         // Per-engine:module counter derived from the security event label.
         let module_label = derive_module_label(&event.engine, &event.rule_match);
-        state.metrics.inc_blocked_by_label(&module_label);
+        state.metrics.inc_detected();
+        state.metrics.inc_detected_by_label(&module_label);
+
+        let actually_blocked = matches!(enforcement, EnforcementPolicy::RateLimit { .. })
+            || state.mode == crate::cli::WafMode::Block;
+        if actually_blocked {
+            state.metrics.inc_blocked();
+            state.metrics.inc_blocked_by_label(&module_label);
+        }
 
         info!(
             target: "krakenwaf",
@@ -741,8 +775,6 @@ impl ProxyClient {
         // SQLite queue. Counting only happens when the WAF is going to
         // actually return 403 (Block mode); Silent / DetectOnly are
         // observe-only modes and must not poison the ban list.
-        let actually_blocked = matches!(enforcement, EnforcementPolicy::RateLimit { .. })
-            || state.mode == crate::cli::WafMode::Block;
         if actually_blocked && state.ban_manager.enabled() {
             let reason = derive_block_reason(&event);
             let ip = event.client_ip.clone();
@@ -797,6 +829,8 @@ impl ProxyClient {
         traceparent: &str,
         forwarded_origin: &ForwardedOrigin,
     ) -> Result<WafResponse> {
+        validate_upstream_for_request(&self.upstream, self.allow_private_upstream).await?;
+
         // Build the upstream URL by overlaying ONLY the request path and query on top of the
         // configured upstream. Never `Url::join` an attacker-controlled string: an absolute-form
         // request URI (RFC 7230 §5.3.2) such as `http://attacker.tld/x` would otherwise
@@ -820,6 +854,7 @@ impl ProxyClient {
             if is_hop_by_hop(name)
                 || name == HOST
                 || name == COOKIE
+                || name == CONTENT_LENGTH
                 || connection_hop.iter().any(|hop| hop == name)
             {
                 continue;
@@ -859,6 +894,9 @@ impl ProxyClient {
         request_builder = request_builder.header("traceparent", traceparent);
         if let Some(header_name) = &self.internal_header_name {
             request_builder = request_builder.header(header_name, "1");
+        }
+        if !body.is_empty() || headers.contains_key(CONTENT_LENGTH) {
+            request_builder = request_builder.header(CONTENT_LENGTH, body.len().to_string());
         }
 
         let request = request_builder
@@ -965,7 +1003,7 @@ impl ProxyClient {
                 max_bytes,
             } => {
                 ensure_advertised_length_within_limit(advertised_length, max_bytes)?;
-                let (mut prefix, remainder, response_body, seen) =
+                let (mut prefix, remainder, response_body, seen, prefix_is_complete_body) =
                     read_response_prefix(response_body, inspect_prefix_bytes, max_bytes).await?;
                 let original_prefix_len = prefix.len();
                 if let Some(response) = Self::inspect_upstream_response(
@@ -974,7 +1012,9 @@ impl ProxyClient {
                     &resp_headers_map,
                     &mut response_builder,
                     &mut prefix,
-                    false,
+                    prefix_is_complete_body
+                        || (remainder.is_empty()
+                            && advertised_length.is_some_and(|length| length == seen)),
                     &method_str,
                     &uri,
                     request_id,
@@ -1054,6 +1094,26 @@ impl ProxyClient {
             } => {
                 // Log finding (low severity by construction) to ALL outputs.
                 let event = build_response_event(&finding, method, uri, request_id);
+                if !complete_body {
+                    info!(
+                        target: "krakenwaf",
+                        request_id=%event.request_id,
+                        rule_id=%event.rule_id,
+                        title=%event.title,
+                        severity=%event.severity,
+                        cwe=%event.cwe,
+                        engine=%event.engine,
+                        method=%event.method,
+                        uri=%event.uri,
+                        rule=%event.rule_match,
+                        mode="monitor",
+                        original_len=bytes.len(),
+                        "response DBMS error fingerprint detected in prefix; not rewriting partial body"
+                    );
+                    write_critical(&state.logging, &event);
+                    state.store.enqueue(event);
+                    return None;
+                }
                 info!(
                     target: "krakenwaf",
                     request_id=%event.request_id,
@@ -1166,15 +1226,32 @@ async fn consume_and_inspect_body(
     ctx: &InspectionContext,
     body: &mut Incoming,
     client_ip: &str,
-) -> std::result::Result<Bytes, BodyInspectionError> {
+    policy: InspectionPolicy,
+) -> std::result::Result<BodyOutcome, BodyInspectionError> {
     let raw_body = accumulate_body_frames(state, ctx, body, client_ip).await?;
-    if raw_body.is_empty() {
-        return Ok(raw_body);
+    if raw_body.is_empty() || policy == InspectionPolicy::Bypass {
+        return Ok(BodyOutcome::Complete {
+            body: raw_body,
+            findings: Vec::new(),
+        });
     }
 
     let decoded_body = decode_body_for_inspection(state, ctx, &raw_body)?;
-    inspect_multipart_parts(state, ctx, &decoded_body, &raw_body)?;
-    inspect_decoded_body(state, ctx, &decoded_body, raw_body)
+    let mut findings = Vec::new();
+    if let Some(outcome) =
+        inspect_multipart_parts(state, ctx, &decoded_body, &raw_body, policy, &mut findings)?
+    {
+        return Ok(outcome);
+    }
+    if let Some(outcome) =
+        inspect_decoded_body(state, ctx, &decoded_body, &raw_body, policy, &mut findings)
+    {
+        return Ok(outcome);
+    }
+    Ok(BodyOutcome::Complete {
+        body: raw_body,
+        findings,
+    })
 }
 
 fn decode_body_for_inspection(
@@ -1212,7 +1289,9 @@ fn inspect_multipart_parts(
     ctx: &InspectionContext,
     decoded_body: &Bytes,
     raw_body: &Bytes,
-) -> std::result::Result<(), BodyInspectionError> {
+    policy: InspectionPolicy,
+    findings: &mut Vec<Finding>,
+) -> std::result::Result<Option<BodyOutcome>, BodyInspectionError> {
     // Multipart extraction: scan each part's inspectable view independently.
     if let Some(ct) = ctx_header(ctx, "content-type") {
         if let Some(boundary) = extract_boundary(&ct) {
@@ -1229,24 +1308,29 @@ fn inspect_multipart_parts(
                 {
                     Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => {}
                     Decision::Block(finding) => {
-                        return Err(BodyInspectionError::Blocked {
-                            finding,
-                            partial_body: raw_body.clone(),
-                        });
+                        if policy == InspectionPolicy::Block {
+                            return Ok(Some(BodyOutcome::Rejected {
+                                finding,
+                                captured_prefix: raw_body.clone(),
+                            }));
+                        }
+                        findings.push(*finding);
                     }
                 }
             }
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 fn inspect_decoded_body(
     state: &AppState,
     ctx: &InspectionContext,
     decoded_body: &Bytes,
-    raw_body: Bytes,
-) -> std::result::Result<Bytes, BodyInspectionError> {
+    raw_body: &Bytes,
+    policy: InspectionPolicy,
+    findings: &mut Vec<Finding>,
+) -> Option<BodyOutcome> {
     // Single full-body inspection on the cleartext view.
     let body_for_inspection = request_body_for_text_inspection(ctx, decoded_body);
     let full = format_full_request_bytes(ctx, Some(&body_for_inspection));
@@ -1254,11 +1338,18 @@ fn inspect_decoded_body(
         .waf
         .inspect_complete_payload_with_context(&full, Some(&ctx.method))
     {
-        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => Ok(raw_body),
-        Decision::Block(finding) => Err(BodyInspectionError::Blocked {
-            finding,
-            partial_body: raw_body,
-        }),
+        Decision::Allow | Decision::Monitor(_) | Decision::SilentReplace { .. } => None,
+        Decision::Block(finding) => {
+            if policy == InspectionPolicy::Block {
+                Some(BodyOutcome::Rejected {
+                    finding,
+                    captured_prefix: raw_body.clone(),
+                })
+            } else {
+                findings.push(*finding);
+                None
+            }
+        }
     }
 }
 
@@ -1499,71 +1590,87 @@ fn validate_upstream(upstream: &Url, allow_private_upstream: bool) -> Result<()>
         return Ok(());
     }
 
+    reject_private_upstream_resolution(upstream, true)
+}
+
+async fn validate_upstream_for_request(upstream: &Url, allow_private_upstream: bool) -> Result<()> {
+    if allow_private_upstream {
+        return Ok(());
+    }
+    let upstream = upstream.clone();
+    tokio::task::spawn_blocking(move || reject_private_upstream_resolution(&upstream, false))
+        .await
+        .context("upstream DNS validation task failed")?
+}
+
+fn reject_private_upstream_resolution(upstream: &Url, log_success: bool) -> Result<()> {
     if let Some(host) = upstream.host() {
         match host {
             Host::Ipv4(ip) => {
-                if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified()
-                {
+                if ip_is_private_or_local(&std::net::IpAddr::V4(ip)) {
                     anyhow::bail!("private or local upstreams require --allow-private-upstream");
                 }
             }
             Host::Ipv6(ip) => {
-                if ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() {
+                if ip_is_private_or_local(&std::net::IpAddr::V6(ip)) {
                     anyhow::bail!("private or local upstreams require --allow-private-upstream");
                 }
             }
             Host::Domain(domain) => {
-                // Eager DNS resolution at startup mitigates DNS-rebinding by giving the
-                // operator visibility into which IPs the upstream resolves to before any
-                // request is forwarded. We do NOT pin the IP at the connection layer;
-                // operators that need hard pinning should configure the upstream as an
-                // explicit IP literal.
-                let port = upstream.port_or_known_default().unwrap_or(0);
-                let host_port = format!("{domain}:{port}");
-                match std::net::ToSocketAddrs::to_socket_addrs(&host_port.as_str()) {
-                    Ok(iter) => {
-                        let resolved: Vec<std::net::IpAddr> = iter.map(|sa| sa.ip()).collect();
-                        for ip in &resolved {
-                            let is_local = match ip {
-                                std::net::IpAddr::V4(v4) => {
-                                    v4.is_private()
-                                        || v4.is_loopback()
-                                        || v4.is_link_local()
-                                        || v4.is_unspecified()
-                                }
-                                std::net::IpAddr::V6(v6) => {
-                                    v6.is_loopback() || v6.is_unspecified() || v6.is_unique_local()
-                                }
-                            };
-                            if is_local {
-                                anyhow::bail!(
-                                    "upstream {domain} resolved to private/local address {ip}; \
-                                     refuse to start without --allow-private-upstream"
-                                );
-                            }
-                        }
-                        info!(
-                            target: "krakenwaf",
-                            upstream_host = %domain,
-                            resolved = ?resolved,
-                            "resolved upstream hostname at startup (DNS-rebinding visibility)"
-                        );
-                    }
-                    Err(err) => {
-                        warn!(
-                            target: "krakenwaf",
-                            upstream_host = %domain,
-                            error = %err,
-                            "failed to resolve upstream hostname at startup; continuing — \
-                             the connection layer will retry at request time"
+                let resolved = resolve_upstream_addrs(upstream, domain)?;
+                for ip in &resolved {
+                    if ip_is_private_or_local(ip) {
+                        anyhow::bail!(
+                            "upstream {domain} resolved to private/local address {ip}; \
+                             refuse without --allow-private-upstream"
                         );
                     }
                 }
+                if log_success {
+                    info!(
+                        target: "krakenwaf",
+                        upstream_host = %domain,
+                        resolved = ?resolved,
+                        "resolved upstream hostname at startup (DNS-rebinding visibility)"
+                    );
+                }
             }
         }
+    } else {
+        anyhow::bail!("upstream host is missing");
     }
 
     Ok(())
+}
+
+fn resolve_upstream_addrs(upstream: &Url, domain: &str) -> Result<Vec<std::net::IpAddr>> {
+    let port = upstream
+        .port_or_known_default()
+        .ok_or_else(|| anyhow::anyhow!("upstream port is missing"))?;
+    let host_port = format!("{domain}:{port}");
+    let resolved = std::net::ToSocketAddrs::to_socket_addrs(&host_port.as_str())
+        .with_context(|| format!("failed to resolve upstream hostname {domain}"))?
+        .map(|sa| sa.ip())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(
+        !resolved.is_empty(),
+        "upstream hostname {domain} resolved to no addresses"
+    );
+    Ok(resolved)
+}
+
+fn ip_is_private_or_local(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
+        }
+        std::net::IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_unique_local()
+                || v6.is_unicast_link_local()
+        }
+    }
 }
 
 /// Returns true when the inbound header set exceeds the configured count or byte limits.
@@ -1591,6 +1698,15 @@ fn flatten_headers(headers: &HeaderMap) -> String {
     let mut count = 0usize;
     let mut total = 0usize;
     for (name, value) in headers {
+        if name == TRANSFER_ENCODING
+            && !headers.contains_key(CONTENT_LENGTH)
+            && value
+                .to_str()
+                .ok()
+                .is_some_and(|value| value.trim().eq_ignore_ascii_case("chunked"))
+        {
+            continue;
+        }
         count += 1;
         total += name.as_str().len() + value.as_bytes().len();
         if count > MAX_FORWARDED_HEADERS || total > MAX_FORWARDED_HEADER_BYTES {
@@ -2003,10 +2119,11 @@ async fn read_response_prefix(
     mut body: Incoming,
     prefix_limit: usize,
     max_bytes: usize,
-) -> Result<(Bytes, VecDeque<Frame<Bytes>>, Incoming, usize)> {
+) -> Result<(Bytes, VecDeque<Frame<Bytes>>, Incoming, usize, bool)> {
     let mut prefix = BytesMut::with_capacity(prefix_limit.min(64 * 1024));
     let mut remainder = VecDeque::new();
     let mut seen = 0usize;
+    let mut complete_body = false;
 
     while prefix.len() < prefix_limit {
         let Some(frame) = body
@@ -2015,6 +2132,7 @@ async fn read_response_prefix(
             .transpose()
             .map_err(|error| KrakenError::Upstream(error.to_string()))?
         else {
+            complete_body = true;
             break;
         };
         match frame.into_data() {
@@ -2043,7 +2161,7 @@ async fn read_response_prefix(
         }
     }
 
-    Ok((prefix.freeze(), remainder, body, seen))
+    Ok((prefix.freeze(), remainder, body, seen, complete_body))
 }
 
 fn adjust_streaming_content_length(

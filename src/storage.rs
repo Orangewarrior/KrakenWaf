@@ -1,8 +1,7 @@
-use crate::logging::SecurityEvent;
+use crate::{logging::SecurityEvent, redaction};
 use anyhow::{Context, Result};
 use sea_orm::{
-    entity::prelude::*,
-    ActiveValue, ActiveValue::Set, ConnectOptions, Database, DatabaseBackend,
+    entity::prelude::*, ActiveValue, ActiveValue::Set, ConnectOptions, Database, DatabaseBackend,
     DatabaseConnection, EntityTrait, Statement,
 };
 use std::{fs, path::Path, time::Duration};
@@ -19,7 +18,7 @@ const PURGE_INTERVAL: Duration = Duration::from_hours(24);
 /// freshly created database must be tagged with it — otherwise the matching
 /// `migrate_to_vN` step re-runs on the next start and an `ADD COLUMN` fails on
 /// a column that already exists. Bump this in lockstep with each new migration.
-const LATEST_SCHEMA_VERSION: i64 = 4;
+const LATEST_SCHEMA_VERSION: i64 = 5;
 
 #[derive(Clone)]
 pub struct SqliteStore {
@@ -44,9 +43,12 @@ pub struct Model {
     pub continent_name: String,
     pub http_method: String,
     pub request_uri: String,
+    pub request_uri_masked: String,
     pub fullpath_evidence: String,
+    pub fullpath_evidence_masked: String,
     pub engine: String,
     pub request_payload: String,
+    pub request_payload_masked: String,
     pub request_id: String,
 }
 
@@ -64,7 +66,7 @@ impl ActiveModelBehavior for ActiveModel {}
 impl SqliteStore {
     /// # Errors
     /// Returns an error if the database directory cannot be created or the `SQLite` connection fails.
-    pub async fn new(root: &Path) -> Result<Self> {
+    pub async fn new(root: &Path, redact_mask_filter: bool) -> Result<Self> {
         let db_dir = root.join("logs").join("db");
         fs::create_dir_all(&db_dir)?;
         let db_path = db_dir.join("vulns_alert.db");
@@ -118,7 +120,7 @@ impl SqliteStore {
                     }
                 }
 
-                if let Err(err) = batch_insert(&db_clone, &buffer).await {
+                if let Err(err) = batch_insert(&db_clone, &buffer, redact_mask_filter).await {
                     warn!(target: "krakenwaf", "sqlite batch insert failed: {err:#}");
                 }
                 buffer.clear();
@@ -142,8 +144,16 @@ impl SqliteStore {
 }
 
 async fn init_schema(db: &DatabaseConnection) -> Result<()> {
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA journal_mode=WAL;".to_owned())).await?;
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "PRAGMA foreign_keys=ON;".to_owned())).await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "PRAGMA journal_mode=WAL;".to_owned(),
+    ))
+    .await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "PRAGMA foreign_keys=ON;".to_owned(),
+    ))
+    .await?;
 
     let current_version = query_user_version(db).await?;
 
@@ -171,6 +181,16 @@ async fn init_schema(db: &DatabaseConnection) -> Result<()> {
         set_user_version(db, 4).await?;
     }
 
+    // v4 → v5: adds masked request fields for role-aware UI consumers.
+    if current_version < 5
+        || !column_exists(db, "vulnerabilities", "request_payload_masked").await?
+    {
+        migrate_to_v5(db).await?;
+        set_user_version(db, 5).await?;
+    }
+
+    create_masked_view(db).await?;
+
     Ok(())
 }
 
@@ -183,16 +203,22 @@ async fn query_user_version(db: &DatabaseConnection) -> Result<i64> {
 }
 
 async fn set_user_version(db: &DatabaseConnection, version: i64) -> Result<()> {
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, format!("PRAGMA user_version={version};"))).await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        format!("PRAGMA user_version={version};"),
+    ))
+    .await?;
     Ok(())
 }
 
 async fn table_exists(db: &DatabaseConnection, name: &str) -> Result<bool> {
-    let row = db.query_one(Statement::from_sql_and_values(
-        DatabaseBackend::Sqlite,
-        "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1;",
-        [name.to_owned().into()],
-    )).await?;
+    let row = db
+        .query_one(Statement::from_sql_and_values(
+            DatabaseBackend::Sqlite,
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=? LIMIT 1;",
+            [name.to_owned().into()],
+        ))
+        .await?;
     Ok(row.is_some())
 }
 
@@ -234,8 +260,11 @@ async fn add_column_if_missing(
     if column_exists(db, table, column).await? {
         return Ok(());
     }
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, ddl.to_owned()))
-        .await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        ddl.to_owned(),
+    ))
+    .await?;
     Ok(())
 }
 
@@ -258,25 +287,59 @@ async fn create_latest_schema(db: &DatabaseConnection) -> Result<()> {
             continent_name VARCHAR(64) NOT NULL DEFAULT '',
             http_method VARCHAR(16) NOT NULL,
             request_uri TEXT NOT NULL,
+            request_uri_masked TEXT NOT NULL DEFAULT '',
             fullpath_evidence TEXT NOT NULL,
+            fullpath_evidence_masked TEXT NOT NULL DEFAULT '',
             engine VARCHAR(32) NOT NULL,
             request_payload TEXT NOT NULL,
+            request_payload_masked TEXT NOT NULL DEFAULT '',
             request_id VARCHAR(32) NOT NULL DEFAULT ''
         );
-        ".to_owned(),
-    )).await?;
+        "
+        .to_owned(),
+    ))
+    .await?;
     db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_occurred_at ON vulnerabilities(occurred_at DESC);".to_owned())).await?;
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity);".to_owned())).await?;
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_engine ON vulnerabilities(engine);".to_owned())).await?;
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_title ON vulnerabilities(title);".to_owned())).await?;
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_request_id ON vulnerabilities(request_id);".to_owned())).await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_severity ON vulnerabilities(severity);"
+            .to_owned(),
+    ))
+    .await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_engine ON vulnerabilities(engine);"
+            .to_owned(),
+    ))
+    .await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_title ON vulnerabilities(title);"
+            .to_owned(),
+    ))
+    .await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_request_id ON vulnerabilities(request_id);"
+            .to_owned(),
+    ))
+    .await?;
+    create_masked_view(db).await?;
     Ok(())
 }
 
 async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
-    db.execute(Statement::from_string(DatabaseBackend::Sqlite, "BEGIN IMMEDIATE;".to_owned())).await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "BEGIN IMMEDIATE;".to_owned(),
+    ))
+    .await?;
     let result: Result<()> = async {
-        db.execute(Statement::from_string(DatabaseBackend::Sqlite, "ALTER TABLE vulnerabilities RENAME TO vulnerabilities_legacy;".to_owned())).await?;
+        db.execute(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "ALTER TABLE vulnerabilities RENAME TO vulnerabilities_legacy;".to_owned(),
+        ))
+        .await?;
         create_latest_schema(db).await?;
         db.execute(Statement::from_string(
             DatabaseBackend::Sqlite,
@@ -304,19 +367,35 @@ async fn migrate_to_v2(db: &DatabaseConnection) -> Result<()> {
                 request_payload,
                 '' AS request_id
             FROM vulnerabilities_legacy;
-            ".to_owned(),
-        )).await?;
-        db.execute(Statement::from_string(DatabaseBackend::Sqlite, "DROP TABLE vulnerabilities_legacy;".to_owned())).await?;
+            "
+            .to_owned(),
+        ))
+        .await?;
+        db.execute(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "DROP TABLE vulnerabilities_legacy;".to_owned(),
+        ))
+        .await?;
         Ok(())
-    }.await;
+    }
+    .await;
 
     match result {
         Ok(()) => {
-            db.execute(Statement::from_string(DatabaseBackend::Sqlite, "COMMIT;".to_owned())).await?;
+            db.execute(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "COMMIT;".to_owned(),
+            ))
+            .await?;
             Ok(())
         }
         Err(err) => {
-            let _ = db.execute(Statement::from_string(DatabaseBackend::Sqlite, "ROLLBACK;".to_owned())).await;
+            let _ = db
+                .execute(Statement::from_string(
+                    DatabaseBackend::Sqlite,
+                    "ROLLBACK;".to_owned(),
+                ))
+                .await;
             Err(err).context("failed to migrate vulnerabilities table to schema v2")
         }
     }
@@ -334,7 +413,8 @@ async fn migrate_to_v3(db: &DatabaseConnection) -> Result<()> {
 
     db.execute(Statement::from_string(
         DatabaseBackend::Sqlite,
-        "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_request_id ON vulnerabilities(request_id);".to_owned(),
+        "CREATE INDEX IF NOT EXISTS idx_vulnerabilities_request_id ON vulnerabilities(request_id);"
+            .to_owned(),
     ))
     .await
     .context("failed to create request_id index (schema v3)")?;
@@ -364,6 +444,92 @@ async fn migrate_to_v4(db: &DatabaseConnection) -> Result<()> {
     Ok(())
 }
 
+async fn migrate_to_v5(db: &DatabaseConnection) -> Result<()> {
+    add_column_if_missing(
+        db,
+        "vulnerabilities",
+        "request_uri_masked",
+        "ALTER TABLE vulnerabilities ADD COLUMN request_uri_masked TEXT NOT NULL DEFAULT '';",
+    )
+    .await
+    .context("failed to add request_uri_masked column (schema v5)")?;
+
+    add_column_if_missing(
+        db,
+        "vulnerabilities",
+        "fullpath_evidence_masked",
+        "ALTER TABLE vulnerabilities ADD COLUMN fullpath_evidence_masked TEXT NOT NULL DEFAULT '';",
+    )
+    .await
+    .context("failed to add fullpath_evidence_masked column (schema v5)")?;
+
+    add_column_if_missing(
+        db,
+        "vulnerabilities",
+        "request_payload_masked",
+        "ALTER TABLE vulnerabilities ADD COLUMN request_payload_masked TEXT NOT NULL DEFAULT '';",
+    )
+    .await
+    .context("failed to add request_payload_masked column (schema v5)")?;
+
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        r"
+        UPDATE vulnerabilities
+        SET
+            request_uri_masked = request_uri,
+            fullpath_evidence_masked = fullpath_evidence,
+            request_payload_masked = request_payload
+        WHERE request_uri_masked = ''
+          AND fullpath_evidence_masked = ''
+          AND request_payload_masked = '';
+        "
+        .to_owned(),
+    ))
+    .await
+    .context("failed to backfill masked request fields (schema v5)")?;
+
+    create_masked_view(db).await?;
+    Ok(())
+}
+
+async fn create_masked_view(db: &DatabaseConnection) -> Result<()> {
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        "DROP VIEW IF EXISTS vulnerabilities_masked;".to_owned(),
+    ))
+    .await?;
+    db.execute(Statement::from_string(
+        DatabaseBackend::Sqlite,
+        r"
+        CREATE VIEW vulnerabilities_masked AS
+        SELECT
+            id,
+            title,
+            severity,
+            cwe,
+            description,
+            reference_url,
+            occurred_at,
+            rule_match,
+            rule_line_match,
+            client_ip,
+            country,
+            continent_name,
+            http_method,
+            request_uri_masked AS request_uri,
+            fullpath_evidence_masked AS fullpath_evidence,
+            engine,
+            request_payload_masked AS request_payload,
+            request_id
+        FROM vulnerabilities;
+        "
+        .to_owned(),
+    ))
+    .await?;
+    Ok(())
+}
+
 // SAFETY (SQL): every dynamic value reaching SQLite goes through SeaORM's `ActiveModel`
 // (see `batch_insert` below) or `Statement::from_sql_and_values` with a positional `?`
 // placeholder (see `table_exists` and `purge_old_events`). No untrusted string is ever
@@ -384,34 +550,71 @@ fn format_occurred_at(raw: &str) -> String {
     )
 }
 
-async fn batch_insert(db: &DatabaseConnection, events: &[SecurityEvent]) -> Result<()> {
+async fn batch_insert(
+    db: &DatabaseConnection,
+    events: &[SecurityEvent],
+    redact_mask_filter: bool,
+) -> Result<()> {
     if events.is_empty() {
         return Ok(());
     }
 
-    let models = events.iter().map(|event| ActiveModel {
-        id: ActiveValue::default(),
-        title: Set(event.title.clone()),
-        severity: Set(event.severity.to_string()),
-        cwe: Set(event.cwe.clone()),
-        description: Set(event.description.clone()),
-        reference_url: Set(event.reference_url.clone()),
-        occurred_at: Set(format_occurred_at(&event.timestamp)),
-        rule_match: Set(event.rule_match.clone()),
-        rule_line_match: Set(event.rule_line_match.clone()),
-        client_ip: Set(event.client_ip.clone()),
-        country: Set(event.country.clone()),
-        continent_name: Set(event.continent_name.clone()),
-        http_method: Set(event.method.clone()),
-        request_uri: Set(event.uri.clone()),
-        fullpath_evidence: Set(event.fullpath_evidence.clone()),
-        engine: Set(event.engine.clone()),
-        request_payload: Set(event.request_payload.clone()),
-        request_id: Set(event.request_id.clone()),
-    }).collect::<Vec<_>>();
+    let models = events
+        .iter()
+        .map(|event| {
+            let masked = MaskedRequestFields::from_event(event, redact_mask_filter);
+            ActiveModel {
+                id: ActiveValue::default(),
+                title: Set(event.title.clone()),
+                severity: Set(event.severity.to_string()),
+                cwe: Set(event.cwe.clone()),
+                description: Set(event.description.clone()),
+                reference_url: Set(event.reference_url.clone()),
+                occurred_at: Set(format_occurred_at(&event.timestamp)),
+                rule_match: Set(event.rule_match.clone()),
+                rule_line_match: Set(event.rule_line_match.clone()),
+                client_ip: Set(event.client_ip.clone()),
+                country: Set(event.country.clone()),
+                continent_name: Set(event.continent_name.clone()),
+                http_method: Set(event.method.clone()),
+                request_uri: Set(event.uri.clone()),
+                request_uri_masked: Set(masked.request_uri),
+                fullpath_evidence: Set(event.fullpath_evidence.clone()),
+                fullpath_evidence_masked: Set(masked.fullpath_evidence),
+                engine: Set(event.engine.clone()),
+                request_payload: Set(event.request_payload.clone()),
+                request_payload_masked: Set(masked.request_payload),
+                request_id: Set(event.request_id.clone()),
+            }
+        })
+        .collect::<Vec<_>>();
 
     Entity::insert_many(models).exec(db).await?;
     Ok(())
+}
+
+struct MaskedRequestFields {
+    request_uri: String,
+    fullpath_evidence: String,
+    request_payload: String,
+}
+
+impl MaskedRequestFields {
+    fn from_event(event: &SecurityEvent, redact_mask_filter: bool) -> Self {
+        if redact_mask_filter {
+            Self {
+                request_uri: redaction::redact_uri(&event.uri),
+                fullpath_evidence: redaction::redact_uri(&event.fullpath_evidence),
+                request_payload: redaction::redact_payload(&event.request_payload),
+            }
+        } else {
+            Self {
+                request_uri: event.uri.clone(),
+                fullpath_evidence: event.fullpath_evidence.clone(),
+                request_payload: event.request_payload.clone(),
+            }
+        }
+    }
 }
 
 async fn purge_old_events(db: &DatabaseConnection) -> Result<()> {
@@ -419,13 +622,15 @@ async fn purge_old_events(db: &DatabaseConnection) -> Result<()> {
         DatabaseBackend::Sqlite,
         "DELETE FROM vulnerabilities WHERE occurred_at < datetime('now', ?);",
         [format!("-{PAYLOAD_RETENTION_DAYS} days").into()],
-    )).await?;
+    ))
+    .await?;
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::rules::Severity;
 
     /// `occurred_at` must be stored in the human-friendly `YYYY-MM-DD HH:MM:SS`
     /// UTC form, regardless of the sub-second precision or offset in the source
@@ -474,12 +679,146 @@ mod tests {
             LATEST_SCHEMA_VERSION,
             "fresh schema must be stamped at the latest version"
         );
-        for col in ["request_id", "country", "continent_name"] {
+        for col in [
+            "request_id",
+            "country",
+            "continent_name",
+            "request_uri_masked",
+            "fullpath_evidence_masked",
+            "request_payload_masked",
+        ] {
             assert!(
-                column_exists(&db, "vulnerabilities", col).await.expect("introspect"),
+                column_exists(&db, "vulnerabilities", col)
+                    .await
+                    .expect("introspect"),
                 "fresh schema is missing column `{col}`"
             );
         }
+        db.query_one(Statement::from_string(
+            DatabaseBackend::Sqlite,
+            "SELECT request_payload FROM vulnerabilities_masked LIMIT 0;".to_owned(),
+        ))
+        .await
+        .expect("masked view must exist");
+    }
+
+    fn test_event() -> SecurityEvent {
+        SecurityEvent {
+            timestamp: "2026-06-23T12:00:00+00:00".to_string(),
+            request_id: "req-redact".to_string(),
+            client_ip: "203.0.113.10".to_string(),
+            country: String::new(),
+            continent_name: String::new(),
+            method: "POST".to_string(),
+            uri: "/login?token=query-token&user=alice".to_string(),
+            fullpath_evidence: "/login?password=query-password".to_string(),
+            engine: "libinjection".to_string(),
+            rule_id: "xss".to_string(),
+            title: "XSS".to_string(),
+            severity: Severity::High,
+            cwe: "CWE-79".to_string(),
+            description: "test".to_string(),
+            reference_url: "https://example.invalid".to_string(),
+            rule_match: "libinjection::xss".to_string(),
+            rule_line_match: "libinjection".to_string(),
+            request_payload: concat!(
+                "POST /login?token=query-token&user=alice HTTP/1.1\n",
+                "Host: example.invalid\n",
+                "Cookie: session=ok; password=cookie-secret\n",
+                "Authorization: Bearer header-token\n",
+                "\n",
+                "user=alice&password=body-secret"
+            )
+            .to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn batch_insert_populates_masked_fields_and_view() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("vulns.db");
+        let db = connect(&db_path).await;
+        init_schema(&db).await.expect("init schema");
+
+        batch_insert(&db, &[test_event()], true)
+            .await
+            .expect("insert event");
+
+        let row = db
+            .query_one(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT request_uri, request_uri_masked, fullpath_evidence_masked, request_payload, request_payload_masked FROM vulnerabilities LIMIT 1;".to_owned(),
+            ))
+            .await
+            .expect("query raw table")
+            .expect("row");
+        let request_uri: String = row.try_get("", "request_uri").expect("request_uri");
+        let request_uri_masked: String = row
+            .try_get("", "request_uri_masked")
+            .expect("request_uri_masked");
+        let fullpath_evidence_masked: String = row
+            .try_get("", "fullpath_evidence_masked")
+            .expect("fullpath_evidence_masked");
+        let request_payload: String = row.try_get("", "request_payload").expect("request_payload");
+        let request_payload_masked: String = row
+            .try_get("", "request_payload_masked")
+            .expect("request_payload_masked");
+
+        assert!(request_uri.contains("query-token"));
+        assert_eq!(request_uri_masked, "/login?token=+++++&user=alice");
+        assert_eq!(fullpath_evidence_masked, "/login?password=+++++");
+        assert!(request_payload.contains("body-secret"));
+        assert!(request_payload_masked.contains("password=+++++"));
+        assert!(request_payload_masked.contains("Authorization: Bearer +++++"));
+        assert!(!request_payload_masked.contains("query-token"));
+        assert!(!request_payload_masked.contains("cookie-secret"));
+        assert!(!request_payload_masked.contains("header-token"));
+        assert!(!request_payload_masked.contains("body-secret"));
+
+        let view = db
+            .query_one(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT request_uri, request_payload FROM vulnerabilities_masked LIMIT 1;"
+                    .to_owned(),
+            ))
+            .await
+            .expect("query masked view")
+            .expect("view row");
+        let view_uri: String = view.try_get("", "request_uri").expect("view uri");
+        let view_payload: String = view.try_get("", "request_payload").expect("view payload");
+        assert_eq!(view_uri, request_uri_masked);
+        assert_eq!(view_payload, request_payload_masked);
+    }
+
+    #[tokio::test]
+    async fn batch_insert_keeps_masked_fields_raw_when_redaction_disabled() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("vulns.db");
+        let db = connect(&db_path).await;
+        init_schema(&db).await.expect("init schema");
+
+        batch_insert(&db, &[test_event()], false)
+            .await
+            .expect("insert event");
+
+        let row = db
+            .query_one(Statement::from_string(
+                DatabaseBackend::Sqlite,
+                "SELECT request_uri, request_uri_masked, request_payload, request_payload_masked FROM vulnerabilities LIMIT 1;".to_owned(),
+            ))
+            .await
+            .expect("query")
+            .expect("row");
+        let request_uri: String = row.try_get("", "request_uri").expect("request_uri");
+        let request_uri_masked: String = row
+            .try_get("", "request_uri_masked")
+            .expect("request_uri_masked");
+        let request_payload: String = row.try_get("", "request_payload").expect("request_payload");
+        let request_payload_masked: String = row
+            .try_get("", "request_payload_masked")
+            .expect("request_payload_masked");
+        assert_eq!(request_uri_masked, request_uri);
+        assert_eq!(request_payload_masked, request_payload);
     }
 
     /// Regression: running the WAF twice from the same working directory used to
@@ -527,7 +866,9 @@ mod tests {
         create_latest_schema(&db).await.expect("create schema");
         set_user_version(&db, 0).await.expect("reset version");
 
-        init_schema(&db).await.expect("legacy upgrade must not fail");
+        init_schema(&db)
+            .await
+            .expect("legacy upgrade must not fail");
 
         assert_eq!(
             query_user_version(&db).await.expect("user_version"),

@@ -53,16 +53,19 @@
 //! * **Constant-time** — the tag is verified with orion's constant-time
 //!   comparison; no byte-by-byte early exit leaks the expected tag.
 //! * **Anti-replay** — a `(client_id, step, nonce)` triple is accepted at most
-//!   once; a repeat within the window is rejected even with a valid tag.
+//!   once; a repeat within the window is rejected even with a valid tag. In
+//!   production the nonce reservation is backed by Redis when the WAF already
+//!   uses Redis, otherwise by a local SQLite table under `logs/db`.
 //! * **No detail leak** — every failure collapses to a single opaque outcome at
 //!   the HTTP layer; the presented token is never logged (see [`REDACTED_TOKEN`]).
 
-use std::time::Duration;
+use std::{path::Path, sync::Mutex, time::Duration};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use dashmap::{mapref::entry::Entry, DashMap};
 use orion::auth;
 use orion::hash;
+use rusqlite::{params, Connection};
 
 /// Environment / file secret name for the even-parity Rorschach secret.
 /// Resolved through [`crate::secrets::load_secret`] (file-first, env fallback)
@@ -83,6 +86,15 @@ pub const MIN_SECRET_BYTES: usize = 64;
 const TAG_BYTES: usize = 32;
 /// Versioned prefix of the bearer credential.
 pub const TOKEN_PREFIX: &str = "rch1";
+const SQLITE_NONCE_DB: &str = "rorschach_replay.db";
+const REDIS_NONCE_PREFIX: &str = "krakenwaf:rorschach:nonce";
+const NONCE_STORE_TIMEOUT: Duration = Duration::from_millis(150);
+const REDIS_NONCE_RESERVE_LUA: &str = r"
+if redis.call('SET', KEYS[1], '1', 'PX', ARGV[1], 'NX') then
+  return 1
+end
+return 0
+";
 
 /// Placeholder substituted for the Rorschach token in every log line so the
 /// secret credential never reaches disk, a log shipper, or a crash dump.
@@ -244,6 +256,9 @@ pub enum VerifyError {
     BadToken,
     /// The `(client_id, step, nonce)` triple was already consumed.
     Replay,
+    /// The nonce store could not be reached or updated. The control plane fails
+    /// closed rather than accepting a token whose single-use property is unknown.
+    StoreUnavailable,
 }
 
 impl VerifyError {
@@ -254,6 +269,7 @@ impl VerifyError {
             VerifyError::StepWindow => "step outside skew window",
             VerifyError::BadToken => "invalid or unverifiable token",
             VerifyError::Replay => "nonce already used",
+            VerifyError::StoreUnavailable => "nonce store unavailable",
         }
     }
 }
@@ -346,18 +362,66 @@ pub fn sign_token(
 #[derive(Debug)]
 pub struct RorschachValidator {
     secrets: RorschachSecrets,
-    /// Consumed nonces keyed by `"{client_id}\n{step}\n{nonce}"`, valued by the
-    /// unix time after which the entry may be pruned.
-    seen_nonces: DashMap<String, i64>,
+    nonce_store: NonceStore,
+}
+
+#[derive(Debug)]
+enum NonceStore {
+    /// Test/local helper. Production constructors use Redis or SQLite so replay
+    /// state survives process restarts and can be shared by replicas.
+    #[allow(dead_code)]
+    Memory(DashMap<String, i64>),
+    Redis(RedisNonceStore),
+    Sqlite(SqliteNonceStore),
+}
+
+#[derive(Debug, Clone)]
+struct RedisNonceStore {
+    pool: fred::clients::Pool,
+    key_prefix: String,
+}
+
+struct SqliteNonceStore {
+    conn: Mutex<Connection>,
+}
+
+impl std::fmt::Debug for SqliteNonceStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SqliteNonceStore").finish_non_exhaustive()
+    }
 }
 
 impl RorschachValidator {
     #[must_use]
+    #[allow(dead_code)]
     pub fn new(secrets: RorschachSecrets) -> Self {
         Self {
             secrets,
-            seen_nonces: DashMap::new(),
+            nonce_store: NonceStore::Memory(DashMap::new()),
         }
+    }
+
+    #[must_use]
+    pub fn with_redis(secrets: RorschachSecrets, pool: fred::clients::Pool) -> Self {
+        Self {
+            secrets,
+            nonce_store: NonceStore::Redis(RedisNonceStore {
+                pool,
+                key_prefix: REDIS_NONCE_PREFIX.to_string(),
+            }),
+        }
+    }
+
+    /// Build a validator backed by a local SQLite nonce table under
+    /// `<root>/logs/db/rorschach_replay.db`.
+    ///
+    /// # Errors
+    /// Returns an error if the database directory/table cannot be created.
+    pub fn with_sqlite(secrets: RorschachSecrets, root: &Path) -> Result<Self, String> {
+        Ok(Self {
+            secrets,
+            nonce_store: NonceStore::Sqlite(SqliteNonceStore::open(root)?),
+        })
     }
 
     /// Absolute unix time after which a nonce reserved at `now_unix` for `step`
@@ -378,7 +442,7 @@ impl RorschachValidator {
     ///
     /// # Errors
     /// Returns the [`VerifyError`] describing why validation failed.
-    pub fn verify(
+    pub async fn verify(
         &self,
         cred: &RorschachCredential,
         method: &str,
@@ -416,26 +480,188 @@ impl RorschachValidator {
         // 3. Anti-replay: reserve the (client_id, step, nonce) triple exactly
         //    once. Only valid tokens reach this point, so a flood of garbage
         //    cannot grow the nonce table.
-        let nonce_key = format!("{}\n{}\n{}", cred.client_id, cred.step, cred.nonce_b64);
-        match self.seen_nonces.entry(nonce_key) {
-            Entry::Occupied(_) => Err(VerifyError::Replay),
-            Entry::Vacant(slot) => {
-                slot.insert(Self::nonce_expiry(cred.step, now_unix));
-                Ok(())
+        let nonce_key = nonce_store_key(cred);
+        let expiry = Self::nonce_expiry(cred.step, now_unix);
+        match self.reserve_nonce(&nonce_key, expiry, now_unix).await {
+            Ok(true) => Ok(()),
+            Ok(false) => Err(VerifyError::Replay),
+            Err(err) => {
+                tracing::warn!(
+                    target: "krakenwaf",
+                    client_id = %cred.client_id,
+                    error = %err,
+                    "Rorschach nonce reservation failed; rejecting token fail-closed"
+                );
+                Err(VerifyError::StoreUnavailable)
             }
         }
     }
 
     /// Drop nonce entries whose acceptance window has fully elapsed.
     pub fn sweep(&self, now_unix: i64) {
-        self.seen_nonces.retain(|_, &mut expiry| expiry > now_unix);
+        match &self.nonce_store {
+            NonceStore::Memory(seen) => seen.retain(|_, &mut expiry| expiry > now_unix),
+            NonceStore::Sqlite(store) => {
+                if let Err(err) = store.sweep(now_unix) {
+                    tracing::warn!(
+                        target: "krakenwaf",
+                        error = %err,
+                        "Rorschach SQLite nonce sweep failed"
+                    );
+                }
+            }
+            NonceStore::Redis(_) => {}
+        }
     }
 
     /// Number of currently-reserved nonces (test/observability aid).
     #[must_use]
     #[allow(dead_code)]
     pub fn reserved_nonce_count(&self) -> usize {
-        self.seen_nonces.len()
+        match &self.nonce_store {
+            NonceStore::Memory(seen) => seen.len(),
+            NonceStore::Sqlite(store) => store.count().unwrap_or(0),
+            NonceStore::Redis(_) => 0,
+        }
+    }
+
+    async fn reserve_nonce(&self, key: &str, expiry: i64, now_unix: i64) -> Result<bool, String> {
+        match &self.nonce_store {
+            NonceStore::Memory(seen) => reserve_memory_nonce(seen, key, expiry, now_unix),
+            NonceStore::Redis(store) => store.reserve(key, expiry, now_unix).await,
+            NonceStore::Sqlite(store) => store.reserve(key, expiry, now_unix),
+        }
+    }
+}
+
+fn nonce_store_key(cred: &RorschachCredential) -> String {
+    format!("{}:{}:{}", cred.client_id, cred.step, cred.nonce_b64)
+}
+
+fn reserve_memory_nonce(
+    seen: &DashMap<String, i64>,
+    key: &str,
+    expiry: i64,
+    now_unix: i64,
+) -> Result<bool, String> {
+    match seen.entry(key.to_string()) {
+        Entry::Occupied(mut occupied) => {
+            if *occupied.get() <= now_unix {
+                occupied.insert(expiry);
+                Ok(true)
+            } else {
+                Ok(false)
+            }
+        }
+        Entry::Vacant(slot) => {
+            slot.insert(expiry);
+            Ok(true)
+        }
+    }
+}
+
+impl RedisNonceStore {
+    async fn reserve(&self, key: &str, expiry: i64, now_unix: i64) -> Result<bool, String> {
+        use fred::prelude::*;
+
+        let ttl_secs = expiry.saturating_sub(now_unix).max(1);
+        let ttl_ms = ttl_secs.saturating_mul(1000);
+        let ttl_ms = i64::try_from(ttl_ms).unwrap_or(i64::MAX);
+        let redis_key = format!("{}:{key}", self.key_prefix);
+        let fut =
+            self.pool
+                .eval::<i64, _, _, _>(REDIS_NONCE_RESERVE_LUA, vec![redis_key], vec![ttl_ms]);
+        match tokio::time::timeout(NONCE_STORE_TIMEOUT, fut).await {
+            Ok(Ok(1)) => Ok(true),
+            Ok(Ok(0)) => Ok(false),
+            Ok(Ok(other)) => Err(format!("Redis nonce script returned {other}")),
+            Ok(Err(err)) => Err(format!("Redis nonce reservation failed: {err}")),
+            Err(_) => Err(format!(
+                "Redis nonce reservation exceeded {}ms",
+                u64::try_from(NONCE_STORE_TIMEOUT.as_millis()).unwrap_or(u64::MAX)
+            )),
+        }
+    }
+}
+
+impl SqliteNonceStore {
+    fn open(root: &Path) -> Result<Self, String> {
+        let db_dir = root.join("logs").join("db");
+        std::fs::create_dir_all(&db_dir)
+            .map_err(|err| format!("failed to create Rorschach nonce DB directory: {err}"))?;
+        let db_path = db_dir.join(SQLITE_NONCE_DB);
+        let conn = Connection::open(&db_path)
+            .map_err(|err| format!("failed to open Rorschach nonce DB: {err}"))?;
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL;
+             PRAGMA synchronous=NORMAL;
+             CREATE TABLE IF NOT EXISTS rorschach_nonces (
+                 nonce_key TEXT PRIMARY KEY,
+                 expires_at INTEGER NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS idx_rorschach_nonces_expires_at
+                 ON rorschach_nonces(expires_at);",
+        )
+        .map_err(|err| format!("failed to initialise Rorschach nonce DB: {err}"))?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(meta) = std::fs::metadata(&db_path) {
+                let mut perms = meta.permissions();
+                perms.set_mode(0o600);
+                let _ = std::fs::set_permissions(&db_path, perms);
+            }
+        }
+
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
+    }
+
+    fn reserve(&self, key: &str, expiry: i64, now_unix: i64) -> Result<bool, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "Rorschach nonce DB lock poisoned".to_string())?;
+        conn.execute(
+            "DELETE FROM rorschach_nonces WHERE expires_at <= ?1;",
+            params![now_unix],
+        )
+        .map_err(|err| format!("failed to purge expired Rorschach nonces: {err}"))?;
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO rorschach_nonces (nonce_key, expires_at) VALUES (?1, ?2);",
+                params![key, expiry],
+            )
+            .map_err(|err| format!("failed to reserve Rorschach nonce: {err}"))?;
+        Ok(inserted == 1)
+    }
+
+    fn sweep(&self, now_unix: i64) -> Result<(), String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "Rorschach nonce DB lock poisoned".to_string())?;
+        conn.execute(
+            "DELETE FROM rorschach_nonces WHERE expires_at <= ?1;",
+            params![now_unix],
+        )
+        .map_err(|err| format!("failed to purge expired Rorschach nonces: {err}"))?;
+        Ok(())
+    }
+
+    fn count(&self) -> Result<usize, String> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| "Rorschach nonce DB lock poisoned".to_string())?;
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rorschach_nonces;", [], |row| {
+                row.get(0)
+            })
+            .map_err(|err| format!("failed to count Rorschach nonces: {err}"))?;
+        usize::try_from(count).map_err(|_| "Rorschach nonce count overflowed usize".to_string())
     }
 }
 
@@ -462,8 +688,8 @@ mod tests {
         1_700_000_000
     }
 
-    #[test]
-    fn round_trip_verifies() {
+    #[tokio::test]
+    async fn round_trip_verifies() {
         let secrets = test_secrets();
         let step = u64::try_from(now() / STEP_SECONDS).expect("test");
         let nonce = URL_SAFE_NO_PAD.encode([7u8; 64]);
@@ -481,11 +707,12 @@ mod tests {
         let validator = RorschachValidator::new(secrets);
         validator
             .verify(&cred, "POST", "/rule/control/cmc/update", b"{}", now())
+            .await
             .expect("verify");
     }
 
-    #[test]
-    fn replayed_nonce_is_rejected() {
+    #[tokio::test]
+    async fn replayed_nonce_is_rejected() {
         let secrets = test_secrets();
         let step = u64::try_from(now() / STEP_SECONDS).expect("test");
         let nonce = URL_SAFE_NO_PAD.encode([9u8; 64]);
@@ -503,15 +730,50 @@ mod tests {
         let validator = RorschachValidator::new(secrets);
         validator
             .verify(&cred, "GET", "/rule/control/cmc/list", b"", now())
+            .await
             .expect("first use ok");
         assert_eq!(
-            validator.verify(&cred, "GET", "/rule/control/cmc/list", b"", now()),
+            validator
+                .verify(&cred, "GET", "/rule/control/cmc/list", b"", now())
+                .await,
             Err(VerifyError::Replay)
         );
     }
 
-    #[test]
-    fn altered_path_is_rejected() {
+    #[tokio::test]
+    async fn sqlite_nonce_store_rejects_replay_across_validators() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let signer = test_secrets();
+        let step = u64::try_from(now() / STEP_SECONDS).expect("test");
+        let nonce = URL_SAFE_NO_PAD.encode([10u8; 64]);
+        let token = sign_token(
+            &signer,
+            "c1",
+            step,
+            &nonce,
+            "GET",
+            "/rule/control/cmc/list",
+            b"",
+        )
+        .expect("sign");
+        let cred = RorschachCredential::parse(&token).expect("parse");
+        let first = RorschachValidator::with_sqlite(test_secrets(), dir.path()).expect("sqlite");
+        first
+            .verify(&cred, "GET", "/rule/control/cmc/list", b"", now())
+            .await
+            .expect("first use ok");
+
+        let second = RorschachValidator::with_sqlite(test_secrets(), dir.path()).expect("sqlite");
+        assert_eq!(
+            second
+                .verify(&cred, "GET", "/rule/control/cmc/list", b"", now())
+                .await,
+            Err(VerifyError::Replay)
+        );
+    }
+
+    #[tokio::test]
+    async fn altered_path_is_rejected() {
         let secrets = test_secrets();
         let step = u64::try_from(now() / STEP_SECONDS).expect("test");
         let nonce = URL_SAFE_NO_PAD.encode([1u8; 64]);
@@ -528,13 +790,15 @@ mod tests {
         let cred = RorschachCredential::parse(&token).expect("parse");
         let validator = RorschachValidator::new(secrets);
         assert_eq!(
-            validator.verify(&cred, "GET", "/rule/control/cmc/other", b"", now()),
+            validator
+                .verify(&cred, "GET", "/rule/control/cmc/other", b"", now())
+                .await,
             Err(VerifyError::BadToken)
         );
     }
 
-    #[test]
-    fn altered_body_is_rejected() {
+    #[tokio::test]
+    async fn altered_body_is_rejected() {
         let secrets = test_secrets();
         let step = u64::try_from(now() / STEP_SECONDS).expect("test");
         let nonce = URL_SAFE_NO_PAD.encode([2u8; 64]);
@@ -551,19 +815,21 @@ mod tests {
         let cred = RorschachCredential::parse(&token).expect("parse");
         let validator = RorschachValidator::new(secrets);
         assert_eq!(
-            validator.verify(
-                &cred,
-                "POST",
-                "/rule/control/cmc/update",
-                b"{\"a\":2}",
-                now()
-            ),
+            validator
+                .verify(
+                    &cred,
+                    "POST",
+                    "/rule/control/cmc/update",
+                    b"{\"a\":2}",
+                    now()
+                )
+                .await,
             Err(VerifyError::BadToken)
         );
     }
 
-    #[test]
-    fn altered_method_is_rejected() {
+    #[tokio::test]
+    async fn altered_method_is_rejected() {
         let secrets = test_secrets();
         let step = u64::try_from(now() / STEP_SECONDS).expect("test");
         let nonce = URL_SAFE_NO_PAD.encode([3u8; 64]);
@@ -580,13 +846,15 @@ mod tests {
         let cred = RorschachCredential::parse(&token).expect("parse");
         let validator = RorschachValidator::new(secrets);
         assert_eq!(
-            validator.verify(&cred, "POST", "/rule/control/cmc/list", b"", now()),
+            validator
+                .verify(&cred, "POST", "/rule/control/cmc/list", b"", now())
+                .await,
             Err(VerifyError::BadToken)
         );
     }
 
-    #[test]
-    fn future_step_is_rejected() {
+    #[tokio::test]
+    async fn future_step_is_rejected() {
         let secrets = test_secrets();
         let step = u64::try_from(now() / STEP_SECONDS).expect("test") + 10;
         let nonce = URL_SAFE_NO_PAD.encode([4u8; 64]);
@@ -603,13 +871,15 @@ mod tests {
         let cred = RorschachCredential::parse(&token).expect("parse");
         let validator = RorschachValidator::new(secrets);
         assert_eq!(
-            validator.verify(&cred, "GET", "/rule/control/cmc/list", b"", now()),
+            validator
+                .verify(&cred, "GET", "/rule/control/cmc/list", b"", now())
+                .await,
             Err(VerifyError::StepWindow)
         );
     }
 
-    #[test]
-    fn skew_within_one_minute_is_accepted() {
+    #[tokio::test]
+    async fn skew_within_one_minute_is_accepted() {
         let secrets = test_secrets();
         // Pick a timestamp 30 s into a window so now-60 lands in the previous
         // step; a client one step "behind" (clock 60 s slow) must still verify.
@@ -630,6 +900,7 @@ mod tests {
         let validator = RorschachValidator::new(secrets);
         validator
             .verify(&cred, "GET", "/rule/control/cmc/list", b"", base)
+            .await
             .expect("±60s skew accepted");
     }
 

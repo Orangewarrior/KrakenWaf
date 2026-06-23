@@ -119,8 +119,7 @@ impl RuleSet {
             .iter()
             .filter_map(|(prefix, limit)| {
                 let normalized_prefix = normalize_url_path(prefix);
-                normalized
-                    .starts_with(&normalized_prefix)
+                path_matches_normalized_prefix(&normalized, &normalized_prefix)
                     .then_some((normalized_prefix.len(), limit))
             })
             .max_by_key(|(prefix_len, _)| *prefix_len)
@@ -149,8 +148,19 @@ impl RuleSet {
         self.allow_paths
             .iter()
             .map(|p| normalize_url_path(p))
-            .any(|allowed| normalized == allowed || normalized.starts_with(&(allowed + "/")))
+            .any(|allowed| path_matches_normalized_prefix(&normalized, &allowed))
     }
+}
+
+#[must_use]
+pub(crate) fn path_matches_normalized_prefix(path: &str, prefix: &str) -> bool {
+    if prefix == "/" {
+        return path.starts_with('/');
+    }
+    path == prefix
+        || path
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 #[must_use]
@@ -182,5 +192,31 @@ pub fn normalize_url_path(path: &str) -> String {
         "/".to_string()
     } else {
         format!("/{}", out.join("/"))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{path_matches_normalized_prefix, RuleSet};
+    use std::collections::HashMap;
+
+    #[test]
+    fn path_prefix_requires_segment_boundary() {
+        assert!(path_matches_normalized_prefix("/upload", "/upload"));
+        assert!(path_matches_normalized_prefix("/upload/image", "/upload"));
+        assert!(!path_matches_normalized_prefix("/upload2", "/upload"));
+    }
+
+    #[test]
+    fn body_limit_does_not_bleed_into_sibling_prefix() {
+        let mut body_limits = HashMap::new();
+        body_limits.insert("/upload".to_string(), 4096);
+        let rules = RuleSet {
+            body_limits,
+            ..RuleSet::default()
+        };
+
+        assert_eq!(rules.body_limit_for_path("/upload/file"), 4096);
+        assert_eq!(rules.body_limit_for_path("/upload2"), 1024 * 1024);
     }
 }

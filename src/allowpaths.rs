@@ -55,7 +55,9 @@ impl AddrRestriction {
             .with_context(|| format!("only_addrs: cannot canonicalize '{}'", path.display()))?;
         let content = fs::read(&canonical)
             .with_context(|| format!("only_addrs: cannot read '{}'", canonical.display()))?;
-        Ok(Self { entries: parse_addr_bytes(&content) })
+        Ok(Self {
+            entries: parse_addr_bytes(&content),
+        })
     }
 
     #[must_use]
@@ -86,7 +88,11 @@ fn parse_addr_bytes(data: &[u8]) -> Vec<IpEntry> {
     for pos in memchr::memchr_iter(b'\n', data) {
         let line = &data[start..pos];
         // Strip \r for Windows line endings.
-        let line = if line.last() == Some(&b'\r') { &line[..line.len() - 1] } else { line };
+        let line = if line.last() == Some(&b'\r') {
+            &line[..line.len() - 1]
+        } else {
+            line
+        };
         if let Ok(s) = std::str::from_utf8(line) {
             if let Some(e) = parse_ip_entry(s) {
                 entries.push(e);
@@ -192,10 +198,15 @@ impl AllowPathConfig {
     /// Returns an error if the file cannot be read, parsed, or an `only_addrs`
     /// file fails to load.
     pub fn from_file(path: &Path, base_dir: &Path) -> Result<Self> {
-        let canonical = fs::canonicalize(path)
-            .with_context(|| format!("failed to canonicalize allow-paths file '{}'", path.display()))?;
-        let content = fs::read_to_string(&canonical)
-            .with_context(|| format!("failed to read allow-paths file '{}'", canonical.display()))?;
+        let canonical = fs::canonicalize(path).with_context(|| {
+            format!(
+                "failed to canonicalize allow-paths file '{}'",
+                path.display()
+            )
+        })?;
+        let content = fs::read_to_string(&canonical).with_context(|| {
+            format!("failed to read allow-paths file '{}'", canonical.display())
+        })?;
         Self::from_str_inner(&content, &canonical, base_dir)
     }
 
@@ -206,8 +217,9 @@ impl AllowPathConfig {
             allow: Vec<AllowPathEntry>,
         }
 
-        let root: Root = serde_yaml::from_str(content)
-            .with_context(|| format!("failed to parse allow-paths YAML '{}'", yaml_path.display()))?;
+        let root: Root = serde_yaml::from_str(content).with_context(|| {
+            format!("failed to parse allow-paths YAML '{}'", yaml_path.display())
+        })?;
 
         let mut entries = root.allow;
         entries.sort_by_key(|e| e.order);
@@ -219,8 +231,29 @@ impl AllowPathConfig {
                 } else {
                     base_dir.join(raw_path)
                 };
-                let restriction = AddrRestriction::from_file(&addr_path)
-                    .with_context(|| {
+                let canonical_addr_path = fs::canonicalize(&addr_path).with_context(|| {
+                    format!(
+                        "allow-paths entry '{}': cannot canonicalize only_addrs file '{}'",
+                        entry.title, raw_path
+                    )
+                })?;
+                let canonical_base = fs::canonicalize(base_dir).with_context(|| {
+                    format!(
+                        "allow-paths entry '{}': cannot canonicalize base dir '{}'",
+                        entry.title,
+                        base_dir.display()
+                    )
+                })?;
+                if !canonical_addr_path.starts_with(&canonical_base) {
+                    anyhow::bail!(
+                        "allow-paths entry '{}': only_addrs file '{}' resolves outside base dir '{}'",
+                        entry.title,
+                        canonical_addr_path.display(),
+                        canonical_base.display()
+                    );
+                }
+                let restriction =
+                    AddrRestriction::from_file(&canonical_addr_path).with_context(|| {
                         format!(
                             "allow-paths entry '{}': failed to load only_addrs file '{}'",
                             entry.title, raw_path
@@ -268,7 +301,7 @@ impl AllowPathConfig {
             // Prefix match on the canonicalized path.
             let path_matches = entry.paths.iter().any(|p| {
                 let allowed = crate::rules::normalize_url_path(p);
-                normalized == allowed || normalized.starts_with(&format!("{allowed}/"))
+                crate::rules::path_matches_normalized_prefix(&normalized, &allowed)
             });
 
             // For IP-restricted entries, also scan the full URI (including query
@@ -312,8 +345,7 @@ impl AllowPathConfig {
             .find(|entry| {
                 entry.paths.iter().any(|configured| {
                     let configured = crate::rules::normalize_url_path(configured);
-                    normalized == configured
-                        || normalized.starts_with(&format!("{configured}/"))
+                    crate::rules::path_matches_normalized_prefix(&normalized, &configured)
                 })
             })
             .is_some_and(|entry| entry.addr_restriction.is_some())
@@ -328,7 +360,7 @@ impl AllowPathConfig {
         self.entries.iter().find(|entry| {
             entry.paths.iter().any(|p| {
                 let allowed = crate::rules::normalize_url_path(p);
-                normalized == allowed || normalized.starts_with(&format!("{allowed}/"))
+                crate::rules::path_matches_normalized_prefix(&normalized, &allowed)
             })
         })
     }
@@ -346,7 +378,10 @@ pub fn load_and_validate(path: &Path, base_dir: &Path) -> Result<AllowPathConfig
     let config = AllowPathConfig::from_file(path, base_dir)?;
     for entry in &config.entries {
         if entry.title.trim().is_empty() {
-            anyhow::bail!("allow-paths entry with order={} has an empty title", entry.order);
+            anyhow::bail!(
+                "allow-paths entry with order={} has an empty title",
+                entry.order
+            );
         }
         if entry.paths.is_empty() {
             anyhow::bail!(
@@ -364,7 +399,9 @@ mod tests {
     use super::*;
 
     fn restriction_from_str(s: &str) -> AddrRestriction {
-        AddrRestriction { entries: parse_addr_bytes(s.as_bytes()) }
+        AddrRestriction {
+            entries: parse_addr_bytes(s.as_bytes()),
+        }
     }
 
     fn parse_ip(s: &str) -> IpAddr {
@@ -419,15 +456,24 @@ mod tests {
     }
 
     fn expect_allow(decision: &PathDecision<'_>) {
-        assert!(matches!(decision, PathDecision::Allow(_)), "expected Allow variant");
+        assert!(
+            matches!(decision, PathDecision::Allow(_)),
+            "expected Allow variant"
+        );
     }
 
     fn expect_block(decision: &PathDecision<'_>) {
-        assert!(matches!(decision, PathDecision::Block), "expected Block variant");
+        assert!(
+            matches!(decision, PathDecision::Block),
+            "expected Block variant"
+        );
     }
 
     fn expect_no_match(decision: &PathDecision<'_>) {
-        assert!(matches!(decision, PathDecision::NoMatch), "expected NoMatch variant");
+        assert!(
+            matches!(decision, PathDecision::NoMatch),
+            "expected NoMatch variant"
+        );
     }
 
     #[test]
@@ -478,8 +524,8 @@ mod tests {
         let tmpdir = tempfile::tempdir().expect("tmpdir");
         let yaml_file = tmpdir.path().join("lists.yaml");
         std::fs::write(&yaml_file, yaml).expect("write lists.yaml");
-        let config = AllowPathConfig::from_file(&yaml_file, tmpdir.path())
-            .expect("load allow-paths config");
+        let config =
+            AllowPathConfig::from_file(&yaml_file, tmpdir.path()).expect("load allow-paths config");
         expect_allow(&config.check("/open", "/open", "1.2.3.4", 8443));
     }
 
@@ -541,8 +587,7 @@ mod tests {
     #[test]
     fn unrestricted_first_match_is_not_reported_as_protected() {
         let tmpdir = tempfile::tempdir().expect("tmpdir");
-        std::fs::write(tmpdir.path().join("allowed.txt"), "127.0.0.1\n")
-            .expect("write allowlist");
+        std::fs::write(tmpdir.path().join("allowed.txt"), "127.0.0.1\n").expect("write allowlist");
         let yaml = r#"allow:
   - order: 1
     title: "Open metrics"
@@ -556,8 +601,34 @@ mod tests {
 "#;
         let yaml_file = tmpdir.path().join("lists.yaml");
         std::fs::write(&yaml_file, yaml).expect("write yaml");
-        let config =
-            AllowPathConfig::from_file(&yaml_file, tmpdir.path()).expect("load config");
+        let config = AllowPathConfig::from_file(&yaml_file, tmpdir.path()).expect("load config");
         assert!(!config.has_ip_restriction_for("/metrics", 4343));
+    }
+
+    #[test]
+    fn only_addrs_must_resolve_inside_base_dir() {
+        let base = tempfile::tempdir().expect("base tmpdir");
+        let outside = tempfile::tempdir().expect("outside tmpdir");
+        let outside_allowlist = outside.path().join("allow.txt");
+        std::fs::write(&outside_allowlist, "127.0.0.1\n").expect("write outside allowlist");
+        let yaml = format!(
+            r#"allow:
+  - order: 1
+    title: "Restricted"
+    log: false
+    only_addrs: "{}"
+    paths: ["/metrics"]
+"#,
+            outside_allowlist.display()
+        );
+        let yaml_file = base.path().join("lists.yaml");
+        std::fs::write(&yaml_file, yaml).expect("write yaml");
+
+        let err = AllowPathConfig::from_file(&yaml_file, base.path())
+            .expect_err("outside only_addrs path must be rejected");
+        assert!(
+            err.to_string().contains("resolves outside base dir"),
+            "unexpected error: {err:#}"
+        );
     }
 }

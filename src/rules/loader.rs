@@ -135,89 +135,29 @@ fn load_main_rules_json(path: &Path) -> Result<MainRulesJson> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read JSON rules file {}", path.display()))?;
     validate_json_mapping(&content, path)?;
-    let parsed =
-        parse_json_with_rule_escape_repair::<MainRulesJson>(&content, path, "JSON rules file")?;
+    let parsed = parse_json_strict::<MainRulesJson>(&content, path, "JSON rules file")?;
     Ok(parsed)
 }
 
 fn validate_json_mapping(content: &str, path: &Path) -> Result<()> {
-    let parsed: Value = parse_json_value_with_rule_escape_repair(content, path)?;
+    let parsed: Value = parse_json_value_strict(content, path)?;
     if !parsed.is_object() {
         anyhow::bail!("top-level JSON must be an object in {}", path.display());
     }
     Ok(())
 }
 
-fn parse_json_value_with_rule_escape_repair(content: &str, path: &Path) -> Result<Value> {
-    if let Ok(value) = serde_json::from_str::<Value>(content) {
-        Ok(value)
-    } else {
-        warn!(target: "krakenwaf", path = %path.display(), "rule file has invalid JSON string escapes — auto-repairing; fix the source file to suppress this warning");
-        let repaired = repair_invalid_json_string_escapes(content);
-        serde_json::from_str::<Value>(&repaired)
-            .with_context(|| format!("failed to validate JSON structure {}", path.display()))
-    }
+fn parse_json_value_strict(content: &str, path: &Path) -> Result<Value> {
+    serde_json::from_str::<Value>(content)
+        .with_context(|| format!("invalid JSON rule file {}", path.display()))
 }
 
-fn parse_json_with_rule_escape_repair<T>(content: &str, path: &Path, kind: &str) -> Result<T>
+fn parse_json_strict<T>(content: &str, path: &Path, kind: &str) -> Result<T>
 where
     T: for<'de> Deserialize<'de>,
 {
-    if let Ok(value) = serde_json::from_str::<T>(content) {
-        Ok(value)
-    } else {
-        warn!(target: "krakenwaf", path = %path.display(), "rule file has invalid JSON string escapes — auto-repairing; fix the source file to suppress this warning");
-        let repaired = repair_invalid_json_string_escapes(content);
-        serde_json::from_str::<T>(&repaired)
-            .with_context(|| format!("failed to parse {} {}", kind, path.display()))
-    }
-}
-
-fn repair_invalid_json_string_escapes(input: &str) -> String {
-    let mut out = String::with_capacity(input.len() + 16);
-    let mut chars = input.chars().peekable();
-    let mut in_string = false;
-    let mut escaped = false;
-
-    while let Some(ch) = chars.next() {
-        if !in_string {
-            if ch == '"' {
-                in_string = true;
-            }
-            out.push(ch);
-            continue;
-        }
-
-        if escaped {
-            out.push(ch);
-            escaped = false;
-            continue;
-        }
-
-        match ch {
-            '\\' => {
-                let next = chars.peek().copied();
-                match next {
-                    Some('"' | '\\' | '/' | 'b' | 'f' | 'n' | 'r' | 't' | 'u') => {
-                        out.push('\\');
-                        escaped = true;
-                    }
-                    Some(_) => {
-                        out.push('\\');
-                        out.push('\\');
-                    }
-                    None => out.push('\\'),
-                }
-            }
-            '"' => {
-                in_string = false;
-                out.push(ch);
-            }
-            _ => out.push(ch),
-        }
-    }
-
-    out
+    serde_json::from_str::<T>(content)
+        .with_context(|| format!("failed to parse {} {}", kind, path.display()))
 }
 
 fn json_rules_to_detection_rules(values: Vec<RuleJson>, source: &str) -> Vec<DetectionRule> {
@@ -397,8 +337,7 @@ fn load_regex_rules_json(path: &Path, source: &str) -> Result<Vec<CompiledDetect
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read regex rule file {}", path.display()))?;
     validate_json_mapping(&content, path)?;
-    let parsed =
-        parse_json_with_rule_escape_repair::<RegexBundle>(&content, path, "regex rule file")?;
+    let parsed = parse_json_strict::<RegexBundle>(&content, path, "regex rule file")?;
 
     let mut compiled = Vec::new();
     for (idx, rule) in parsed.rules.into_iter().enumerate() {
@@ -448,8 +387,7 @@ fn load_vectorscan_rules_json(path: &Path, source: &str) -> Result<Vec<Detection
     let content = fs::read_to_string(path)
         .with_context(|| format!("failed to read vectorscan rule file {}", path.display()))?;
     validate_json_mapping(&content, path)?;
-    let parsed =
-        parse_json_with_rule_escape_repair::<RegexBundle>(&content, path, "vectorscan rule file")?;
+    let parsed = parse_json_strict::<RegexBundle>(&content, path, "vectorscan rule file")?;
     Ok(json_rules_to_detection_rules(parsed.rules, source))
 }
 
@@ -532,6 +470,22 @@ mod tests {
         let rules = load_regex_rules_json(&path, "regex/test.json").expect("loader must pass");
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].meta.id, "good-001");
+    }
+
+    #[test]
+    fn invalid_json_escape_is_rejected_instead_of_repaired() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("regex.json");
+        let body = r#"{"rules":[{"enable":1,"title":"bad","severity":"medium","score":1000,"cwe":"CWE-693","description":"bad","url":"https://example.com","rule_match":"\s+"}]}"#;
+        let mut f = std::fs::File::create(&path).expect("create file");
+        f.write_all(body.as_bytes()).expect("write file");
+
+        let err = load_regex_rules_json(&path, "regex/test.json")
+            .expect_err("invalid JSON escape must fail strict loading");
+        assert!(
+            err.to_string().contains("invalid JSON rule file"),
+            "unexpected error: {err:#}"
+        );
     }
 
     #[test]

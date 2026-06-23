@@ -3,9 +3,9 @@ KrakenWaf:
   # Source-code updates are opt-in. Leave `ref` commented to disable scheduled
   # code updates and keep threat-list/GeoIP updates independent.
   remote: "https://github.com/Orangewarrior/KrakenWaf"
-  # Prefer a signed release tag, e.g. "refs/tags/v2.46.0". A branch ref is
+  # Prefer a signed release tag, e.g. "refs/tags/v2.47.0". A branch ref is
   # accepted only when the fetched commit passes `git verify-commit` locally.
-  # ref: "refs/tags/v2.46.0"
+  # ref: "refs/tags/v2.47.0"
   require_signed_ref: true
 blocklist:
   title: "Blocklist site"

@@ -146,6 +146,12 @@ vectorscan: true
 # engine. Set to false to disable the complete CMC module context.
 cmc-modules: true
 
+# Enable database-side sensitive-value masking for non-admin consumers.
+# When true, KrakenWaf keeps raw forensic columns for admin access and also
+# writes masked columns/view where sensitive query/body/cookie/token values are
+# replaced by "+++++".
+redact-mask-filter: true
+
 # Default directory containing the WAF rules. An explicit --rules-dir value
 # takes precedence over this setting.
 rules-dir: ./rules

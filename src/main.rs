@@ -17,6 +17,7 @@ mod multipart_extract;
 mod proxy;
 mod proxy_config;
 mod ratelimit_config;
+mod redaction;
 mod response_headers;
 mod rorschach;
 mod rule_management;
@@ -172,7 +173,8 @@ async fn main() -> Result<()> {
         cli.enable_vectorscan,
         Some(rules_root.clone()),
     ));
-    let store = Arc::new(storage::SqliteStore::new(&root_dir).await?);
+    let store =
+        Arc::new(storage::SqliteStore::new(&root_dir, filter_config.redact_mask_filter()).await?);
 
     // ── GeoIP reader ─────────────────────────────────────────────────────────
     // Respects conf/update.yaml `maxmind-geo.active`. When false, geo lookup
@@ -238,7 +240,7 @@ async fn main() -> Result<()> {
 
     let waf = Arc::new(waf::WafEngineFactory::create(waf::WafEngineConfig {
         rules,
-        rate_limiter,
+        rate_limiter: rate_limiter.clone(),
         blocklist_ip_enabled: cli.blocklist_ip,
         libinjection_sqli_enabled: cli.libinjection_sqli_enabled(),
         libinjection_xss_enabled: cli.libinjection_xss_enabled(),
@@ -304,7 +306,8 @@ async fn main() -> Result<()> {
     // neither is provisioned the control plane stays disabled. A
     // provisioned-but-invalid secret, or an empty/invalid IP allowlist, is a
     // fatal startup error (fail-closed) — the WAF does not run.
-    let rule_management = build_rule_management_gate(&cli, &rules_root)?;
+    let rule_management =
+        build_rule_management_gate(&cli, &rules_root, &root_dir, rate_limiter.as_ref())?;
     if rule_management.is_some() {
         info!(
             target: "krakenwaf",
@@ -580,6 +583,8 @@ async fn build_rate_limiter(
 fn build_rule_management_gate(
     cli: &Cli,
     rules_root: &std::path::Path,
+    root_dir: &std::path::Path,
+    rate_limiter: &RateLimiter,
 ) -> Result<Option<Arc<rule_management::RuleManagementGate>>> {
     use rorschach::SecretsConfig;
 
@@ -596,7 +601,21 @@ fn build_rule_management_gate(
         "rule-management IP allowlist failed validation; the control plane cannot start",
     )?;
 
-    let validator = rorschach::RorschachValidator::new(secrets);
+    let validator = if let Some(pool) = rate_limiter.redis_pool() {
+        info!(
+            target: "krakenwaf",
+            "rule-management anti-replay using Redis nonce store"
+        );
+        rorschach::RorschachValidator::with_redis(secrets, pool)
+    } else {
+        info!(
+            target: "krakenwaf",
+            "rule-management anti-replay using local SQLite nonce store"
+        );
+        rorschach::RorschachValidator::with_sqlite(secrets, root_dir)
+            .map_err(|err| anyhow::anyhow!(err))
+            .context("failed to initialise rule-management anti-replay SQLite store")?
+    };
     Ok(Some(Arc::new(rule_management::RuleManagementGate {
         validator,
         allowlist,
