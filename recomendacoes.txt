@@ -1,0 +1,132 @@
+==============================================================================
+KrakenWaf - Análise de Arquitetura e AppSec
+Diretório analisado: src/ (80 arquivos, ~29.500 linhas)
+Data: 2026-06-23
+==============================================================================
+
+------------------------------------------------------------------------------
+VISÃO GERAL DA ARQUITETURA
+------------------------------------------------------------------------------
+KrakenWaf é um WAF reverse-proxy TLS-aware em Rust, bem modularizado:
+
+- Entrada:    server.rs, tls.rs, main.rs, app.rs (AppState)
+              -> Listener, TLS rustls, limites por-IP de conexão/bytes
+- Proxy:      proxy/{mod,body,builder,real_ip,trusted_proxy,trace_context,
+              enforcement}
+              -> Forward, SSRF guards, hop-by-hop, WebSocket tunnel,
+                 streaming de resposta
+- Engine:     waf/engine/{mod,matchers,normalize,ip_filter,finding,
+              spamhaus_cache}
+              -> ArcSwap de (rules, matchers), keyword/regex/libinjection/
+                 vectorscan + deadline fail-closed
+- Detectores: cmc/* (22 módulos: SQLi, XXE, SSTI, deserialização Java,
+              smuggling, etc.) - "Custom Module Chain" plugável
+- Rate limit: waf/rate_limit.rs -> GCRA lock-free local + Redis distribuído
+- Estado:     storage.rs, banning/*, rorschach.rs, secrets.rs
+              -> SQLite/SeaORM, banlist, token rotativo BLAKE2b,
+                 secrets file-first
+- FFI:        ffi/libinjection/* + build.rs
+              -> libinjection vendored com hardening C
+
+------------------------------------------------------------------------------
+PONTOS FORTES (verificados)
+------------------------------------------------------------------------------
+A qualidade do código é excepcional. Destaques:
+
+- unwrap_used = "deny" global (clippy)
+- Deadline fail-closed contra ReDoS
+- SSRF defendido em build_upstream_target (sem Url::join de input do atacante)
+- SQL 100% parametrizado (params!, zero format! em queries)
+- Secrets file-first (evita /proc/<pid>/environ, crash dumps, herança de env)
+- constant_time_eq + orion (BLAKE2b) no plano de controle
+- Janitor que varre os DashMap por-IP contra exaustão de memória via rotação
+  de IPv6
+- Hardening C: -fstack-protector-strong, _FORTIFY_SOURCE=2,
+  -fvisibility=hidden
+
+NÃO são problemas (verificados): SSRF, SQLi no próprio WAF, secrets em env,
+hop-by-hop headers, ReDoS (mitigado), TLS (rustls + rediss:// obrigatório),
+memória ilimitada nos mapas por-IP - todos já tratados corretamente.
+
+==============================================================================
+RECOMENDAÇÕES DE MELHORIA
+==============================================================================
+
+------------------------------------------------------------------------------
+1. Deadline de inspeção é por-chamada, não por-requisição (CPU-DoS residual)
+   PRIORIDADE: ALTA
+------------------------------------------------------------------------------
+Em waf/engine/mod.rs, inspect_complete_payload_with_context cria um
+InspectionDeadline::new(max_inspection_ms) NOVO a cada chamada. Numa única
+requisição isso é invocado em:
+  - inspect_early (prefixo)
+  - CADA parte multipart (inspect_multipart_parts)
+  - o corpo decodificado
+  - HPP
+  - open-redirect
+
+Um corpo multipart/form-data com milhares de partes pequenas (cada uma <=
+body_limit) recebe o orçamento INTEIRO por parte -> tempo de CPU por
+requisição ~= N x max_inspection_ms, anulando o objetivo do orçamento.
+
+Recomendação: usar um deadline ÚNICO por requisição, criado em dispatch e
+propagado (ex.: Instant de expiração no InspectionContext).
+
+------------------------------------------------------------------------------
+2. Recontagem/decodificação repetida do corpo
+   PRIORIDADE: MÉDIA
+------------------------------------------------------------------------------
+request_body_for_text_inspection chama parse_parts e, logo depois,
+inspect_multipart_parts chama parse_parts de novo sobre os mesmos bytes; o
+corpo também é convertido para String::from_utf8_lossy em múltiplos pontos
+(inspect_buffered_request_body, views).
+
+Recomendação: parsear o multipart uma vez e reusar para reduzir alocação e
+latência no hot path.
+
+------------------------------------------------------------------------------
+3. Race no acumulador por-IP de bytes do corpo
+   PRIORIDADE: MÉDIA/BAIXA
+------------------------------------------------------------------------------
+Em accumulate_body_frames, o padrão load(Relaxed) + checagem + add permite que
+requisições concorrentes do mesmo IP ultrapassem max_per_ip_body_bytes (cada
+uma vê o valor antes do incremento da outra). Não é crítico (cap aproximado).
+
+Recomendação: documentar como "best-effort" ou usar fetch_add + comparação do
+retorno para um teto rígido.
+
+------------------------------------------------------------------------------
+4. Inconsistência de chave de IP entre subsistemas
+   PRIORIDADE: BAIXA (documentação)
+------------------------------------------------------------------------------
+Rate limit e geo usam effective_ip (X-Forwarded-For via proxy confiável); a
+contagem de bytes do corpo (ip_body_bytes) usa o client_ip do socket. É
+defensável (recurso != identidade), mas a divergência merece um comentário
+explícito para evitar bypass acidental do limite por-IP atrás de um proxy
+confiável.
+
+------------------------------------------------------------------------------
+5. proxy/mod.rs com 2.667 linhas / dispatch enorme
+   PRIORIDADE: BAIXA (manutenibilidade)
+------------------------------------------------------------------------------
+dispatch carrega #[allow(clippy::too_many_lines)]. Extrair as fases
+(rate-limit -> allow-paths -> early -> websocket -> body -> forward) para
+funções nomeadas melhora testabilidade e reduz a superfície de erro em
+mudanças futuras. Mesma observação para cmc/mod.rs (1.910 linhas).
+
+------------------------------------------------------------------------------
+6. Pontos menores de robustez
+   PRIORIDADE: BAIXA
+------------------------------------------------------------------------------
+- Uuid::new_v4().simple() por requisição: ok, mas considerar um RNG já
+  presente para reduzir custo em RPS muito alto.
+- latin1/views: o HashSet<&str> de dedup aloca por requisição; em caminho
+  quente, um vetor pequeno com contains costuma ser mais barato (<=3 views).
+- append_filter_deadline_event faz OpenOptions::append + create_dir_all
+  síncrono dentro do caminho de inspeção: sob ataque que dispara muitos
+  deadlines, isso serializa I/O no hot path. Considerar um canal
+  assíncrono/buffer.
+
+==============================================================================
+FIM
+==============================================================================
